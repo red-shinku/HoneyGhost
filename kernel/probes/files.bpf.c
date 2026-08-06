@@ -19,7 +19,6 @@
 struct file_access_data {
     struct event_head head;
 
-    u32 pid;
     char comm[16];
     char filename[256];
     u64 flags;
@@ -56,7 +55,6 @@ int trace_file_openat(struct trace_event_raw_sys_enter *ctx)
     struct file_access_data *data = init_file_access_data();
     if (!data) return 0;
 
-    data->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[1]);
     data->flags = ctx->args[2];
@@ -72,7 +70,6 @@ int trace_file_open(struct trace_event_raw_sys_enter *ctx)
     struct file_access_data *data = init_file_access_data();
     if (!data) return 0;
 
-    data->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
     data->flags = ctx->args[1];
@@ -88,7 +85,6 @@ int trace_file_creat(struct trace_event_raw_sys_enter *ctx)
     struct file_access_data *data = init_file_access_data();
     if (!data) return 0;
 
-    data->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
     data->flags = O_CREAT | O_WRONLY | O_TRUNC;
@@ -107,7 +103,6 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
     struct file_access_data *data = init_file_access_data();
     if (!data) return 0;
 
-    data->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[1]);
 
@@ -122,3 +117,5 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
 
     return 0;
 }
+
+//TODO: 错误处理？
