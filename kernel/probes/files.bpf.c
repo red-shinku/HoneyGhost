@@ -6,10 +6,11 @@
  * @date 2026.08.05
  */
 
-#include "../include/vmlinux.h"
-#include "../include/event_head.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+
+#include "../include/event_head.h"
+#include "../include/vmlinux.h"
 
 // extern int LINUX_KERNEL_VERSION __kconfig;
 
@@ -34,11 +35,11 @@ struct {
 } file_access_events SEC(".maps");
 
 /**
-  * @brief 文件事件数据结构的初始化函数
-  * @return NULL 初始化失败
-  * @return struct file_access_data* 初始化成功，返回指针
-  */
-static __always_inline struct file_access_data* init_file_access_data(void)
+ * @brief 文件事件数据结构的初始化函数
+ * @return NULL 初始化失败
+ * @return struct file_access_data* 初始化成功，返回指针
+ */
+static __always_inline struct file_access_data *init_file_access_data(void)
 {
     struct file_access_data *data = bpf_ringbuf_reserve(&file_access_events, sizeof(struct file_access_data), 0);
     if (!data) {
@@ -109,7 +110,8 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
         data->flags = how.flags;
-    } else {
+    }
+    else {
         data->flags = 0;
     }
 
@@ -118,4 +120,4 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-//TODO: 错误处理？
+// TODO: 错误处理？

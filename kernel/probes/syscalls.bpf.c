@@ -2,7 +2,7 @@
  * @file syscalls.bpf.c
  * @brief 监控关键系统调用
  * @details 收集带语义的系统调用信息。
- *  
+ *
  * 这个模块收集的数据将用于马尔科夫序列的基线学习，或
  * 结合序列基线进行异常分析。因此获取的信息应当具有语义、能反映行为特征。
  *
@@ -10,10 +10,11 @@
  * @date 2026.08.06
  */
 
-#include "../include/vmlinux.h"
-#include "../include/syscall_event_head.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+
+#include "../include/syscall_event_head.h"
+#include "../include/vmlinux.h"
 
 // syscall参数最大长度
 #define MAX_ARG_LEN 64
@@ -23,16 +24,16 @@
 struct process_event {
     struct syscall_event_head hdr;
 
-    u64 clone_flags; ///< clone 有效，新进程的创建方式
-    s32 exit_code;   ///< exit_group 有效
+    u64 clone_flags;  ///< clone 有效，新进程的创建方式
+    s32 exit_code;    ///< exit_group 有效
 };
 
 struct exec_event {
     struct syscall_event_head hdr;
 
-    char filename[MAX_EXEC_FILENAME_LEN]; ///< 可执行文件路径
-    char argv0[MAX_ARG_LEN];              ///< argv[0]（程序名或启动命令）
-    u32 flags;                            ///< execveat 有效，AT_* 标志
+    char filename[MAX_EXEC_FILENAME_LEN];  ///< 可执行文件路径
+    char argv0[MAX_ARG_LEN];               ///< argv[0]（程序名或启动命令）
+    u32 flags;                             ///< execveat 有效，AT_* 标志
 };
 
 struct credential_event {
@@ -40,11 +41,11 @@ struct credential_event {
 
     union {
         struct {
-            u32 uid; ///< setuid() 设置的新 UID
+            u32 uid;  ///< setuid() 设置的新 UID
         } setuid;
 
         struct {
-            u32 gid; ///< setgid() 设置的新 GID
+            u32 gid;  ///< setgid() 设置的新 GID
         } setgid;
 
         struct {
@@ -58,8 +59,8 @@ struct credential_event {
 struct namespace_event {
     struct syscall_event_head hdr;
 
-    u32 ns_type; ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare() 涉及的 Namespace
-    u64 flags;   ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
+    u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare() 涉及的 Namespace
+    u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
 };
 
 struct file_event {
@@ -67,30 +68,30 @@ struct file_event {
 
     // char path1[256]; ///< 主路径（open、unlink、creat、rename 源路径等）
     // char path2[256]; ///< 第二路径（link、rename 等目标路径，无则为空）
-    u32 flags;       ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
-    u32 mode;        ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
+    u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
+    u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
 };
 
 struct memory_event {
     struct syscall_event_head hdr;
 
-    u64 prot;    ///< PROT_* 权限（mmap/mprotect）
-    u64 flags;   ///< MAP_* 标志（mmap）或保留扩展
+    u64 prot;   ///< PROT_* 权限（mmap/mprotect）
+    u64 flags;  ///< MAP_* 标志（mmap）或保留扩展
 };
 
 struct network_event {
     struct syscall_event_head hdr;
 
-    u32 family;   ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
-    u32 type;     ///< SOCK_STREAM / SOCK_DGRAM 等
-    u32 protocol; ///< IPPROTO_TCP 等协议号
+    u32 family;    ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
+    u32 type;      ///< SOCK_STREAM / SOCK_DGRAM 等
+    u32 protocol;  ///< IPPROTO_TCP 等协议号
 };
 
 struct kernel_event {
     struct syscall_event_head hdr;
 
-    u32 command; ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
-    u64 arg;     ///< 与 command 对应的重要参数（可根据事件类型解释）
+    u32 command;  ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
+    u64 arg;      ///< 与 command 对应的重要参数（可根据事件类型解释）
 };
 
 /**
@@ -112,7 +113,7 @@ struct {
  * @return NULL 失败
  * @return struct process_event* 成功
  */
-static __always_inline struct process_event* init_process_event(enum syscall_event_name name)
+static __always_inline struct process_event *init_process_event(enum syscall_event_name name)
 {
     struct process_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct process_event), 0);
     if (!event) {
@@ -120,14 +121,14 @@ static __always_inline struct process_event* init_process_event(enum syscall_eve
     }
     init_syscall_event_head(&event->hdr, name);
     event->clone_flags = 0;
-    event->exit_code = 0;
+    event->exit_code   = 0;
     return event;
 }
 
 /**
  * @brief exec_event 初始化
  */
-static __always_inline struct exec_event* init_exec_event(enum syscall_event_name name)
+static __always_inline struct exec_event *init_exec_event(enum syscall_event_name name)
 {
     struct exec_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct exec_event), 0);
     if (!event) {
@@ -143,7 +144,7 @@ static __always_inline struct exec_event* init_exec_event(enum syscall_event_nam
 /**
  * @brief credential_event 初始化
  */
-static __always_inline struct credential_event* init_credential_event(enum syscall_event_name name)
+static __always_inline struct credential_event *init_credential_event(enum syscall_event_name name)
 {
     struct credential_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct credential_event), 0);
     if (!event) {
@@ -151,8 +152,8 @@ static __always_inline struct credential_event* init_credential_event(enum sysca
     }
     init_syscall_event_head(&event->hdr, name);
     // 联合体整体清零
-    event->capset.effective = 0;
-    event->capset.permitted = 0;
+    event->capset.effective   = 0;
+    event->capset.permitted   = 0;
     event->capset.inheritable = 0;
     return event;
 }
@@ -160,7 +161,7 @@ static __always_inline struct credential_event* init_credential_event(enum sysca
 /**
  * @brief namespace_event 初始化
  */
-static __always_inline struct namespace_event* init_namespace_event(enum syscall_event_name name)
+static __always_inline struct namespace_event *init_namespace_event(enum syscall_event_name name)
 {
     struct namespace_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct namespace_event), 0);
     if (!event) {
@@ -168,14 +169,14 @@ static __always_inline struct namespace_event* init_namespace_event(enum syscall
     }
     init_syscall_event_head(&event->hdr, name);
     event->ns_type = 0;
-    event->flags = 0;
+    event->flags   = 0;
     return event;
 }
 
 /**
  * @brief file_event 初始化
  */
-static __always_inline struct file_event* init_file_event(enum syscall_event_name name)
+static __always_inline struct file_event *init_file_event(enum syscall_event_name name)
 {
     struct file_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct file_event), 0);
     if (!event) {
@@ -183,21 +184,21 @@ static __always_inline struct file_event* init_file_event(enum syscall_event_nam
     }
     init_syscall_event_head(&event->hdr, name);
     event->flags = 0;
-    event->mode = 0;
+    event->mode  = 0;
     return event;
 }
 
 /**
  * @brief memory_event 初始化
  */
-static __always_inline struct memory_event* init_memory_event(enum syscall_event_name name)
+static __always_inline struct memory_event *init_memory_event(enum syscall_event_name name)
 {
     struct memory_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct memory_event), 0);
     if (!event) {
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    event->prot = 0;
+    event->prot  = 0;
     event->flags = 0;
     return event;
 }
@@ -205,15 +206,15 @@ static __always_inline struct memory_event* init_memory_event(enum syscall_event
 /**
  * @brief network_event 初始化
  */
-static __always_inline struct network_event* init_network_event(enum syscall_event_name name)
+static __always_inline struct network_event *init_network_event(enum syscall_event_name name)
 {
     struct network_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct network_event), 0);
     if (!event) {
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    event->family = 0;
-    event->type = 0;
+    event->family   = 0;
+    event->type     = 0;
     event->protocol = 0;
     return event;
 }
@@ -221,7 +222,7 @@ static __always_inline struct network_event* init_network_event(enum syscall_eve
 /**
  * @brief kernel_event 初始化
  */
-static __always_inline struct kernel_event* init_kernel_event(enum syscall_event_name name)
+static __always_inline struct kernel_event *init_kernel_event(enum syscall_event_name name)
 {
     struct kernel_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct kernel_event), 0);
     if (!event) {
@@ -229,7 +230,7 @@ static __always_inline struct kernel_event* init_kernel_event(enum syscall_event
     }
     init_syscall_event_head(&event->hdr, name);
     event->command = 0;
-    event->arg = 0;
+    event->arg     = 0;
     return event;
 }
 
@@ -371,8 +372,8 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
     //   合并为 64 位值以兼容 v2/v3 能力集
     struct __user_cap_data_struct cap_data[2];
     if (bpf_probe_read_user(cap_data, sizeof(cap_data), (void *)ctx->args[1]) == 0) {
-        event->capset.effective   = ((u64)cap_data[1].effective   << 32) | cap_data[0].effective;
-        event->capset.permitted   = ((u64)cap_data[1].permitted   << 32) | cap_data[0].permitted;
+        event->capset.effective   = ((u64)cap_data[1].effective << 32) | cap_data[0].effective;
+        event->capset.permitted   = ((u64)cap_data[1].permitted << 32) | cap_data[0].permitted;
         event->capset.inheritable = ((u64)cap_data[1].inheritable << 32) | cap_data[0].inheritable;
     }
 
@@ -391,7 +392,7 @@ int trace_unshare(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     // args[0]: int unshare_flags (CLONE_NEW*)
-    u64 flags = ctx->args[0];
+    u64 flags    = ctx->args[0];
     event->flags = flags;
 
     // 提取涉及的 namespace 类型
@@ -421,7 +422,7 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     event->ns_type = (u32)ctx->args[1];
-    event->flags = 0;
+    event->flags   = 0;
 
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
@@ -566,7 +567,7 @@ int trace_mprotect(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     // args[2]: int prot (PROT_*)
-    event->prot  = ctx->args[2];
+    event->prot = ctx->args[2];
 
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
@@ -654,4 +655,3 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
 }
-

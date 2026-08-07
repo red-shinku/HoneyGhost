@@ -6,8 +6,8 @@
  * @date 2026.08.06
  */
 
-#ifndef _SYSCALLS_EVENT_HEAD_H 
-#define _SYSCALLS_EVENT_HEAD_H 
+#ifndef _SYSCALLS_EVENT_HEAD_H
+#define _SYSCALLS_EVENT_HEAD_H
 
 #include "event_head.h"
 
@@ -17,16 +17,16 @@ enum syscall_event_name {
     SYSCALL_EVENT_EXECVE,
     SYSCALL_EVENT_EXECVEAT,
     SYSCALL_EVENT_VFORK,
-    
+
     SYSCALL_EVENT_SETUID,
     SYSCALL_EVENT_SETGID,
     SYSCALL_EVENT_CAPSET,
 
     SYSCALL_EVENT_UNSHARE,
     SYSCALL_EVENT_SETNS,
-    
+
     SYSCALL_EVENT_PTRACE,
-    
+
     SYSCALL_EVENT_BPF,
 
     SYSCALL_EVENT_OPEN,
@@ -54,14 +54,14 @@ enum syscall_event_name {
  * @details 根据语义划分。每个类型也对应一种数据结构，用户态以此从 ringbuf 解析数据。
  */
 enum syscall_event_type {
-    PROCESS_EVENT,      ///< 进程生命周期
-    EXEC_EVENT,         ///< 执行语义
-    CREDENTIAL_EVENT,   ///< 权限变化
-    NAMESPACE_EVENT,    ///< 命名空间事件
-    FILE_EVENT,         ///< 文件操作
-    MEMORY_EVENT,       ///< 内存操作
-    NETWORK_EVENT,      ///< 网络连接
-    KERNEL_EVENT        ///< 内核操作
+    PROCESS_EVENT,     ///< 进程生命周期
+    EXEC_EVENT,        ///< 执行语义
+    CREDENTIAL_EVENT,  ///< 权限变化
+    NAMESPACE_EVENT,   ///< 命名空间事件
+    FILE_EVENT,        ///< 文件操作
+    MEMORY_EVENT,      ///< 内存操作
+    NETWORK_EVENT,     ///< 网络连接
+    KERNEL_EVENT       ///< 内核操作
 };
 
 struct syscall_event_head {
@@ -70,13 +70,14 @@ struct syscall_event_head {
     enum syscall_event_type type;
 };
 
-static __always_inline void init_syscall_event_head(struct syscall_event_head *s_head, enum syscall_event_name name) {
-    if(!s_head) {
+static __always_inline void init_syscall_event_head(struct syscall_event_head *s_head, enum syscall_event_name name)
+{
+    if (!s_head) {
         return;
     }
     init_event_head(&s_head->head);
     s_head->name = name;
-    switch(name) {
+    switch (name) {
         case SYSCALL_EVENT_FORK:
         case SYSCALL_EVENT_CLONE:
         case SYSCALL_EVENT_VFORK:
@@ -123,4 +124,4 @@ static __always_inline void init_syscall_event_head(struct syscall_event_head *s
     }
 }
 
-#endif // _SYSCALLS_EVENT_HEAD_H 
+#endif  // _SYSCALLS_EVENT_HEAD_H
