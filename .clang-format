@@ -1,4 +1,6 @@
 BasedOnStyle: Google
+# 关闭 include 排序, 不然编译可能失败
+SortIncludes: false
 IndentWidth: 4
 UseTab: Never
 TabWidth: 4
