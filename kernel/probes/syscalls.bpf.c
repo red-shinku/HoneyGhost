@@ -10,11 +10,11 @@
  * @date 2026.08.06
  */
 
+#include "../include/vmlinux.h"
+#include "../include/syscall_event_head.h"
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-
-#include "../include/syscall_event_head.h"
-#include "../include/vmlinux.h"
 
 // syscall参数最大长度
 #define MAX_ARG_LEN 64
