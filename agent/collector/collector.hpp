@@ -1,8 +1,9 @@
 #ifndef COLLECTOR_HPP
 #define COLLECTOR_HPP
 
-# include "include/raw_event_queue.hpp"
-#include "../kernel/files.skel.h" 
+#include "include/raw_event_queue.hpp"
+#include "../kernel/files.skel.h"
+#include "../kernel/syscalls.skel.h"
 
 #include <array>
 
@@ -10,66 +11,72 @@
 #define COLLECTOR_NUM 4
 
 class CollectorType {
-public:
-    virtual void collect() = 0;
+   public:
+    virtual void collect()   = 0;
     virtual ~CollectorType() = default;
 };
 
 class Collector {
-public:
+   public:
     Collector();
     ~Collector();
 
     void collect();
 
-private:
+   private:
     std::array<CollectorType, COLLECTOR_NUM> collector;
 };
 
 class FileEventCollector : public CollectorType {
-public:
+   public:
     FileEventCollector(RawEventQueue& queue);
     ~FileEventCollector();
 
     bool init();
     void collect() override;
 
-private:
+   private:
     RawEventQueue& file_rawevent_queue;
-    struct files_collector *files_collector;
-    struct ring_buffer *rb;
-    static int handle_rb_event(void *ctx, void *data, size_t data_sz);
+    struct files_collector* files_collector;
+    struct ring_buffer* rb;
+    static int handle_rb_event(void* ctx, void* data, size_t data_sz);
 };
 
 class SyscallEventCollector : public CollectorType {
-public:
+   public:
     SyscallEventCollector(RawEventQueue& queue);
     ~SyscallEventCollector();
 
+    bool init();
     void collect() override;
-private:
+
+   private:
     RawEventQueue& syscall_rawevent_queue;
+    struct syscalls_collector* syscalls_collector;
+    struct ring_buffer* rb;
+    static int handle_rb_event(void* ctx, void* data, size_t data_sz);
 };
 
 class NetworkEventCollector : public CollectorType {
-public:
+   public:
     NetworkEventCollector(RawEventQueue& queue);
     ~NetworkEventCollector();
 
     void collect() override;
-private:
+
+   private:
     RawEventQueue& network_rawevent_queue;
 };
 
 class IPCEventCollector : public CollectorType {
-public:
+   public:
     IPCEventCollector(RawEventQueue& queue);
     ~IPCEventCollector();
 
     void collect() override;
-private:
+
+   private:
     RawEventQueue& ipc_rawevent_queue;
 };
 
-
-#endif // COLLECTOR_HPP
+#endif  // COLLECTOR_HPP
