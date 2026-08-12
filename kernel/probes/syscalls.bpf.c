@@ -12,6 +12,7 @@
 
 #include "../include/vmlinux.h"
 #include "../include/syscall_event_head.h"
+#include "../include/uapi_const.h"
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

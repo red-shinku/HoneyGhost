@@ -11,8 +11,8 @@
 #ifndef __EVENT_HEAD_H
 #define __EVENT_HEAD_H
 
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
-#include <linux/types.h>
 
 struct event_head {
     __u32 pid;

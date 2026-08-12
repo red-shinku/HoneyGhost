@@ -6,24 +6,13 @@
  * @date 2026.08.05
  */
 
-#include "../include/vmlinux.h"
-#include "../include/event_head.h"
+#include "../include/files_type.h"
+#include "../include/uapi_const.h"
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
 // extern int LINUX_KERNEL_VERSION __kconfig;
-
-/**
- * @brief 每个文件事件都会生成该结构的对象
- */
-struct file_access_data {
-    struct event_head head;
-
-    char comm[16];
-    char filename[256];
-    u64 flags;
-};
 
 /**
  * @brief RingBuf，存储文件事件的数据（file_access_data）
