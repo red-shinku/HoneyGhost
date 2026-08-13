@@ -6,6 +6,7 @@
  * @date 2026.08.05
  */
 
+#include "./include/vmlinux.h"
 #include "../include/files_type.h"
 #include "../include/uapi_const.h"
 

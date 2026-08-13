@@ -7,7 +7,6 @@
  * @date 2026.08.12
  */
 
-#include "../include/vmlinux.h"
 #include "../include/event_head.h"
 
 /**
@@ -18,5 +17,5 @@ struct file_access_data {
 
     char comm[16];       ///< 打开文件的程序
     char filename[256];  ///< 打开文件路径，文件名
-    u64 flags;           ///< 文件打开方式
+    __u32 flags;         ///< 文件打开方式
 };

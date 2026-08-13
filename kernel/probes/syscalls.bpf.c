@@ -10,6 +10,7 @@
  * @date 2026.08.06
  */
 
+#include "./include/vmlinux.h"
 #include "../include/syscalls_type.h"
 #include "../include/uapi_const.h"
 

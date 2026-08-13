@@ -70,6 +70,8 @@ struct syscall_event_head {
     enum syscall_event_type type;
 };
 
+// 初始化函数依赖 init_event_head，仅内核态探针程序使用
+#ifdef __bpf__
 static __always_inline void init_syscall_event_head(struct syscall_event_head *s_head, enum syscall_event_name name)
 {
     if (!s_head) {
@@ -123,5 +125,6 @@ static __always_inline void init_syscall_event_head(struct syscall_event_head *s
             break;
     }
 }
+#endif  // __bpf__
 
 #endif  // _SYSCALLS_EVENT_HEAD_H

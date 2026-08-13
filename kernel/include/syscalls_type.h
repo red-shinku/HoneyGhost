@@ -11,7 +11,6 @@
  * @date 2026.08.12
  */
 
-#include "../include/vmlinux.h"
 #include "../include/syscall_event_head.h"
 
 // syscall参数最大长度
@@ -20,60 +19,60 @@
 #define MAX_EXEC_FILENAME_LEN 256
 
 struct process_event {
-    u64 clone_flags;  ///< clone 有效，新进程的创建方式
-    s32 exit_code;    ///< exit_group 有效
+    __u64 clone_flags;  ///< clone 有效，新进程的创建方式
+    __s32 exit_code;    ///< exit_group 有效
 };
 
 struct exec_event {
     char filename[MAX_EXEC_FILENAME_LEN];  ///< 可执行文件路径
     char argv0[MAX_ARG_LEN];               ///< argv[0]（程序名或启动命令）
-    u32 flags;                             ///< execveat 有效，AT_* 标志
+    __u32 flags;                        ///< execveat 有效，AT_* 标志
 };
 
 struct credential_event {
     union {
         struct {
-            u32 uid;  ///< setuid() 设置的新 UID
+            __u32 uid;  ///< setuid() 设置的新 UID
         } setuid;
 
         struct {
-            u32 gid;  ///< setgid() 设置的新 GID
+            __u32 gid;  ///< setgid() 设置的新 GID
         } setgid;
 
         struct {
-            u64 effective;    ///< Effective Capability
-            u64 permitted;    ///< Permitted Capability
-            u64 inheritable;  ///< Inheritable Capability
+            __u64 effective;    ///< Effective Capability
+            __u64 permitted;    ///< Permitted Capability
+            __u64 inheritable;  ///< Inheritable Capability
         } capset;
     };
 };
 
 struct namespace_event {
-    u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare() 涉及的 Namespace
-    u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
+    __u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare() 涉及的 Namespace
+    __u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
 };
 
 struct file_event {
     // char path1[256]; ///< 主路径（open、unlink、creat、rename 源路径等）
     // char path2[256]; ///< 第二路径（link、rename 等目标路径，无则为空）
-    u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
-    u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
+    __u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
+    __u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
 };
 
 struct memory_event {
-    u64 prot;   ///< PROT_* 权限（mmap/mprotect）
-    u64 flags;  ///< MAP_* 标志（mmap）或保留扩展
+    __u64 prot;   ///< PROT_* 权限（mmap/mprotect）
+    __u64 flags;  ///< MAP_* 标志（mmap）或保留扩展
 };
 
 struct network_event {
-    u32 family;    ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
-    u32 type;      ///< SOCK_STREAM / SOCK_DGRAM 等
-    u32 protocol;  ///< IPPROTO_TCP 等协议号
+    __u32 family;    ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
+    __u32 type;      ///< SOCK_STREAM / SOCK_DGRAM 等
+    __u32 protocol;  ///< IPPROTO_TCP 等协议号
 };
 
 struct kernel_event {
-    u32 command;  ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
-    u64 arg;      ///< 与 command 对应的重要参数（可根据事件类型解释）
+    __u32 command;  ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
+    __u64 arg;      ///< 与 command 对应的重要参数（可根据事件类型解释）
 };
 
 /**
