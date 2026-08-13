@@ -2,3 +2,4 @@
 .vscode/
 *.skel.h
 build/
+vmlinux.h
