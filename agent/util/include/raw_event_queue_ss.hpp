@@ -48,6 +48,7 @@ class alignas(kCacheLineSize) RawEventQueue_SS {
     RawEventQueue_SS& operator=(const RawEventQueue_SS&) = delete;
 
     bool push(const T& item);
+    bool push(T&& item);
 
     bool pop(T& item);
 
@@ -57,12 +58,10 @@ class alignas(kCacheLineSize) RawEventQueue_SS {
     size_t capacity() const noexcept { return mask_ + 1; }
 
    private:
-    // 生产者独占：写索引 head，单独占用一个缓存行
     struct alignas(kCacheLineSize) ProducerOnly {
         std::atomic<size_t> head{0};
     } producer_;
 
-    // 消费者独占：读索引 tail，单独占用一个缓存行
     struct alignas(kCacheLineSize) ConsumerOnly {
         std::atomic<size_t> tail{0};
     } consumer_;
@@ -89,9 +88,7 @@ RawEventQueue_SS<T>::RawEventQueue_SS(size_t capacity)
 template <class T>
 bool RawEventQueue_SS<T>::push(const T& item)
 {
-    // 自身写索引：仅生产者更新，relaxed 即可
     const size_t head = producer_.head.load(std::memory_order_relaxed);
-    // 对端读索引：acquire 屏障，保证消费者 release tail 前已完成的读操作（释放槽位）对本线程可见
     const size_t tail = consumer_.tail.load(std::memory_order_acquire);
 
     // 满：head - tail == capacity == mask_ + 1
@@ -101,6 +98,23 @@ bool RawEventQueue_SS<T>::push(const T& item)
 
     // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读 head 后可见
     buffer_[head & mask_] = item;
+    producer_.head.store(head + 1, std::memory_order_release);
+    return true;
+}
+
+template <class T>
+bool RawEventQueue_SS<T>::push(T&& item)
+{
+    const size_t head = producer_.head.load(std::memory_order_relaxed);
+    const size_t tail = consumer_.tail.load(std::memory_order_acquire);
+
+    // 判断队列是否满
+    if (head - tail > mask_) {
+        return false;
+    }
+
+    // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读 head 后可见
+    buffer_[head & mask_] = std::move(item);
     producer_.head.store(head + 1, std::memory_order_release);
     return true;
 }
