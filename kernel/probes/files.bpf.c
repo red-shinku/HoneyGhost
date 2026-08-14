@@ -25,6 +25,33 @@ struct {
 } file_access_events SEC(".maps");
 
 /**
+ * @brief 判定当前进程是否处于非初始 mount 命名空间
+ * @details
+ * 路径参数是在调用进程的挂载命名空间视图中解释的，容器内与宿主机对同一路径的
+ * 语义不同。通过 task->nsproxy->mnt_ns->ns.inum 读取当前挂载命名空间的 inode：
+ * 初始挂载命名空间的 inode 恒为 0xF0000000（4026531840，宿主根命名空间，各内核
+ * 版本稳定），其余为容器 / 自定义命名空间（inode 或大于或小于该值，故用精确比较）。
+ * 读取失败按"不在命名空间中"保守处理。
+ */
+static __always_inline __u8 current_is_innamespace(void)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
+    if (!nsproxy) {
+        return 0;
+    }
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
+    if (!mnt_ns) {
+        return 0;
+    }
+    unsigned int inum = BPF_CORE_READ(mnt_ns, ns.inum);
+    return inum == 4026531840 ? 0 : 1;
+}
+
+/**
  * @brief 文件事件数据结构的初始化函数
  * @return NULL 初始化失败
  * @return struct file_access_data* 初始化成功，返回指针
@@ -36,6 +63,7 @@ static __always_inline struct file_access_data *init_file_access_data(void)
         return NULL;
     }
     init_event_head(&data->head);
+    data->is_innamespace = current_is_innamespace();
 
     return data;
 }
@@ -109,5 +137,7 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
 
     return 0;
 }
+
+char LICENSE[] SEC("license") = "GPL";
 
 // TODO: 错误处理？

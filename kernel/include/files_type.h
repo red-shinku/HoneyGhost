@@ -15,7 +15,8 @@
 struct file_access_data {
     struct event_head head;
 
-    char comm[16];       ///< 打开文件的程序
-    char filename[256];  ///< 打开文件路径，文件名
-    __u32 flags;         ///< 文件打开方式
+    char comm[16];        ///< 打开文件的程序
+    char filename[256];   ///< 打开文件路径，文件名
+    __u32 flags;          ///< 文件打开方式
+    __u8 is_innamespace;  ///< 是否处于非初始 mount 命名空间（见 files.bpf.c）
 };
