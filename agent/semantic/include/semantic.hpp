@@ -39,7 +39,7 @@ class Semantic {
 class Semantic_file : public SemanticType {
    public:
     Semantic_file(hng::RawEventQueue_SS<struct file_access_data>& in_queue,
-                  hng::RawEventQueue_SS<struct file_semantic_data>& out_queue);
+                  hng::RawEventQueue_SS<hng::file_semantic_data>& out_queue);
     ~Semantic_file();
 
     /**
@@ -49,7 +49,7 @@ class Semantic_file : public SemanticType {
 
    private:
     hng::RawEventQueue_SS<struct file_access_data>& raw_event_queue;
-    hng::RawEventQueue_SS<struct file_semantic_data>& event_queue;
+    hng::RawEventQueue_SS<hng::file_semantic_data>& event_queue;
     /**
      * @brief 执行语义化
      */

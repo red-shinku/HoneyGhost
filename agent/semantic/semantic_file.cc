@@ -18,7 +18,7 @@
 #include <string>
 
 Semantic_file::Semantic_file(hng::RawEventQueue_SS<struct file_access_data>& in_queue,
-                             hng::RawEventQueue_SS<struct file_semantic_data>& out_queue)
+                             hng::RawEventQueue_SS<hng::file_semantic_data>& out_queue)
     : raw_event_queue(in_queue), event_queue(out_queue)
 {
 }
@@ -45,8 +45,13 @@ void Semantic_file::transform()
     hng::path::semanticize(norm, sem);
 
     // 组装输出事件
-    file_semantic_data ev;
-    ev.head.head = raw.head;
+    hng::file_semantic_data ev;
+
+    ev.head.pid             = raw.head.pid;
+    ev.head.pid_start_time  = raw.head.pid_start_time;
+    ev.head.ppid            = raw.head.ppid;
+    ev.head.ppid_start_time = raw.head.ppid_start_time;
+
     std::memcpy(ev.head.comm, raw.comm, sizeof(ev.head.comm));
     ev.data.set_semantic_filename(sem);
     ev.data.set_flags(raw.flags);
