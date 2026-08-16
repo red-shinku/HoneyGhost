@@ -19,7 +19,7 @@
 namespace hng {
 
 // 文件语义事件头部：进程身份 + 发起进程名
-struct file_event_head {
+struct file_semantic_head {
     uint32_t pid;
     uint64_t pid_start_time;
     uint32_t ppid;
@@ -29,8 +29,8 @@ struct file_event_head {
 
 // 文件语义事件：手写头部 + proto 生成的载荷
 struct file_semantic_data {
-    struct file_event_head head;  ///< 头部
-    hng::file_event_data data;    ///< 载荷（语义化结果）
+    struct file_semantic_head head;  ///< 头部
+    hng::file_event_data data;       ///< 载荷（语义化结果）
 };
 
 }  // namespace hng
