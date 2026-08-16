@@ -11,6 +11,9 @@
  * @date 2026.08.12
  */
 
+#ifndef _BPF_SYSCALL_TYPE_H_
+#define _BPF_SYSCALL_TYPE_H_
+
 #include "../include/syscall_event_head.h"
 
 // syscall参数最大长度
@@ -26,7 +29,7 @@ struct process_event {
 struct exec_event {
     char filename[MAX_EXEC_FILENAME_LEN];  ///< 可执行文件路径
     char argv0[MAX_ARG_LEN];               ///< argv[0]（程序名或启动命令）
-    __u32 flags;                        ///< execveat 有效，AT_* 标志
+    __u32 flags;                           ///< execveat 有效，AT_* 标志
 };
 
 struct credential_event {
@@ -93,3 +96,5 @@ struct syscall_event {
         struct kernel_event kernel_event;
     };
 };
+
+#endif  //_BPF_SYSCALL_TYPE_H_

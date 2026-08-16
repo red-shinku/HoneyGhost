@@ -15,8 +15,8 @@
  * @date 2026.08.05
  */
 
-#ifndef __EVENT_HEAD_H
-#define __EVENT_HEAD_H
+#ifndef _BPF_EVENT_HEAD_H_
+#define _BPF_EVENT_HEAD_H_
 
 // 用户态 C++ 提供 __u32 等类型；BPF 程序由 vmlinux.h 提供
 #ifdef __cplusplus
@@ -49,4 +49,4 @@ static __always_inline void init_event_head(struct event_head *head)
 }
 #endif  // __bpf__
 
-#endif  // __EVENT_HEAD_H
+#endif  // _BPF_EVENT_HEAD_H_

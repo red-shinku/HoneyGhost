@@ -7,6 +7,9 @@
  * @date 2026.08.12
  */
 
+#ifndef _BPF_FILE_TYPE_H_
+#define _BPF_FILE_TYPE_H_
+
 #include "../include/event_head.h"
 
 /**
@@ -20,3 +23,5 @@ struct file_access_data {
     __u32 flags;          ///< 文件打开方式
     __u8 is_innamespace;  ///< 是否处于非初始 mount 命名空间（见 files.bpf.c）
 };
+
+#endif  //_BPF_FILE_TYPE_H_

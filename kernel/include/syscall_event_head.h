@@ -6,8 +6,8 @@
  * @date 2026.08.06
  */
 
-#ifndef _SYSCALLS_EVENT_HEAD_H
-#define _SYSCALLS_EVENT_HEAD_H
+#ifndef _BPF_SYSCALLS_EVENT_HEAD_H_
+#define _BPF_SYSCALLS_EVENT_HEAD_H_
 
 #include "event_head.h"
 
@@ -127,4 +127,4 @@ static __always_inline void init_syscall_event_head(struct syscall_event_head *s
 }
 #endif  // __bpf__
 
-#endif  // _SYSCALLS_EVENT_HEAD_H
+#endif  // _BPF_SYSCALLS_EVENT_HEAD_H_
