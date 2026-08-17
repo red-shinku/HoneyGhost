@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package hng;
+
+// ============================================================
+// 系统调用语义事件载荷
+//
+// 八个消息与 kernel/include/syscalls_type.h 中 union 的八种事件一一对应，
+// 字段参照 eBPF 侧原始结构（syscalls_type.h）重新定义：内容相似但不复用，
+// 不组合任何内核侧数据结构，由语义化模块填充后推向下游。
+// ============================================================
+
+// 进程生命周期事件（fork / clone / vfork / exit_group）。
+message process_semantic_data {
+  uint64 clone_flags = 1;  // 进程创建方式（CLONE_* 标志）；fork/vfork 时为 0
+  int32  exit_code   = 2;  // 进程退出码；exit_group 时有效，可为负
+  string syscall_name = 3;  // 系统调用名（如 "fork"、"clone"、"exit_group"）
+}
+
+// 执行事件（execve / execveat）。
+message exec_semantic_data {
+  string semantic_filename = 1;  // 语义化后的可执行文件路径；不保留原始 filename
+  string argv0             = 2;  // argv[0]（程序名或启动命令）
+  uint32 flags             = 3;  // execveat 有效，AT_* 标志
+  string syscall_name      = 4;  // 系统调用名（如 "execve"、"execveat"）
+}
+
+// 权限变更事件（setuid / setgid / capset）。
+message credential_semantic_data {
+  // capset 的 Capability 集合
+  message capability_set {
+    uint64 effective   = 1;  // Effective Capability
+    uint64 permitted   = 2;  // Permitted Capability
+    uint64 inheritable = 3;  // Inheritable Capability
+  }
+
+  // 具体权限操作，三者互斥（对应内核侧 credential_event 的 union）
+  oneof op {
+    uint32        setuid_uid = 1;  // setuid() 设置的新 UID
+    uint32        setgid_gid = 2;  // setgid() 设置的新 GID
+    capability_set capset    = 3;  // capset() 设置的 Capability 集合
+  }
+
+  string syscall_name = 4;  // 系统调用名（如 "setuid"、"setgid"、"capset"）
+}
+
+// 命名空间事件（unshare / setns）。
+message namespace_semantic_data {
+  uint32 ns_type = 1;  // setns() 目标 Namespace 类型（CLONE_NEW*）；unshare 涉及时亦填
+  uint64 flags   = 2;  // unshare() 的 CLONE_* 标志
+  string syscall_name = 3;  // 系统调用名（如 "unshare"、"setns"）
+}
+
+// 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。
+// 文件路径由独立的文件事件采集模块（files.bpf.c）负责，此处仅含标志位。
+message file_syscall_semantic_data {
+  uint32 flags = 1;  // open 系列的 O_* 标志；renameat2 的 RENAME_* 标志
+  uint32 mode  = 2;  // creat()/open(O_CREAT) 创建权限
+  string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
+}
+
+// 内存事件（mmap / mprotect）。
+message memory_semantic_data {
+  uint64 prot  = 1;  // PROT_* 权限
+  uint64 flags = 2;  // MAP_* 标志（mmap）或保留扩展
+  string syscall_name = 3;  // 系统调用名（如 "mmap"、"mprotect"）
+}
+
+// 网络事件（socket / bind / connect）。
+message network_syscall_semantic_data {
+  uint32 family   = 1;  // AF_INET / AF_INET6 / AF_UNIX 等地址族
+  uint32 type     = 2;  // SOCK_STREAM / SOCK_DGRAM 等
+  uint32 protocol = 3;  // IPPROTO_TCP 等协议号
+  string syscall_name = 4;  // 系统调用名（如 "socket"、"bind"、"connect"）
+}
+
+// 内核操作事件（ptrace / bpf）。
+message kernel_semantic_data {
+  uint32 command = 1;  // ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
+  uint64 arg     = 2;  // 与 command 对应的重要参数（按事件类型解释）
+  string syscall_name = 3;  // 系统调用名（如 "ptrace"、"bpf"）
+}
