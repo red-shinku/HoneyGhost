@@ -22,7 +22,7 @@
  */
 
 #include "../include/vmlinux.h"
-#include "../include/event_head.h"
+#include "../include/networks_type.h"
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
@@ -36,16 +36,6 @@
 #ifndef AF_INET6
 #define AF_INET6 10
 #endif
-
-struct network_data {
-    struct event_head head;
-
-    u32 family;     ///< AF_INET / AF_INET6地址族
-    u32 dst_ip[4];  ///< 目标IP地址，IPv4使用dst_ip[0]，IPv6使用dst_ip[0..3]
-    u16 src_port;   ///< 源端口
-    u16 dst_port;   ///< 目标端口
-    u32 protocol;   ///< 协议号
-};
 
 /**
  * @brief RingBuf，存储网络事件的数据
