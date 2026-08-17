@@ -13,13 +13,14 @@ set(HNG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ============================================================
 # 事件数据结构：proto 生成载荷 + 手写组合结构
-#   proto/file_event.proto → ${PROTO_GEN_DIR}/file_event.pb.{h,cc}
+#   proto/file_event.proto   → ${PROTO_GEN_DIR}/file_event.pb.{h,cc}
+#   proto/syscall_event.proto → ${PROTO_GEN_DIR}/syscall_event.pb.{h,cc}
 # ============================================================
 find_package(Protobuf REQUIRED)
 set(PROTO_GEN_DIR ${CMAKE_BINARY_DIR}/generated/event_data)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
-# 载荷由 proto 生成（file_event.pb.{h,cc}）；手写 file_event.hpp 为 header-only
+# 载荷由 proto 生成；手写 file_event.hpp / syscall_event.hpp 为 header-only
 add_library(hng_event_data STATIC)
 target_include_directories(hng_event_data PUBLIC
     ${PROTO_GEN_DIR}
@@ -28,6 +29,7 @@ target_include_directories(hng_event_data PUBLIC
 target_link_libraries(hng_event_data PUBLIC protobuf::libprotobuf)
 protobuf_generate(TARGET hng_event_data LANGUAGE cpp
     PROTOS proto/file_event.proto
+          proto/syscall_event.proto
     IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
     PROTOC_OUT_DIR ${PROTO_GEN_DIR}
 )
@@ -40,6 +42,7 @@ add_library(hng_semantic STATIC
     agent/semantic/path/path_rule.cc
     agent/semantic/path/token_validator.cc
     agent/semantic/semantic_file.cc
+    agent/semantic/semantic_syscall.cc
 )
 target_include_directories(hng_semantic PUBLIC
     ${HNG_SOURCE_DIR}
