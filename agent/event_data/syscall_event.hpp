@@ -17,32 +17,20 @@
  */
 
 #include "syscall_event.pb.h"
-#include <cstdint>
+#include "event_head.hpp"
 #include <variant>
 
 namespace hng {
 
-// 系统调用语义事件头部：进程身份上下文
-struct syscall_semantic_head {
-    uint32_t pid;
-    uint64_t pid_start_time;
-    uint32_t ppid;
-    uint64_t ppid_start_time;
-};
-
 // 系统调用语义事件：手写头部 + proto 生成的载荷
 // 八种事件互斥，variant 的索引即事件类别（对应 syscall_event_type 枚举）
 struct syscall_semantic_data {
-    syscall_semantic_head head;
+    hng::event_head head;
 
-    std::variant<hng::process_semantic_data,
-        hng::exec_semantic_data,
-        hng::credential_semantic_data,
-        hng::namespace_semantic_data,
-        hng::file_syscall_semantic_data,
-        hng::memory_semantic_data,
-        hng::network_syscall_semantic_data,
-        hng::kernel_semantic_data>
+    std::variant<hng::process_semantic_data, hng::exec_semantic_data,
+                 hng::credential_semantic_data, hng::namespace_semantic_data,
+                 hng::file_syscall_semantic_data, hng::memory_semantic_data,
+                 hng::network_syscall_semantic_data, hng::kernel_semantic_data>
         data;
 };
 

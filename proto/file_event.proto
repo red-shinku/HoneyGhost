@@ -7,4 +7,5 @@ message file_event_data {
   string semantic_filename = 1;  // 语义化结果路径；不保留原始 filename
   uint32 flags = 2;              // 文件打开方式（O_* 标志）
   bool is_innamespace = 3;       // 是否处于非初始 mount 命名空间，内核侧采集
+  string comm = 4;  // 发起文件访问的进程名
 }

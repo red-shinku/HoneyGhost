@@ -14,7 +14,6 @@
 #include "agent/semantic/path/include/path_normalizer.hpp"
 #include "agent/semantic/path/include/path_rule.hpp"
 
-#include <cstring>
 #include <string>
 
 Semantic_file::Semantic_file(hng::RawEventQueue_SS<struct file_access_data>& in_queue,
@@ -52,8 +51,8 @@ void Semantic_file::transform()
     ev.head.ppid            = raw.head.ppid;
     ev.head.ppid_start_time = raw.head.ppid_start_time;
 
-    std::memcpy(ev.head.comm, raw.comm, sizeof(ev.head.comm));
     ev.data.set_semantic_filename(sem);
+    ev.data.set_comm(raw.comm);  // 发起文件访问的进程名（内核侧采集，files.bpf.c）
     ev.data.set_flags(raw.flags);
     ev.data.set_is_innamespace(raw.is_innamespace != 0);  // 内核侧采集（files.bpf.c）
 
