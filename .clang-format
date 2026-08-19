@@ -4,7 +4,7 @@ SortIncludes: false
 IndentWidth: 4
 UseTab: Never
 TabWidth: 4
-ColumnLimit: 127
+ColumnLimit: 82
 
 AlignConsecutiveAssignments:
   Enabled: true
