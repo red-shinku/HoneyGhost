@@ -23,8 +23,8 @@ struct Process {
         contextID       = 0;
         is_role_root    = false;
         is_context_root = false;
-        is_backing      = false;
     }
+    Process() {}
 
     uint32_t ppid;
     uint32_t pid;
@@ -38,9 +38,6 @@ struct Process {
 
     bool is_role_root;
     bool is_context_root;
-
-    // 是否为后台进程
-    bool is_backing;
 
     // 虚拟PID，用于标记一个不存在的父进程
     // 这个父进程生前启动了一批持续运行的子进程
@@ -80,8 +77,8 @@ struct VProcessShard {
     struct KeyHash {
         std::size_t operator()(const VProcessKey& k) const
         {
-            return std::hash<int>{}(k.pid) ^
-                   (std::hash<int>{}(k.pid_start_time) << 1);
+            return std::hash<uint32_t>{}(k.pid) ^
+                   (std::hash<uint64_t>{}(k.pid_start_time) << 1);
         }
     };
     mutable std::shared_mutex smtx;
@@ -90,22 +87,15 @@ struct VProcessShard {
 
 class ProcessManager {
    public:
-    ProcessManager(/* args */);
+    ProcessManager();
     ~ProcessManager();
 
     /**
-     * @brief 查找并返回值类型的 Process
-     *  注册到 函数表 中，工作平面组件可以直接调用查询
+     * @brief 按 pid + pid_start_time 查询进程
+     *  内部同时查找存活进程树(ptree)与虚拟根树(父进程已退出的后台进程),
+     *  工作平面无需关心进程是否后台
      */
     std::optional<Process> lookup(uint32_t pid, uint64_t start_time) const;
-
-    /**
-     * @brief 在虚拟根树中按 pid + pid_start_time 查询已退出父进程的 Process
-     *  仅当父进程退出时仍留有存活子进程时才有记录；
-     *  供工作平面组件追溯已退出的父进程
-     */
-    std::optional<Process> lookup_vroot(uint32_t pid,
-                                        uint64_t pid_start_time) const;
 
     void register_pid(hng::event_head ehead);
 
@@ -113,9 +103,12 @@ class ProcessManager {
 
    private:
     // 进程树分片数量
-    static constexpr size_t kShardCount = 32;
+    static constexpr size_t kShardCount        = 32;
 
-    // 任务队列
+    // 任务队列容量(注册/注销事件),SPSC 队列,容量需为 2 的幂
+    static constexpr size_t kTaskQueueCapacity = 4096;
+
+    // 任务队列,由单一工作线程消费
     hng::RawEventQueue_SS<std::function<void()>> task;
 
     // 维护一组进程树的分片，PID 通过哈希落到对应的分片中
@@ -145,27 +138,25 @@ class ProcessManager {
      * @brief 实际删除 PID 树节点
      * @details
      *  删除时，根据子进程计数，判断是否需要
-     *  保留该 Process 为虚拟根节点
+     *  保留该 Process 为虚拟根节点。
+     *  只要 PID 从 ptree_shard 中实际删除，其父进程的孩子计数就会递减
      */
     void deletePID(uint32_t pid, uint64_t start_time);
 
     /**
-     * @brief 进程的引用查询，供控制面内部更新其缓存字段
-     *  返回的引用在锁释放后仍可被使用，仅限单工作线程内调用
+     * @brief 递增 / 递减父进程的引用计数
+     *  父进程存活时更新其 ptree 计数,已退出时回退更新虚拟根计数;
+     *  内部自行加独占锁,线程安全;两者皆未命中时静默放弃
      */
-    std::optional<Process&> lookup_ref(uint32_t pid, uint64_t start_time);
-
-    /**
-     * @brief 虚拟根进程的引用查询，供控制面内部更新其缓存字段
-     *   返回的引用在锁释放后仍可被使用，仅限单工作线程内调用
-     */
-    std::optional<Process&> lookup_vroot_ref(uint32_t pid,
-                                             uint64_t pid_start_time);
-
-    // 递增 / 递减父进程的引用计数
-    // 这是线程不安全的
     void update_child_count_add(uint32_t pid, uint64_t start_time);
     void update_child_count_decrease(uint32_t pid, uint64_t start_time);
+
+    /**
+     * @brief 递减虚拟根进程的引用计数,计数归零后清理虚拟根节点
+     *  内部自行对虚拟根所属分片加独占锁,线程安全;
+     *  目标进程不在虚拟根中时静默放弃更新
+     */
+    void update_vroot_child_count_decrease(uint32_t pid, uint64_t start_time);
 
     // TODO: 对 contextID、roleID 的 Process缓存更新（来自其他控制面组件）
 
