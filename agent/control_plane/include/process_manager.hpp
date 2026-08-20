@@ -1,51 +1,20 @@
+/**
+ * @file process_manager.hpp
+ * @brief 控制平面的 进程管理器 组件
+ * @author red_shinku
+ * @date 2026.8.20
+ */
+
 #ifndef _CONTROL_PLANE_PROCESSMANAGER_HPP
 #define _CONTROL_PLANE_PROCESSMANAGER_HPP
 
-#include <cstdint>
 #include <array>
 #include <unordered_map>
 #include <shared_mutex>
-#include <optional>
 #include <functional>
 
 #include "agent/util/include/raw_event_queue_ss.hpp"
-#include "agent/event_data/event_head.hpp"
-
-struct Process {
-    Process(const hng::event_head& ehead)
-    {
-        pid             = ehead.pid;
-        ppid            = ehead.ppid;
-        pid_start_time  = ehead.pid_start_time;
-        ppid_start_time = ehead.ppid_start_time;
-        child_count     = 0;
-        roleID          = 0;
-        contextID       = 0;
-        is_role_root    = false;
-        is_context_root = false;
-    }
-    Process() {}
-
-    uint32_t ppid;
-    uint32_t pid;
-    uint64_t pid_start_time;
-    uint64_t ppid_start_time;
-
-    uint32_t child_count;
-
-    uint16_t roleID;     ///< 缓存的roleID
-    uint32_t contextID;  ///< 缓存的contextID
-
-    bool is_role_root;
-    bool is_context_root;
-
-    // 虚拟PID，用于标记一个不存在的父进程
-    // 这个父进程生前启动了一批持续运行的子进程
-    // 这些子进程的 ppid 为 fake_pid
-    // 目前设计直接让 原 pid + starttime 作为键
-    // 故这里注释掉
-    // uint64_t fake_pid;
-};
+#include "process_service.hpp"
 
 /**
  * @brief 进程树结构的分片，使用读写锁管理一个分片
@@ -71,7 +40,7 @@ struct VProcessKey {
 };
 
 /**
- * @brief
+ * @brief 虚拟根进程的 map 分片
  */
 struct VProcessShard {
     struct KeyHash {
@@ -85,7 +54,7 @@ struct VProcessShard {
     std::unordered_map<VProcessKey, Process, KeyHash> vprocess;
 };
 
-class ProcessManager {
+class ProcessManager : public ProcessService {
    public:
     ProcessManager();
     ~ProcessManager();
@@ -95,11 +64,12 @@ class ProcessManager {
      *  内部同时查找存活进程树(ptree)与虚拟根树(父进程已退出的后台进程),
      *  工作平面无需关心进程是否后台
      */
-    std::optional<Process> lookup(uint32_t pid, uint64_t start_time) const;
+    std::optional<Process> lookup(uint32_t pid,
+                                  uint64_t start_time) const override;
 
-    void register_pid(hng::event_head ehead);
+    void register_pid(hng::event_head ehead) override;
 
-    void unregister_pid(uint32_t pid, uint64_t start_time);
+    void unregister_pid(uint32_t pid, uint64_t start_time) override;
 
    private:
     // 进程树分片数量
@@ -108,7 +78,7 @@ class ProcessManager {
     // 任务队列容量(注册/注销事件),SPSC 队列,容量需为 2 的幂
     static constexpr size_t kTaskQueueCapacity = 4096;
 
-    // 任务队列,由单一工作线程消费
+    // 任务队列,只支持单生产者单消费者的安全并发
     hng::RawEventQueue_SS<std::function<void()>> task;
 
     // 维护一组进程树的分片，PID 通过哈希落到对应的分片中
