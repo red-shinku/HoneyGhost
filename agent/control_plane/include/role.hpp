@@ -12,7 +12,6 @@ class Role {
 
    private:
     uint16_t roleID;
-    ContextManager ctxmanager;
 };
 
 #endif  //_CONTROL_PLANE_ROLE_HPP

@@ -14,8 +14,11 @@
 /**
  * @brief 上下文管理器
  * @details
- * 每个角色拥有一个，上下文管理器负责 context 结构关系的管理
- * 其中记录的 contextID 由 context maintainer 模块生成并注册
+ * 上下文管理器负责 context 结构关系的管理，是单例的
+ * 其中记录的 contextID 由工作平面的 context maintainer 模块生成并注册。
+ * 具体 Context结构 维护在工作平面本地，形式是 contextID -> Context。
+ * 工作平面本地也会维护每个角色的 Context 树关系，并且是第一手的。
+ * 控制平面这里则是权威的，所有离散无状态事件的归属标准。
  */
 class ContextManager {
    public:
@@ -31,7 +34,8 @@ class ContextManager {
 
     // 维护 context 树状关系，
     // 一个 comtextID 映射到它的上一个父级 ID
-    std::unordered_map<uint32_t, uint32_t> parent;  ///< contextID -> parent contextID
+    std::unordered_map<uint32_t, uint32_t>
+        parent;  ///< contextID -> parent contextID
 };
 
 #endif  //_CONTROL_PLANE_CONTEXTMANAGER_HPP
