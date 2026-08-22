@@ -3,6 +3,8 @@
 
 #include "agent/event_data/event_head.hpp"
 
+namespace hng {
+
 struct Process {
     Process(const hng::event_head& ehead)
     {
@@ -38,5 +40,7 @@ struct Process {
     // 故这里注释掉
     // uint64_t fake_pid;
 };
+
+}  // namespace hng
 
 #endif  //_USER_MODE_PROCESS_HPP
