@@ -23,7 +23,7 @@
 struct ProcessShard {
     // mutable，在 const 函数中锁变量允许修改
     mutable std::shared_mutex smtx;
-    std::unordered_map<uint32_t, Process> process;  ///< PID -> Process
+    std::unordered_map<uint32_t, hng::Process> process;  ///< PID -> Process
 };
 
 /**
@@ -51,7 +51,7 @@ struct VProcessShard {
         }
     };
     mutable std::shared_mutex smtx;
-    std::unordered_map<VProcessKey, Process, KeyHash> vprocess;
+    std::unordered_map<VProcessKey, hng::Process, KeyHash> vprocess;
 };
 
 class ProcessManager : public ProcessService {
@@ -64,8 +64,8 @@ class ProcessManager : public ProcessService {
      *  内部同时查找存活进程树(ptree)与虚拟根树(父进程已退出的后台进程),
      *  工作平面无需关心进程是否后台
      */
-    std::optional<Process> lookup(uint32_t pid,
-                                  uint64_t start_time) const override;
+    std::optional<hng::Process> lookup(uint32_t pid,
+                                       uint64_t start_time) const override;
 
     void register_pid(hng::event_head ehead) override;
 
@@ -102,7 +102,7 @@ class ProcessManager : public ProcessService {
      *  如果树中 PID 已存在，只有 start_time 不一致时
      *  才会直接替换旧 Process。
      */
-    void addPID(Process&& data);
+    void addPID(hng::Process&& data);
 
     /**
      * @brief 实际删除 PID 树节点
