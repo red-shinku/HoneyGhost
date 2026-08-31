@@ -17,7 +17,7 @@ class ProcessService {
    protected:
     virtual ~ProcessService() = default;
 
-   private:
+   public:
     /// @brief 查询进程信息
     virtual std::optional<hng::Process> lookup(uint32_t pid,
                                                uint64_t start_time) const = 0;
