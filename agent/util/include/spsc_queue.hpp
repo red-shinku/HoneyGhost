@@ -11,8 +11,8 @@
  * @date 2026.08.13
  */
 
-#ifndef RAW_EVENT_QUEUE_SS_HPP
-#define RAW_EVENT_QUEUE_SS_HPP
+#ifndef SPSC_QUEUE_HPP_
+#define SPSC_QUEUE_HPP_
 
 #include <atomic>
 #include <cstddef>
@@ -39,13 +39,13 @@ constexpr size_t kCacheLineSize = 64;
  *
  */
 template <class T>
-class alignas(kCacheLineSize) RawEventQueue_SS {
+class alignas(kCacheLineSize) SPSC_Queue {
    public:
-    explicit RawEventQueue_SS(size_t capacity);
-    ~RawEventQueue_SS()                                  = default;
+    explicit SPSC_Queue(size_t capacity);
+    ~SPSC_Queue()                            = default;
 
-    RawEventQueue_SS(const RawEventQueue_SS&)            = delete;
-    RawEventQueue_SS& operator=(const RawEventQueue_SS&) = delete;
+    SPSC_Queue(const SPSC_Queue&)            = delete;
+    SPSC_Queue& operator=(const SPSC_Queue&) = delete;
 
     bool push(const T& item);
     bool push(T&& item);
@@ -71,7 +71,7 @@ class alignas(kCacheLineSize) RawEventQueue_SS {
 };
 
 template <class T>
-RawEventQueue_SS<T>::RawEventQueue_SS(size_t capacity)
+SPSC_Queue<T>::SPSC_Queue(size_t capacity)
 {
     if (capacity == 0) {
         capacity = 1;
@@ -86,7 +86,7 @@ RawEventQueue_SS<T>::RawEventQueue_SS(size_t capacity)
 }
 
 template <class T>
-bool RawEventQueue_SS<T>::push(const T& item)
+bool SPSC_Queue<T>::push(const T& item)
 {
     const size_t head = producer_.head.load(std::memory_order_relaxed);
     const size_t tail = consumer_.tail.load(std::memory_order_acquire);
@@ -96,14 +96,15 @@ bool RawEventQueue_SS<T>::push(const T& item)
         return false;
     }
 
-    // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读 head 后可见
+    // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读
+    // head 后可见
     buffer_[head & mask_] = item;
     producer_.head.store(head + 1, std::memory_order_release);
     return true;
 }
 
 template <class T>
-bool RawEventQueue_SS<T>::push(T&& item)
+bool SPSC_Queue<T>::push(T&& item)
 {
     const size_t head = producer_.head.load(std::memory_order_relaxed);
     const size_t tail = consumer_.tail.load(std::memory_order_acquire);
@@ -113,18 +114,20 @@ bool RawEventQueue_SS<T>::push(T&& item)
         return false;
     }
 
-    // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读 head 后可见
+    // 写数据后以 release 发布 head：数据写入先于 head 发布，消费者 acquire 读
+    // head 后可见
     buffer_[head & mask_] = std::move(item);
     producer_.head.store(head + 1, std::memory_order_release);
     return true;
 }
 
 template <class T>
-bool RawEventQueue_SS<T>::pop(T& item)
+bool SPSC_Queue<T>::pop(T& item)
 {
     // 自身读索引：仅消费者更新，relaxed 即可
     const size_t tail = consumer_.tail.load(std::memory_order_relaxed);
-    // 对端写索引：acquire 屏障，保证读到生产者 release 发布 head 之前写入的完整数据
+    // 对端写索引：acquire 屏障，保证读到生产者 release 发布 head
+    // 之前写入的完整数据
     const size_t head = producer_.head.load(std::memory_order_acquire);
 
     // 空：head == tail
@@ -141,7 +144,7 @@ bool RawEventQueue_SS<T>::pop(T& item)
 }
 
 template <class T>
-size_t RawEventQueue_SS<T>::size() const noexcept
+size_t SPSC_Queue<T>::size() const noexcept
 {
     const size_t head = producer_.head.load(std::memory_order_relaxed);
     const size_t tail = consumer_.tail.load(std::memory_order_relaxed);
@@ -149,11 +152,11 @@ size_t RawEventQueue_SS<T>::size() const noexcept
 }
 
 template <class T>
-bool RawEventQueue_SS<T>::empty() const noexcept
+bool SPSC_Queue<T>::empty() const noexcept
 {
     return size() == 0;
 }
 
 }  // namespace hng
 
-#endif  // RAW_EVENT_QUEUE_SS_HPP
+#endif // SPSC_QUEUE_HPP_

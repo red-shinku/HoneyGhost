@@ -15,7 +15,7 @@
  * @date 2026.08.13
  */
 
-#include "./include/raw_event_queue_ss.hpp"
+#include "./include/spsc_queue.hpp"
 
 // template class hng::RawEventQueue_SS<struct file_access_data>;
 // template class hng::RawEventQueue_SS<struct syscall_event>;

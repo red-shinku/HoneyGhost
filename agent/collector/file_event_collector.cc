@@ -11,9 +11,10 @@
  */
 
 #include "./include/collector.hpp"
-#include "../kernel/include/files_type.h"
+#include "../../kernel/include/files_type.h"
 
-FileEventCollector::FileEventCollector(hng::RawEventQueue_SS<struct file_access_data>& queue)
+FileEventCollector::FileEventCollector(
+    hng::SPSC_Queue<struct file_access_data>& queue)
     : file_rawevent_queue(queue), files_collector(NULL), rb(NULL)
 {
 }
@@ -57,7 +58,8 @@ bool FileEventCollector::init()
         return false;
     }
     // this 指针作为 ctx 注册到回调
-    rb = ring_buffer__new(bpf_map__fd(files_collector->maps.file_access_events), handle_rb_event, this, NULL);
+    rb = ring_buffer__new(bpf_map__fd(files_collector->maps.file_access_events),
+                          handle_rb_event, this, NULL);
     if (!rb) {
         return false;
     }

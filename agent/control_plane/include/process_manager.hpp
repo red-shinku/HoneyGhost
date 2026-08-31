@@ -13,7 +13,7 @@
 #include <shared_mutex>
 #include <functional>
 
-#include "agent/util/include/raw_event_queue_ss.hpp"
+#include "agent/util/include/spsc_queue.hpp"
 #include "process_service.hpp"
 
 /**
@@ -79,7 +79,7 @@ class ProcessManager : public ProcessService {
     static constexpr size_t kTaskQueueCapacity = 4096;
 
     // 任务队列,只支持单生产者单消费者的安全并发
-    hng::RawEventQueue_SS<std::function<void()>> task;
+    hng::SPSC_Queue<std::function<void()>> task;
 
     // 维护一组进程树的分片，PID 通过哈希落到对应的分片中
     // 该数据结构是频繁访问的，局部的共享锁一定程度上优化了访问

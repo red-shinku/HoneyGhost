@@ -2,13 +2,13 @@
 
 #include <mutex>
 
+using namespace hng;
+
 // 进程关系管理
 
 ProcessManager::ProcessManager() : task(kTaskQueueCapacity) {}
 
 ProcessManager::~ProcessManager() {}
-
-using namespace hng;
 
 std::optional<Process> ProcessManager::lookup(uint32_t pid,
                                               uint64_t pid_start_time) const

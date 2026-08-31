@@ -1,7 +1,8 @@
 #include "./include/collector.hpp"
 #include "../kernel/include/syscalls_type.h"
 
-SyscallEventCollector::SyscallEventCollector(hng::RawEventQueue_SS<struct syscall_event>& queue)
+SyscallEventCollector::SyscallEventCollector(
+    hng::SPSC_Queue<struct syscall_event>& queue)
     : syscall_rawevent_queue(queue), syscalls_collector(NULL), rb(NULL)
 {
 }
@@ -38,7 +39,8 @@ bool SyscallEventCollector::init()
         return false;
     }
     // 将 this 指针作为 ctx 注册到回调函数中，调用回调函数时解析 ctx 获取 this
-    rb = ring_buffer__new(bpf_map__fd(syscalls_collector->maps.syscall_events), handle_rb_event, this, NULL);
+    rb = ring_buffer__new(bpf_map__fd(syscalls_collector->maps.syscall_events),
+                          handle_rb_event, this, NULL);
     if (!rb) {
         return false;
     }

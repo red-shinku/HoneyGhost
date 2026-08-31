@@ -96,7 +96,8 @@ const char* syscall_name_str(enum syscall_event_name name)
  * @brief 进程生命周期事件 → process_semantic_data
  * @details 纯搬运：clone_flags（clone 有效）与 exit_code（exit_group 有效）。
  */
-void process_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void process_to_semantic(const struct syscall_event& raw,
+                         hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::process_semantic_data>();
     d.set_clone_flags(raw.process_event.clone_flags);
@@ -109,7 +110,8 @@ void process_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_
  * @details filename 复用路径语义化规则引擎去除随机性，输出 semantic_filename；
  * argv0（程序名）为稳定语义，原样保留。
  */
-void exec_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void exec_to_semantic(const struct syscall_event& raw,
+                      hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::exec_semantic_data>();
     std::string norm, sem;
@@ -125,7 +127,8 @@ void exec_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_dat
  * @brief 权限变更事件 → credential_semantic_data
  * @details 内核侧为 union，此处按 hdr.name 归位到 oneof 的具体分支。
  */
-void credential_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void credential_to_semantic(const struct syscall_event& raw,
+                            hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::credential_semantic_data>();
     switch (raw.hdr.name) {
@@ -152,7 +155,8 @@ void credential_to_semantic(const struct syscall_event& raw, hng::syscall_semant
  * @brief 命名空间事件 → namespace_semantic_data
  * @details 纯搬运：ns_type 与 CLONE_NEW* 标志。
  */
-void namespace_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void namespace_to_semantic(const struct syscall_event& raw,
+                           hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::namespace_semantic_data>();
     d.set_ns_type(raw.namespace_event.ns_type);
@@ -165,7 +169,8 @@ void namespace_to_semantic(const struct syscall_event& raw, hng::syscall_semanti
  * @details 纯搬运：O_* / RENAME_* 标志与创建权限 mode。文件路径由独立的文件
  * 事件采集模块（files.bpf.c）负责语义化，此处不携带路径。
  */
-void file_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void file_to_semantic(const struct syscall_event& raw,
+                      hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::file_syscall_semantic_data>();
     d.set_flags(raw.file_event.flags);
@@ -177,7 +182,8 @@ void file_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_dat
  * @brief 内存事件 → memory_semantic_data
  * @details 纯搬运：PROT_* 权限与 MAP_* 标志。
  */
-void memory_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void memory_to_semantic(const struct syscall_event& raw,
+                        hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::memory_semantic_data>();
     d.set_prot(raw.memory_event.prot);
@@ -189,7 +195,8 @@ void memory_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_d
  * @brief 网络事件 → network_syscall_semantic_data
  * @details 纯搬运：地址族 / 套接字类型 / 协议号。
  */
-void network_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void network_to_semantic(const struct syscall_event& raw,
+                         hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::network_syscall_semantic_data>();
     d.set_family(raw.network_event.family);
@@ -202,7 +209,8 @@ void network_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_
  * @brief 内核操作事件 → kernel_semantic_data
  * @details 纯搬运：ptrace 请求类型或 bpf 命令及其关联参数。
  */
-void kernel_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void kernel_to_semantic(const struct syscall_event& raw,
+                        hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::kernel_semantic_data>();
     d.set_command(raw.kernel_event.command);
@@ -212,8 +220,9 @@ void kernel_to_semantic(const struct syscall_event& raw, hng::syscall_semantic_d
 
 }  // namespace
 
-Semantic_syscall::Semantic_syscall(hng::RawEventQueue_SS<struct syscall_event>& in_queue,
-                                   hng::RawEventQueue_SS<hng::syscall_semantic_data>& out_queue)
+Semantic_syscall::Semantic_syscall(
+    hng::SPSC_Queue<struct syscall_event>& in_queue,
+    hng::SPSC_Queue<hng::syscall_semantic_data>& out_queue)
     : raw_event_queue(in_queue), event_queue(out_queue)
 {
 }
@@ -244,7 +253,8 @@ void Semantic_syscall::transform()
  * hdr.type 分派到对应 helper。hdr.type 由内核侧 init_syscall_event_head 归类，
  * 此处不做重新推断。
  */
-void Semantic_syscall::transform_one(const struct syscall_event& raw, hng::syscall_semantic_data& out)
+void Semantic_syscall::transform_one(const struct syscall_event& raw,
+                                     hng::syscall_semantic_data& out)
 {
     out.head.pid             = raw.hdr.head.pid;
     out.head.pid_start_time  = raw.hdr.head.pid_start_time;

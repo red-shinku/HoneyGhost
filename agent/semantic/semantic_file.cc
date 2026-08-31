@@ -16,8 +16,8 @@
 
 #include <string>
 
-Semantic_file::Semantic_file(hng::RawEventQueue_SS<struct file_access_data>& in_queue,
-                             hng::RawEventQueue_SS<hng::file_semantic_data>& out_queue)
+Semantic_file::Semantic_file(hng::SPSC_Queue<struct file_access_data>& in_queue,
+                             hng::SPSC_Queue<hng::file_semantic_data>& out_queue)
     : raw_event_queue(in_queue), event_queue(out_queue)
 {
 }
@@ -52,9 +52,11 @@ void Semantic_file::transform()
     ev.head.ppid_start_time = raw.head.ppid_start_time;
 
     ev.data.set_semantic_filename(sem);
-    ev.data.set_comm(raw.comm);  // 发起文件访问的进程名（内核侧采集，files.bpf.c）
+    ev.data.set_comm(
+        raw.comm);  // 发起文件访问的进程名（内核侧采集，files.bpf.c）
     ev.data.set_flags(raw.flags);
-    ev.data.set_is_innamespace(raw.is_innamespace != 0);  // 内核侧采集（files.bpf.c）
+    ev.data.set_is_innamespace(raw.is_innamespace !=
+                               0);  // 内核侧采集（files.bpf.c）
 
     event_queue.push(ev);  // TODO: 下游队列满时丢事件，背压策略待定
 }
