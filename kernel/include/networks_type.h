@@ -1,5 +1,5 @@
-#ifndef _BPF_SYSCALL_TYPE_H_
-#define _BPF_SYSCALL_TYPE_H_
+#ifndef _BPF_NETWORK_TYPE_H_
+#define _BPF_NETWORK_TYPE_H_
 
 #include "./event_head.h"
 
@@ -13,4 +13,4 @@ struct network_data {
     __u32 protocol;   ///< 协议号
 };
 
-#endif  //_BPF_SYSCALL_TYPE_H_
+#endif  //_BPF_NETWORK_TYPE_H_
