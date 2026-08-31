@@ -9,11 +9,10 @@
 #define _CONTROL_PLANE_CONTEXTMANAGER_HPP
 
 #include <cstdint>
-#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 
-#include "agent/event_data/context.hpp"
+#include "context_service.hpp"
 
 /**
  * @brief 控制平面记录的一个 context 的消息
@@ -78,7 +77,7 @@ struct ParentTable {
  *
  * 回答某个 PID 属于哪个 context
  */
-class ContextManager {
+class ContextManager : public ContextService {
    public:
     ContextManager(/* args */);
     ~ContextManager();
@@ -89,7 +88,8 @@ class ContextManager {
      * @param start_time 代表进程的时间标识
      * @return 命中的 contextID；进程未归属任何 context 时返回 std::nullopt
      */
-    std::optional<uint32_t> lookup(uint32_t pid, uint64_t start_time) const;
+    std::optional<uint32_t> lookup(uint32_t pid,
+                                   uint64_t start_time) const override;
 
     /**
      * @brief 其他组件通知注册新的 contextID
@@ -99,14 +99,14 @@ class ContextManager {
      * @param pcontextID 父 context ID
      */
     void register_contextID(uint32_t pid, uint64_t start_time, uint32_t contextID,
-                            uint32_t pcontextID);
+                            uint32_t pcontextID) override;
 
     /**
      * @brief 其他组件通知注销 contextID
      * @param pid 代表进程的 pid
      * @param start_time 代表进程的时间标识
      */
-    void unregister_contextID(uint32_t pid, uint64_t start_time);
+    void unregister_contextID(uint32_t pid, uint64_t start_time) override;
 
     /**
      * @brief 通知修改 context 属性
@@ -116,7 +116,7 @@ class ContextManager {
      * @param attr 目标属性
      */
     void set_attr(uint32_t pid, uint64_t start_time, uint32_t contextID,
-                  hng::contextattr attr);
+                  hng::contextattr attr) override;
 
    private:
     // TODO: 任务队列
