@@ -17,6 +17,9 @@
 /**
  * @brief 控制平面记录的一个 context 的消息
  * @details contextID 由工作平面的 context maintainer 生成并注册
+ * Context 分为两种：一般 Context 与附属 Context。
+ * 附属 Context 依附于某个属性为 NORMAL 的 一般 Context，
+ * 代表 PID 与所依附的 Context 一致，而且没有中间状态（UNKNOWN）
  */
 struct ContextMessage {
     uint32_t contextID;
@@ -157,9 +160,10 @@ class ContextManager : public ContextService {
 
     /// @brief 设置 context 属性
     /// @details
-    /// 目标 context 可能在主 map 或附属 map 中，需要 contextID 定位
     /// 只允许 UNKNOWN 向其他属性的变更
-    /// 在 ATTACK/EXTRA_ATTACK 属性上预留钩子，会触发向 eBPF map 的注册行为
+    /// 由于附属 Context 没有中间状态(UNKNOWN)，目标 context 正常情况都在主 map
+    /// 中。在 ATTACK/EXTRA_ATTACK 属性上预留钩子，会触发向
+    /// eBPF map 的注册行为
     void set_attr_(uint32_t pid, uint64_t start_time, uint32_t contextID,
                    hng::contextattr attr);
 };
