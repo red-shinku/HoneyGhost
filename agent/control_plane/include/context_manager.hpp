@@ -88,8 +88,11 @@ class ContextManager : public ContextService {
     /// @brief 按代表进程查询其所属的 contextID
     std::optional<uint32_t> lookup(hng::Process p) const override;
 
+    /// @brief 查询附属 Context 的 ID
+    std::optional<uint32_t> lookup_extra(hng::Process p) const override;
+
     /// @brief 其他组件通知注册新的 contextID
-    void register_contextID(hng::Process p, uint32_t contextID,
+    void register_contextID(hng::Process p, ContextDeriveDecision newcontext,
                             uint32_t pcontextID) override;
 
     /// @brief 其他组件通知注销 contextID
@@ -123,18 +126,17 @@ class ContextManager : public ContextService {
     /// @details
     /// 若 (pid, start_time) 尚无主 context，则作为主 context 插入主 map；
     /// 否则作为附属 context 插入附属 map（对应 EXTRA_ATTACK）
-    /// @param pid 新 context 的代表进程的 pid
-    /// @param start_time pid 的时间标识
+    /// @param p context代表进程的唯一性表示
     /// @param contextID 新的contextID，由工作面生成
+    /// @param attr 新 context 的属性
     /// @param pcontextID 父 context ID
-    void addContextID(uint32_t pid, uint64_t start_time, uint32_t contextID,
+    void addContextID(hng::Process p, uint32_t contextID, hng::contextattr attr,
                       uint32_t pcontextID);
 
     /// @brief 实际删除 contextID
     /// @details 删除主 context 时一并删除同键的附属 context 及其 parent 记录
-    /// @param pid 代表进程的 pid
-    /// @param start_time pid 的时间标识
-    void delContextID(uint32_t pid, uint64_t start_time);
+    /// @param p context代表进程的唯一性表示
+    void delContextID(hng::Process p);
 
     /// @brief 设置 context 属性
     /// @details
@@ -142,8 +144,7 @@ class ContextManager : public ContextService {
     /// 由于附属 Context 没有中间状态(UNKNOWN)，目标 context 正常情况都在主 map
     /// 中。在 ATTACK/EXTRA_ATTACK 属性上预留钩子，会触发向
     /// eBPF map 的注册行为
-    void set_attr_(uint32_t pid, uint64_t start_time, uint32_t contextID,
-                   hng::contextattr attr);
+    void set_attr_(hng::Process p, uint32_t contextID, hng::contextattr attr);
 };
 
 #endif  //_CONTROL_PLANE_CONTEXTMANAGER_HPP
