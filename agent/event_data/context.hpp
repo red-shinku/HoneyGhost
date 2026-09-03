@@ -1,5 +1,5 @@
 #ifndef _USER_MODE_CONTEXT_HPP
-#define _USER_MODE_PROCESS_HPP
+#define _USER_MODE_CONTEXT_HPP
 
 namespace hng {
 
@@ -20,4 +20,4 @@ enum contextattr {
 
 }  // namespace hng
 
-#endif  //_USER_MODE_PROCESS_HPP
+#endif  //_USER_MODE_CONTEXT_HPP
