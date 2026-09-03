@@ -115,6 +115,7 @@ class ContextManager : public ContextService {
     // 附属 context 与主 context 共用代表进程 (pid, start_time)，
     // 即 EXTRA_ATTACK 依附于某个 NORMAL context 的情形
     // 每个主 context 至多一个附属 context，由 has_extra 标记
+    // TODO: 附属 context 如何清理？
     ContextTable extras;
 
     // 维护 context 树状关系，

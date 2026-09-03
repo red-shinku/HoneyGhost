@@ -20,7 +20,12 @@ std::optional<uint32_t> ContextManager::lookup(hng::Process p) const
 
 std::optional<uint32_t> ContextManager::lookup_extra(hng::Process p) const
 {
-    // TODO: 查询附属 contextID
+    std::shared_lock lock(extras.smtx);
+    auto it = extras.map.find(ContextKey{p.pid, p.pid_start_time});
+    if (it == extras.map.end()) {
+        return std::nullopt;
+    }
+    return it->second.contextID;
 }
 
 // TODO: 接入任务队列后，注册/注销/改属性 走异步
