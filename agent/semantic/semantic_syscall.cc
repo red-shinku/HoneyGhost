@@ -261,6 +261,10 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
     out.head.ppid            = raw.hdr.head.ppid;
     out.head.ppid_start_time = raw.hdr.head.ppid_start_time;
 
+    // head.type 为顶层事件流类别（hng::EventType，scoped 枚举），与 raw.hdr.type
+    // （syscall_event_type 的八类细分）不同义；本流恒为 syscall 语义流，故固定。
+    out.head.type            = hng::EventType::SYSCALL_EVENT;
+
     switch (raw.hdr.type) {
         case PROCESS_EVENT:
             process_to_semantic(raw, out);

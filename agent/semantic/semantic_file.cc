@@ -50,6 +50,7 @@ void Semantic_file::transform()
     ev.head.pid_start_time  = raw.head.pid_start_time;
     ev.head.ppid            = raw.head.ppid;
     ev.head.ppid_start_time = raw.head.ppid_start_time;
+    ev.head.type            = hng::EventType::FILE_EVENT;  // 顶层事件流类别：文件访问语义流
 
     ev.data.set_semantic_filename(sem);
     ev.data.set_comm(

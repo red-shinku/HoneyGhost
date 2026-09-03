@@ -2,8 +2,9 @@
  * @file file_event.hpp
  * @brief 文件语义事件的输出结构定义
  * @details
- * 头部（hng::event_head）为手写通用 POD 结构，仅含进程身份字段；进程名 comm
- * 与文件访问属性同属载荷（hng::file_event_data，由 proto 生成）。两者组合为
+ * 头部（hng::event_head）为手写通用 POD 结构，记录进程身份与顶层事件大类
+ * （hng::EventType）；进程名 comm 与文件访问属性同属载荷（hng::file_event_data，
+ * 由 proto 生成）。两者组合为
  * file_semantic_data，
  * 即语义化模块推向下游（控制平面 / 检测）队列的元素类型。
  *

@@ -43,8 +43,8 @@ int g_fail = 0;
  */
 void run_one(const struct syscall_event& raw, hng::syscall_semantic_data& out)
 {
-    hng::RawEventQueue_SS<struct syscall_event> in_queue(8);
-    hng::RawEventQueue_SS<hng::syscall_semantic_data> out_queue(8);
+    hng::SPSC_Queue<struct syscall_event> in_queue(8);
+    hng::SPSC_Queue<hng::syscall_semantic_data> out_queue(8);
     Semantic_syscall sem(in_queue, out_queue);
     sem.transform_one(raw, out);
 }
@@ -52,7 +52,8 @@ void run_one(const struct syscall_event& raw, hng::syscall_semantic_data& out)
 /**
  * @brief 填充原始事件的身份头部与 syscall 名/类型
  */
-void fill_head(struct syscall_event& raw, enum syscall_event_name name, enum syscall_event_type type)
+void fill_head(struct syscall_event& raw, enum syscall_event_name name,
+               enum syscall_event_type type)
 {
     raw.hdr.head.pid             = 1234;
     raw.hdr.head.pid_start_time  = 111;
@@ -71,6 +72,7 @@ void check_head(const hng::syscall_semantic_data& out)
     CHECK(out.head.pid_start_time == 111, "head pid_start_time");
     CHECK(out.head.ppid == 100, "head ppid");
     CHECK(out.head.ppid_start_time == 222, "head ppid_start_time");
+    CHECK(out.head.type == hng::EventType::SYSCALL_EVENT, "head type");
 }
 
 // ---- 进程生命周期 ----
@@ -83,10 +85,10 @@ struct ProcessCase {
 };
 
 constexpr ProcessCase kProcessCases[] = {
-    {SYSCALL_EVENT_FORK,       0,               0,  "fork"},
-    {SYSCALL_EVENT_CLONE,      0x00000100,      0,  "clone"},  // CLONE_VM
-    {SYSCALL_EVENT_VFORK,      0,               0,  "vfork"},
-    {SYSCALL_EVENT_EXIT_GROUP, 0,              -1, "exit_group"},
+    {SYSCALL_EVENT_FORK, 0, 0, "fork"},
+    {SYSCALL_EVENT_CLONE, 0x00000100, 0, "clone"},  // CLONE_VM
+    {SYSCALL_EVENT_VFORK, 0, 0, "vfork"},
+    {SYSCALL_EVENT_EXIT_GROUP, 0, -1, "exit_group"},
 };
 
 void run_process()
@@ -123,9 +125,10 @@ struct ExecCase {
 };
 
 constexpr ExecCase kExecCases[] = {
-    {SYSCALL_EVENT_EXECVE,   "/bin/ls",            "ls",      0,       "/bin/ls",         "execve"},
-    {SYSCALL_EVENT_EXECVE,   "/tmp/abc123def456",  "tmpbin",  0,       "/tmp/*",          "execve"},
-    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "p",       0x100,   "/proc/{pid}/**",  "execveat"},
+    {SYSCALL_EVENT_EXECVE, "/bin/ls", "ls", 0, "/bin/ls", "execve"},
+    {SYSCALL_EVENT_EXECVE, "/tmp/abc123def456", "tmpbin", 0, "/tmp/*", "execve"},
+    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "p", 0x100, "/proc/{pid}/**",
+     "execveat"},
 };
 
 void run_exec()
@@ -133,8 +136,10 @@ void run_exec()
     for (const ExecCase& c : kExecCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, EXEC_EVENT);
-        std::strncpy(raw.exec_event.filename, c.filename, sizeof(raw.exec_event.filename) - 1);
-        std::strncpy(raw.exec_event.argv0, c.argv0, sizeof(raw.exec_event.argv0) - 1);
+        std::strncpy(raw.exec_event.filename, c.filename,
+                     sizeof(raw.exec_event.filename) - 1);
+        std::strncpy(raw.exec_event.argv0, c.argv0,
+                     sizeof(raw.exec_event.argv0) - 1);
         raw.exec_event.flags = c.flags;
 
         hng::syscall_semantic_data out;
@@ -163,8 +168,8 @@ struct CredentialCase {
 
 constexpr CredentialCase kCredentialCases[] = {
     {SYSCALL_EVENT_SETUID, 1000, 0, 0, 0, 0, "setuid"},
-    {SYSCALL_EVENT_SETGID, 0,    2000, 0, 0, 0, "setgid"},
-    {SYSCALL_EVENT_CAPSET, 0,    0, 0x1, 0x2, 0x4, "capset"},
+    {SYSCALL_EVENT_SETGID, 0, 2000, 0, 0, 0, "setgid"},
+    {SYSCALL_EVENT_CAPSET, 0, 0, 0x1, 0x2, 0x4, "capset"},
 };
 
 void run_credential()
@@ -198,15 +203,22 @@ void run_credential()
         }
         CHECK(d->syscall_name() == c.name_str, "credential syscall_name");
         if (c.name == SYSCALL_EVENT_SETUID) {
-            CHECK(d->has_setuid_uid() && d->setuid_uid() == c.uid, "credential setuid uid");
-        } else if (c.name == SYSCALL_EVENT_SETGID) {
-            CHECK(d->has_setgid_gid() && d->setgid_gid() == c.gid, "credential setgid gid");
-        } else {
+            CHECK(d->has_setuid_uid() && d->setuid_uid() == c.uid,
+                  "credential setuid uid");
+        }
+        else if (c.name == SYSCALL_EVENT_SETGID) {
+            CHECK(d->has_setgid_gid() && d->setgid_gid() == c.gid,
+                  "credential setgid gid");
+        }
+        else {
             CHECK(d->has_capset(), "credential capset branch");
             if (d->has_capset()) {
-                CHECK(d->capset().effective() == c.cap_eff, "credential capset effective");
-                CHECK(d->capset().permitted() == c.cap_perm, "credential capset permitted");
-                CHECK(d->capset().inheritable() == c.cap_inh, "credential capset inheritable");
+                CHECK(d->capset().effective() == c.cap_eff,
+                      "credential capset effective");
+                CHECK(d->capset().permitted() == c.cap_perm,
+                      "credential capset permitted");
+                CHECK(d->capset().inheritable() == c.cap_inh,
+                      "credential capset inheritable");
             }
         }
     }
@@ -224,7 +236,7 @@ struct NamespaceCase {
 constexpr NamespaceCase kNamespaceCases[] = {
     // 0x40000000 = CLONE_NEWNET
     {SYSCALL_EVENT_UNSHARE, 0x40000000, 0x40000000, "unshare"},
-    {SYSCALL_EVENT_SETNS,   0x40000000, 0,          "setns"},
+    {SYSCALL_EVENT_SETNS, 0x40000000, 0, "setns"},
 };
 
 void run_namespace()
@@ -259,9 +271,9 @@ struct FileCase {
 };
 
 constexpr FileCase kFileCases[] = {
-    {SYSCALL_EVENT_OPEN,      O_CREAT | O_WRONLY | O_TRUNC, 0644, "open"},
-    {SYSCALL_EVENT_RENAMEAT2, 1 /* RENAME_NOREPLACE */,     0,    "renameat2"},
-    {SYSCALL_EVENT_UNLINK,    0,                             0,    "unlink"},
+    {SYSCALL_EVENT_OPEN, O_CREAT | O_WRONLY | O_TRUNC, 0644, "open"},
+    {SYSCALL_EVENT_RENAMEAT2, 1 /* RENAME_NOREPLACE */, 0, "renameat2"},
+    {SYSCALL_EVENT_UNLINK, 0, 0, "unlink"},
 };
 
 void run_file()
@@ -296,8 +308,9 @@ struct MemoryCase {
 };
 
 constexpr MemoryCase kMemoryCases[] = {
-    {SYSCALL_EVENT_MMAP,     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, "mmap"},
-    {SYSCALL_EVENT_MPROTECT, PROT_EXEC,             0,                            "mprotect"},
+    {SYSCALL_EVENT_MMAP, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+     "mmap"},
+    {SYSCALL_EVENT_MPROTECT, PROT_EXEC, 0, "mprotect"},
 };
 
 void run_memory()
@@ -333,9 +346,9 @@ struct NetworkCase {
 };
 
 constexpr NetworkCase kNetworkCases[] = {
-    {SYSCALL_EVENT_SOCKET,  AF_INET,   SOCK_STREAM, IPPROTO_TCP, "socket"},
-    {SYSCALL_EVENT_CONNECT, AF_INET6,  0,           0,           "connect"},
-    {SYSCALL_EVENT_BIND,    AF_UNIX,   0,           0,           "bind"},
+    {SYSCALL_EVENT_SOCKET, AF_INET, SOCK_STREAM, IPPROTO_TCP, "socket"},
+    {SYSCALL_EVENT_CONNECT, AF_INET6, 0, 0, "connect"},
+    {SYSCALL_EVENT_BIND, AF_UNIX, 0, 0, "bind"},
 };
 
 void run_network()
@@ -350,7 +363,8 @@ void run_network()
         hng::syscall_semantic_data out;
         run_one(raw, out);
         check_head(out);
-        const auto* d = std::get_if<hng::network_syscall_semantic_data>(&out.data);
+        const auto* d =
+            std::get_if<hng::network_syscall_semantic_data>(&out.data);
         CHECK(d != nullptr, "network variant type");
         if (!d) {
             continue;
@@ -373,7 +387,7 @@ struct KernelCase {
 
 constexpr KernelCase kKernelCases[] = {
     {SYSCALL_EVENT_PTRACE, PTRACE_PEEKDATA, 999, "ptrace"},
-    {SYSCALL_EVENT_BPF,    0,               4096, "bpf"},  // 0 = BPF_MAP_CREATE
+    {SYSCALL_EVENT_BPF, 0, 4096, "bpf"},  // 0 = BPF_MAP_CREATE
 };
 
 void run_kernel()
@@ -415,15 +429,16 @@ int main()
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
         return 1;
     }
-    std::printf("ALL PASS (process=%zu exec=%zu credential=%zu namespace=%zu file=%zu "
-                "memory=%zu network=%zu kernel=%zu)\n",
-                sizeof(kProcessCases) / sizeof(ProcessCase),
-                sizeof(kExecCases) / sizeof(ExecCase),
-                sizeof(kCredentialCases) / sizeof(CredentialCase),
-                sizeof(kNamespaceCases) / sizeof(NamespaceCase),
-                sizeof(kFileCases) / sizeof(FileCase),
-                sizeof(kMemoryCases) / sizeof(MemoryCase),
-                sizeof(kNetworkCases) / sizeof(NetworkCase),
-                sizeof(kKernelCases) / sizeof(KernelCase));
+    std::printf(
+        "ALL PASS (process=%zu exec=%zu credential=%zu namespace=%zu file=%zu "
+        "memory=%zu network=%zu kernel=%zu)\n",
+        sizeof(kProcessCases) / sizeof(ProcessCase),
+        sizeof(kExecCases) / sizeof(ExecCase),
+        sizeof(kCredentialCases) / sizeof(CredentialCase),
+        sizeof(kNamespaceCases) / sizeof(NamespaceCase),
+        sizeof(kFileCases) / sizeof(FileCase),
+        sizeof(kMemoryCases) / sizeof(MemoryCase),
+        sizeof(kNetworkCases) / sizeof(NetworkCase),
+        sizeof(kKernelCases) / sizeof(KernelCase));
     return 0;
 }
