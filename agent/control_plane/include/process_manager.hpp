@@ -23,7 +23,8 @@
 struct ProcessShard {
     // mutable，在 const 函数中锁变量允许修改
     mutable std::shared_mutex smtx;
-    std::unordered_map<uint32_t, hng::Process> process;  ///< PID -> Process
+    std::unordered_map<uint32_t, hng::ProcessMessage>
+        process;  ///< PID -> Process
 };
 
 /**
@@ -51,7 +52,7 @@ struct VProcessShard {
         }
     };
     mutable std::shared_mutex smtx;
-    std::unordered_map<VProcessKey, hng::Process, KeyHash> vprocess;
+    std::unordered_map<VProcessKey, hng::ProcessMessage, KeyHash> vprocess;
 };
 
 class ProcessManager : public ProcessService {
@@ -64,12 +65,11 @@ class ProcessManager : public ProcessService {
      *  内部同时查找存活进程树(ptree)与虚拟根树(父进程已退出的后台进程),
      *  工作平面无需关心进程是否后台
      */
-    std::optional<hng::Process> lookup(uint32_t pid,
-                                       uint64_t start_time) const override;
+    std::optional<hng::ProcessMessage> lookup(hng::Process p) const override;
 
     void register_pid(hng::event_head ehead) override;
 
-    void unregister_pid(uint32_t pid, uint64_t start_time) override;
+    void unregister_pid(hng::Process p) override;
 
    private:
     // 进程树分片数量
@@ -102,7 +102,7 @@ class ProcessManager : public ProcessService {
      *  如果树中 PID 已存在，只有 start_time 不一致时
      *  才会直接替换旧 Process。
      */
-    void addPID(hng::Process&& data);
+    void addPID(hng::ProcessMessage&& data);
 
     /**
      * @brief 实际删除 PID 树节点
@@ -111,22 +111,22 @@ class ProcessManager : public ProcessService {
      *  保留该 Process 为虚拟根节点。
      *  只要 PID 从 ptree_shard 中实际删除，其父进程的孩子计数就会递减
      */
-    void deletePID(uint32_t pid, uint64_t start_time);
+    void deletePID(hng::Process p);
 
     /**
      * @brief 递增 / 递减父进程的引用计数
      *  父进程存活时更新其 ptree 计数,已退出时回退更新虚拟根计数;
      *  内部自行加独占锁,线程安全;两者皆未命中时静默放弃
      */
-    void update_child_count_add(uint32_t pid, uint64_t start_time);
-    void update_child_count_decrease(uint32_t pid, uint64_t start_time);
+    void update_child_count_add(hng::Process p);
+    void update_child_count_decrease(hng::Process p);
 
     /**
      * @brief 递减虚拟根进程的引用计数,计数归零后清理虚拟根节点
      *  内部自行对虚拟根所属分片加独占锁,线程安全;
      *  目标进程不在虚拟根中时静默放弃更新
      */
-    void update_vroot_child_count_decrease(uint32_t pid, uint64_t start_time);
+    void update_vroot_child_count_decrease(hng::Process p);
 
     // TODO: 对 contextID、roleID 的 Process缓存更新（来自其他控制面组件）
 

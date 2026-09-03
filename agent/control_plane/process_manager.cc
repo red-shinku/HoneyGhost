@@ -2,29 +2,26 @@
 
 #include <mutex>
 
-using namespace hng;
-
 // 进程关系管理
 
 ProcessManager::ProcessManager() : task(kTaskQueueCapacity) {}
 
 ProcessManager::~ProcessManager() {}
 
-std::optional<Process> ProcessManager::lookup(uint32_t pid,
-                                              uint64_t pid_start_time) const
+std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
 {
     // 先查存活进程树
-    auto& shard_ref = ptree_shard[shard_index(pid)];
+    auto& shard_ref = ptree_shard[shard_index(p.pid)];
     std::shared_lock lock(shard_ref.smtx);
-    auto it = shard_ref.process.find(pid);
+    auto it = shard_ref.process.find(p.pid);
     if (it != shard_ref.process.end() &&
-        it->second.pid_start_time == pid_start_time) {
+        it->second.pid_start_time == p.pid_start_time) {
         return it->second;
     }
     // 未命中则回退虚拟根树(父进程已退出的后台进程)
-    auto& vshard_ref = vptree_root[shard_index(pid)];
+    auto& vshard_ref = vptree_root[shard_index(p.pid)];
     std::shared_lock vlock(vshard_ref.smtx);
-    auto vit = vshard_ref.vprocess.find(VProcessKey{pid, pid_start_time});
+    auto vit = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
     if (vit == vshard_ref.vprocess.end()) {
         return std::nullopt;
     }
@@ -34,19 +31,19 @@ std::optional<Process> ProcessManager::lookup(uint32_t pid,
 void ProcessManager::register_pid(hng::event_head ehead)
 {
     auto t = [this, ehead]() {
-        Process p = Process(ehead);
+        hng::ProcessMessage p = hng::ProcessMessage(ehead);
         addPID(std::move(p));
     };
     task.push(t);
 }
 
-void ProcessManager::unregister_pid(uint32_t pid, uint64_t pid_start_time)
+void ProcessManager::unregister_pid(hng::Process p)
 {
-    auto t = [this, pid, pid_start_time]() { deletePID(pid, pid_start_time); };
+    auto t = [this, p]() { deletePID(p); };
     task.push(t);
 }
 
-void ProcessManager::addPID(Process&& data)
+void ProcessManager::addPID(hng::ProcessMessage&& data)
 {
     uint32_t ppid    = data.ppid;
     uint64_t ppid_st = data.ppid_start_time;
@@ -68,26 +65,26 @@ void ProcessManager::addPID(Process&& data)
         }
     }  // 释放本分片锁后再更新父进程计数,避免同线程重入自锁
 
-    update_child_count_add(ppid, ppid_st);
+    update_child_count_add(hng::Process{ppid, ppid_st});
 }
 
-void ProcessManager::deletePID(uint32_t pid, uint64_t pid_start_time)
+void ProcessManager::deletePID(hng::Process p)
 {
     uint32_t ppid              = 0;
     uint64_t ppid_st           = 0;
-    auto& shard_ref            = ptree_shard[shard_index(pid)];
+    auto& shard_ref            = ptree_shard[shard_index(p.pid)];
 
     bool need_parent_decrement = false;
-    std::optional<Process> vroot_proc;
+    std::optional<hng::ProcessMessage> vroot_proc;
 
     {
         std::unique_lock lock(shard_ref.smtx);
 
-        auto it = shard_ref.process.find(pid);
+        auto it = shard_ref.process.find(p.pid);
         if (it == shard_ref.process.end()) {
             return;
         }
-        if (pid_start_time != it->second.pid_start_time) {
+        if (p.pid_start_time != it->second.pid_start_time) {
             return;
         }
         ppid    = it->second.ppid;
@@ -105,52 +102,51 @@ void ProcessManager::deletePID(uint32_t pid, uint64_t pid_start_time)
     }  // 释放本分片锁后再更新父进程计数与虚拟根,避免重入自锁
 
     if (vroot_proc.has_value()) {
-        auto& vshard_ref = vptree_root[shard_index(pid)];
+        auto& vshard_ref = vptree_root[shard_index(p.pid)];
         std::unique_lock vlock(vshard_ref.smtx);
-        vshard_ref.vprocess.emplace(VProcessKey{pid, pid_start_time},
+        vshard_ref.vprocess.emplace(VProcessKey{p.pid, p.pid_start_time},
                                     std::move(*vroot_proc));
     }
 
     if (need_parent_decrement) {
         // 父进程可能在 ptree(存活)或虚拟根(已退出)中,由函数内部回退处理
-        update_child_count_decrease(ppid, ppid_st);
+        update_child_count_decrease(hng::Process{ppid, ppid_st});
     }
 }
 
-void ProcessManager::update_child_count_add(uint32_t pid, uint64_t pid_start_time)
+void ProcessManager::update_child_count_add(hng::Process p)
 {
     // 父进程存活:递增其 ptree 计数
     {
-        auto& shard_ref = ptree_shard[shard_index(pid)];
+        auto& shard_ref = ptree_shard[shard_index(p.pid)];
         std::unique_lock lock(shard_ref.smtx);
 
-        auto it = shard_ref.process.find(pid);
+        auto it = shard_ref.process.find(p.pid);
         if (it != shard_ref.process.end() &&
-            it->second.pid_start_time == pid_start_time) {
+            it->second.pid_start_time == p.pid_start_time) {
             it->second.child_count += 1;
             return;
         }
     }
     // 父进程已退出:回退递增虚拟根计数(事件乱序时保持计数一致)
-    auto& vshard_ref = vptree_root[shard_index(pid)];
+    auto& vshard_ref = vptree_root[shard_index(p.pid)];
     std::unique_lock lock(vshard_ref.smtx);
 
-    auto it = vshard_ref.vprocess.find(VProcessKey{pid, pid_start_time});
+    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
     if (it != vshard_ref.vprocess.end()) {
         it->second.child_count += 1;
     }
 }
 
-void ProcessManager::update_child_count_decrease(uint32_t pid,
-                                                 uint64_t pid_start_time)
+void ProcessManager::update_child_count_decrease(hng::Process p)
 {
     {
-        auto& shard_ref = ptree_shard[shard_index(pid)];
+        auto& shard_ref = ptree_shard[shard_index(p.pid)];
         std::unique_lock lock(shard_ref.smtx);
 
-        auto it = shard_ref.process.find(pid);
+        auto it = shard_ref.process.find(p.pid);
         if (it != shard_ref.process.end() &&
-            it->second.pid_start_time == pid_start_time) {
+            it->second.pid_start_time == p.pid_start_time) {
             if (it->second.child_count > 0) {
                 it->second.child_count -= 1;
             }
@@ -158,16 +154,15 @@ void ProcessManager::update_child_count_decrease(uint32_t pid,
         }
     }
 
-    update_vroot_child_count_decrease(pid, pid_start_time);
+    update_vroot_child_count_decrease(hng::Process{p.pid, p.pid_start_time});
 }
 
-void ProcessManager::update_vroot_child_count_decrease(uint32_t pid,
-                                                       uint64_t pid_start_time)
+void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
 {
-    auto& vshard_ref = vptree_root[shard_index(pid)];
+    auto& vshard_ref = vptree_root[shard_index(p.pid)];
     std::unique_lock lock(vshard_ref.smtx);
 
-    auto it = vshard_ref.vprocess.find(VProcessKey{pid, pid_start_time});
+    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
     if (it == vshard_ref.vprocess.end()) {
         return;
     }

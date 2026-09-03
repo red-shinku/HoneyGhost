@@ -19,14 +19,13 @@ class ProcessService {
 
    public:
     /// @brief 查询进程信息
-    virtual std::optional<hng::Process> lookup(uint32_t pid,
-                                               uint64_t start_time) const = 0;
+    virtual std::optional<hng::ProcessMessage> lookup(hng::Process p) const = 0;
 
     /// @brief 通知控制平面注册新 PID
-    virtual void register_pid(hng::event_head ehead)                      = 0;
+    virtual void register_pid(hng::event_head ehead)                        = 0;
 
     /// @brief 通知控制平面注销 PID
-    virtual void unregister_pid(uint32_t pid, uint64_t start_time)        = 0;
+    virtual void unregister_pid(hng::Process p)                             = 0;
 };
 
 #endif  // _CONTROL_PLANE_PROCESSSERVICE_HPP

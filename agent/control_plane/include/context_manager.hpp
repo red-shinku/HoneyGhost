@@ -86,18 +86,17 @@ class ContextManager : public ContextService {
     ~ContextManager();
 
     /// @brief 按代表进程查询其所属的 contextID
-    std::optional<uint32_t> lookup(uint32_t pid,
-                                   uint64_t start_time) const override;
+    std::optional<uint32_t> lookup(hng::Process p) const override;
 
     /// @brief 其他组件通知注册新的 contextID
-    void register_contextID(uint32_t pid, uint64_t start_time, uint32_t contextID,
+    void register_contextID(hng::Process p, uint32_t contextID,
                             uint32_t pcontextID) override;
 
     /// @brief 其他组件通知注销 contextID
-    void unregister_contextID(uint32_t pid, uint64_t start_time) override;
+    void unregister_contextID(hng::Process p) override;
 
     /// @brief 通知修改 context 属性
-    void set_attr(uint32_t pid, uint64_t start_time, uint32_t contextID,
+    void set_attr(hng::Process p, uint32_t contextID,
                   hng::contextattr attr) override;
 
    private:
