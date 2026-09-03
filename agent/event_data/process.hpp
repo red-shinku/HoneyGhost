@@ -7,14 +7,15 @@ namespace hng {
 
 /**
  * @brief 进程的唯一性表示
- * TODO:
- * 所有使用双参数的调用、以及在其他模块中已经定义的相同结构，需要统一使用本结构
  */
 struct Process {
     uint32_t pid;
     uint64_t pid_start_time;
 };
 
+/**
+ * @brief 进程详细信息
+ */
 struct ProcessMessage {
     ProcessMessage(const hng::event_head& ehead)
     {
