@@ -126,7 +126,12 @@ class ContextManager : public ContextService {
     /// 插入的新 context 默认属性为 UNKNOWN
     /// @details
     /// 若 (pid, start_time) 尚无主 context，则作为主 context 插入主 map；
-    /// 否则作为附属 context 插入附属 map（对应 EXTRA_ATTACK）
+    /// 否则作为附属 context 插入附属 map（对应 EXTRA_ATTACK）。
+    ///
+    /// 关于 context
+    /// 泄漏（孤儿context、附属context意外作为主context插入到主表中），这个问题在
+    /// FIFO 任务队列以及单线程跑 context_manager 的情况下是安全的
+    ///
     /// @param p context代表进程的唯一性表示
     /// @param contextID 新的contextID，由工作面生成
     /// @param attr 新 context 的属性
