@@ -14,27 +14,28 @@
 
 #include "agent/event_data/file_event.hpp"
 #include "agent/event_data/syscall_event.hpp"
+#include "agent/detector/include/score.hpp"
 
 /**
  * @brief 一个Context的活动数据
- * 一个 DetectContext 大致对应到一个 Context。
- * 相比之下 Context 较狭义，其上下文信息只是系统调用语义链。
- * DetectContext 则是由系统调用语义链、文件访问、
+ * 一个 DetectContext 大致对应到一个 Context。这里
+ * 的 Context 是设计文档中提到的概念
+ * DetectContext 是由系统调用语义链、文件访问、
  * 网络连接、IPC 这四个维度组成的上下文，以及其中各维度的
- * 异常分值
+ * 异常分值，可以看作 Context 概念的具象。
  */
 struct DetectContext {
     // TODO: 用于 Context 序列学习的 Context 标识，可能是其根进程的启动名？
 
-    // 最近系统调用序列与异常分值
+    // 最近系统调用序列
     RecentSyscallSeq syscall_seq_recent;
-    float syscall_seq_score = 0.0f;
 
-    // 实时文件访问集合与异常分值
+    // 实时文件访问集合
     std::unordered_set<hng::file_semantic_data> file_visiting_list;
-    float file_visiting_score = 0.0f;
 
     // TODO: 网络连接/IPC集合
+
+    Score score;  ///< 多维度评分信息
 };
 
 struct RecentSyscallSeq {
