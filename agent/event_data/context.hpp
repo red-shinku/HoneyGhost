@@ -11,7 +11,7 @@ namespace hng {
  * NORMAL 和 ATTACK 都有自己独立的代表 PID。
  * EXTRA_ATTACK 属性只属于附属 context。
  */
-enum contextattr {
+enum class contextattr : uint8_t {
     NORMAL,        ///< 正常上下文
     UNKNOWN,       ///< 正在观察中
     ATTACK,        ///< 攻击上下文

@@ -130,7 +130,7 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
 
         if (it->second.contextID == contextID) {
             // 目标在主 context
-            if (it->second.attr == hng::UNKNOWN) {
+            if (it->second.attr == hng::contextattr::UNKNOWN) {
                 it->second.attr = attr;
                 changed         = true;
             }
@@ -141,7 +141,7 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
             std::unique_lock xlock(extras.smtx);
             auto eit = extras.map.find(ContextKey{p.pid, p.pid_start_time});
             if (eit != extras.map.end() && eit->second.contextID == contextID) {
-                if (eit->second.attr == hng::UNKNOWN) {
+                if (eit->second.attr == hng::contextattr::UNKNOWN) {
                     eit->second.attr = attr;
                     changed          = true;
                 }
@@ -154,10 +154,10 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
     }
 
     switch (attr) {
-        case hng::ATTACK:
+        case hng::contextattr::ATTACK:
             // TODO: ATTACK 预留钩子
             break;
-        case hng::EXTRA_ATTACK:
+        case hng::contextattr::EXTRA_ATTACK:
             // TODO: EXTRA_ATTACK 预留钩子
             break;
         default:
