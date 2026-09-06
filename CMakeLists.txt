@@ -50,6 +50,18 @@ target_include_directories(hng_semantic PUBLIC
 target_link_libraries(hng_semantic PUBLIC hng_event_data)
 
 # ============================================================
+# context 派生规则模块
+# ============================================================
+add_library(hng_context_rule STATIC
+    agent/context/rule/derive_types.cc
+    agent/context/rule/pending_table.cc
+)
+target_include_directories(hng_context_rule PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_context_rule PUBLIC hng_event_data)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
