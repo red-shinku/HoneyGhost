@@ -27,3 +27,7 @@ add_test(NAME test_semantic_syscall COMMAND test_semantic_syscall)
 add_executable(test_context_rule test_context_rule.cc)
 target_link_libraries(test_context_rule PRIVATE hng_context_rule)
 add_test(NAME test_context_rule COMMAND test_context_rule)
+
+add_executable(test_context_maintainer test_context_maintainer.cc)
+target_link_libraries(test_context_maintainer PRIVATE hng_context_maintainer)
+add_test(NAME test_context_maintainer COMMAND test_context_maintainer)
