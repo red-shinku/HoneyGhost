@@ -79,16 +79,15 @@ void check_head(const hng::syscall_semantic_data& out)
 
 struct ProcessCase {
     enum syscall_event_name name;
-    __u64 clone_flags;
     __s32 exit_code;
     const char* name_str;
 };
 
 constexpr ProcessCase kProcessCases[] = {
-    {SYSCALL_EVENT_FORK, 0, 0, "fork"},
-    {SYSCALL_EVENT_CLONE, 0x00000100, 0, "clone"},  // CLONE_VM
-    {SYSCALL_EVENT_VFORK, 0, 0, "vfork"},
-    {SYSCALL_EVENT_EXIT_GROUP, 0, -1, "exit_group"},
+    {SYSCALL_EVENT_FORK, 0, "fork"},
+    {SYSCALL_EVENT_CLONE, 0, "clone"},  // 枚举保留，诞生事件统一归 "fork"
+    {SYSCALL_EVENT_VFORK, 0, "vfork"},
+    {SYSCALL_EVENT_EXIT_GROUP, -1, "exit_group"},
 };
 
 void run_process()
@@ -96,8 +95,7 @@ void run_process()
     for (const ProcessCase& c : kProcessCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, PROCESS_EVENT);
-        raw.process_event.clone_flags = c.clone_flags;
-        raw.process_event.exit_code   = c.exit_code;
+        raw.process_event.exit_code = c.exit_code;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -107,7 +105,6 @@ void run_process()
         if (!d) {
             continue;
         }
-        CHECK(d->clone_flags() == c.clone_flags, "process clone_flags");
         CHECK(d->exit_code() == c.exit_code, "process exit_code");
         CHECK(d->syscall_name() == c.name_str, "process syscall_name");
     }
@@ -119,16 +116,19 @@ struct ExecCase {
     enum syscall_event_name name;
     const char* filename;
     const char* argv0;
+    const char* argv1;
     __u32 flags;
     const char* expect_sem;
     const char* name_str;
 };
 
 constexpr ExecCase kExecCases[] = {
-    {SYSCALL_EVENT_EXECVE, "/bin/ls", "ls", 0, "/bin/ls", "execve"},
-    {SYSCALL_EVENT_EXECVE, "/tmp/abc123def456", "tmpbin", 0, "/tmp/*", "execve"},
-    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "p", 0x100, "/proc/{pid}/**",
-     "execveat"},
+    {SYSCALL_EVENT_EXECVE, "/bin/bash", "bash", "deploy.sh", 0, "/bin/bash",
+     "execve"},
+    {SYSCALL_EVENT_EXECVE, "/tmp/abc123def456", "tmpbin", "", 0, "/tmp/*",
+     "execve"},
+    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "p", "-c", 0x100,
+     "/proc/{pid}/**", "execveat"},
 };
 
 void run_exec()
@@ -140,6 +140,8 @@ void run_exec()
                      sizeof(raw.exec_event.filename) - 1);
         std::strncpy(raw.exec_event.argv0, c.argv0,
                      sizeof(raw.exec_event.argv0) - 1);
+        std::strncpy(raw.exec_event.argv1, c.argv1,
+                     sizeof(raw.exec_event.argv1) - 1);
         raw.exec_event.flags = c.flags;
 
         hng::syscall_semantic_data out;
@@ -152,6 +154,7 @@ void run_exec()
         }
         CHECK(d->semantic_filename() == c.expect_sem, "exec semantic_filename");
         CHECK(d->argv0() == c.argv0, "exec argv0");
+        CHECK(d->argv1() == c.argv1, "exec argv1");
         CHECK(d->flags() == c.flags, "exec flags");
         CHECK(d->syscall_name() == c.name_str, "exec syscall_name");
     }
