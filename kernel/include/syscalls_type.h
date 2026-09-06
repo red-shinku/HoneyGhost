@@ -22,14 +22,16 @@
 #define MAX_EXEC_FILENAME_LEN 256
 
 struct process_event {
-    __u64 clone_flags;  ///< clone 有效，新进程的创建方式
-    __s32 exit_code;    ///< exit_group 有效
+    // （kprobe wake_up_new_task），事件头 head 即新进程，因此不再携带
+    // clone_flags（原用于区分 clone 创建线程/进程，现由 head 语义替代）。
+    __s32 exit_code;  ///< exit_group 的退出码
 };
 
 struct exec_event {
     char filename[MAX_EXEC_FILENAME_LEN];  ///< 可执行文件路径
     char argv0[MAX_ARG_LEN];               ///< argv[0]（程序名或启动命令）
-    __u32 flags;                           ///< execveat 有效，AT_* 标志
+    char argv1[MAX_ARG_LEN];  ///< argv[1]（第一个参数；无参数时为空串）
+    __u32 flags;              ///< execveat 有效，AT_* 标志
 };
 
 struct credential_event {
@@ -51,7 +53,8 @@ struct credential_event {
 };
 
 struct namespace_event {
-    __u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare() 涉及的 Namespace
+    __u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare()
+                    ///< 涉及的 Namespace
     __u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
 };
 

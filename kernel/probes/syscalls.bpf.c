@@ -10,12 +10,16 @@
  * @date 2026.08.06
  */
 
-#include "./include/vmlinux.h"
+#include "../include/vmlinux.h"
 #include "../include/syscalls_type.h"
 #include "../include/uapi_const.h"
 
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+
+// PF_KTHREAD（内核线程标志，include/linux/sched.h），非 UAPI，此处显式取值
+#define PF_KTHREAD 0x00200000
 
 /**
  * @brief RingBuf，存储syscall事件的数据
@@ -37,30 +41,35 @@ struct {
  * @return NULL 失败
  * @return struct syscall_event* 成功
  */
-static __always_inline struct syscall_event *init_process_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_process_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    event->process_event.clone_flags = 0;
-    event->process_event.exit_code   = 0;
+    event->process_event.exit_code = 0;
     return event;
 }
 
 /**
  * @brief exec_event 初始化
  */
-static __always_inline struct syscall_event *init_exec_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_exec_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    __builtin_memset(event->exec_event.filename, 0, sizeof(event->exec_event.filename));
+    __builtin_memset(event->exec_event.filename, 0,
+                     sizeof(event->exec_event.filename));
     __builtin_memset(event->exec_event.argv0, 0, sizeof(event->exec_event.argv0));
+    __builtin_memset(event->exec_event.argv1, 0, sizeof(event->exec_event.argv1));
     event->exec_event.flags = 0;
     return event;
 }
@@ -68,9 +77,11 @@ static __always_inline struct syscall_event *init_exec_event(enum syscall_event_
 /**
  * @brief credential_event 初始化
  */
-static __always_inline struct syscall_event *init_credential_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_credential_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -85,9 +96,11 @@ static __always_inline struct syscall_event *init_credential_event(enum syscall_
 /**
  * @brief namespace_event 初始化
  */
-static __always_inline struct syscall_event *init_namespace_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_namespace_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -100,9 +113,11 @@ static __always_inline struct syscall_event *init_namespace_event(enum syscall_e
 /**
  * @brief file_event 初始化
  */
-static __always_inline struct syscall_event *init_file_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_file_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -115,9 +130,11 @@ static __always_inline struct syscall_event *init_file_event(enum syscall_event_
 /**
  * @brief memory_event 初始化
  */
-static __always_inline struct syscall_event *init_memory_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_memory_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -130,9 +147,11 @@ static __always_inline struct syscall_event *init_memory_event(enum syscall_even
 /**
  * @brief network_event 初始化
  */
-static __always_inline struct syscall_event *init_network_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_network_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -146,9 +165,11 @@ static __always_inline struct syscall_event *init_network_event(enum syscall_eve
 /**
  * @brief kernel_event 初始化
  */
-static __always_inline struct syscall_event *init_kernel_event(enum syscall_event_name name)
+static __always_inline struct syscall_event *init_kernel_event(
+    enum syscall_event_name name)
 {
-    struct syscall_event *event = bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
+    struct syscall_event *event =
+        bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
         return NULL;
     }
@@ -159,40 +180,53 @@ static __always_inline struct syscall_event *init_kernel_event(enum syscall_even
 }
 
 // ============================================================================
-// PROCESS_EVENT 类别的syscall 拦截
+// PROCESS_EVENT 类别的进程生命周期拦截
 // ============================================================================
 
-SEC("tracepoint/syscalls/sys_enter_fork")
-int trace_fork(struct trace_event_raw_sys_enter *ctx)
+/**
+ * @brief 进程诞生事件（fork / clone / vfork / clone3 创建新线程组）
+ * @details
+ * fork 类 sys_enter tracepoint 触发于子进程存在之前，只能拿到父进程身份，
+ * 无法提供新进程。故使用 kprobe wake_up_new_task：入参即新任务的 task_struct，
+ * 事件头手动填为 新进程为主体——pid=子 tgid+start_time、ppid=父进程，满足
+ * "fork 事件给出子进程身份"。原 fork/clone/vfork 的区分及 clone_flags 不再采集；
+ * 线程/内核线程在此直接过滤。
+ * @param ctx kprobe 寄存器上下文，PARM1 = struct task_struct *child
+ */
+SEC("kprobe/wake_up_new_task")
+int trace_process_birth(struct pt_regs *ctx)
 {
+    struct task_struct *child = (struct task_struct *)PT_REGS_PARM1(ctx);
+    if (!child) {
+        return 0;
+    }
+
+    // 仅"新线程组"构成新进程：线程（clone 共享 tgid）与内核线程不产生进程上下文
+    __u32 child_pid  = BPF_CORE_READ(child, pid);
+    __u32 child_tgid = BPF_CORE_READ(child, tgid);
+    if (child_pid != child_tgid) {
+        return 0;  // 线程创建
+    }
+    if (BPF_CORE_READ(child, flags) & PF_KTHREAD) {
+        return 0;  // 内核线程
+    }
+
+    struct task_struct *parent = BPF_CORE_READ(child, real_parent);
+    if (!parent) {
+        return 0;
+    }
+
     struct syscall_event *event = init_process_event(SYSCALL_EVENT_FORK);
-    if (!event) return 0;
+    if (!event) {
+        return 0;
+    }
+    // 事件头 = 新进程自身：与子进程后续事件经 init_event_head 产出的头部一致，
+    // (pid/pid_start_time, ppid/ppid_start_time) 可精确作为 Process 键与父进程键
+    event->hdr.head.pid             = child_tgid;
+    event->hdr.head.pid_start_time  = BPF_CORE_READ(child, start_time);
+    event->hdr.head.ppid            = BPF_CORE_READ(parent, tgid);
+    event->hdr.head.ppid_start_time = BPF_CORE_READ(parent, start_time);
 
-    // fork() 无参数，clone_flags 保持 0
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_clone")
-int trace_clone(struct trace_event_raw_sys_enter *ctx)
-{
-    struct syscall_event *event = init_process_event(SYSCALL_EVENT_CLONE);
-    if (!event) return 0;
-
-    // args[0]: clone_flags
-    event->process_event.clone_flags = ctx->args[0];
-
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_vfork")
-int trace_vfork(struct trace_event_raw_sys_enter *ctx)
-{
-    struct syscall_event *event = init_process_event(SYSCALL_EVENT_VFORK);
-    if (!event) return 0;
-
-    // vfork() 无参数，clone_flags 保持 0
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
 }
@@ -221,12 +255,25 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     // args[0]: const char *filename
-    bpf_probe_read_user_str(&event->exec_event.filename, sizeof(event->exec_event.filename), (void *)ctx->args[0]);
+    bpf_probe_read_user_str(&event->exec_event.filename,
+                            sizeof(event->exec_event.filename),
+                            (void *)ctx->args[0]);
 
-    // args[1]: char *const argv[] — 读取 argv[0] 作为程序名
+    // args[1]: char *const argv[] — 读取 argv[0]/argv[1]
     const char *arg0_ptr = NULL;
-    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[1]) == 0 && arg0_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv0, sizeof(event->exec_event.argv0), arg0_ptr);
+    const char *arg1_ptr = NULL;
+    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[1]) ==
+            0 &&
+        arg0_ptr) {
+        bpf_probe_read_user_str(&event->exec_event.argv0,
+                                sizeof(event->exec_event.argv0), arg0_ptr);
+    }
+    // argv[1] = argv 数组第二个元素（用户可空终止，读取失败留空）
+    if (bpf_probe_read_user(&arg1_ptr, sizeof(arg1_ptr),
+                            (void *)(ctx->args[1] + sizeof(char *))) == 0 &&
+        arg1_ptr) {
+        bpf_probe_read_user_str(&event->exec_event.argv1,
+                                sizeof(event->exec_event.argv1), arg1_ptr);
     }
 
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
@@ -240,12 +287,25 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     // args[1]: const char *filename
-    bpf_probe_read_user_str(&event->exec_event.filename, sizeof(event->exec_event.filename), (void *)ctx->args[1]);
+    bpf_probe_read_user_str(&event->exec_event.filename,
+                            sizeof(event->exec_event.filename),
+                            (void *)ctx->args[1]);
 
-    // args[2]: char *const argv[]
+    // args[2]: char *const argv[] — 读取 argv[0]/argv[1]
     const char *arg0_ptr = NULL;
-    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[2]) == 0 && arg0_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv0, sizeof(event->exec_event.argv0), arg0_ptr);
+    const char *arg1_ptr = NULL;
+    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[2]) ==
+            0 &&
+        arg0_ptr) {
+        bpf_probe_read_user_str(&event->exec_event.argv0,
+                                sizeof(event->exec_event.argv0), arg0_ptr);
+    }
+    // argv[1] = argv 数组第二个元素
+    if (bpf_probe_read_user(&arg1_ptr, sizeof(arg1_ptr),
+                            (void *)(ctx->args[2] + sizeof(char *))) == 0 &&
+        arg1_ptr) {
+        bpf_probe_read_user_str(&event->exec_event.argv1,
+                                sizeof(event->exec_event.argv1), arg1_ptr);
     }
 
     // args[4]: int flags
@@ -291,14 +351,19 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_credential_event(SYSCALL_EVENT_CAPSET);
     if (!event) return 0;
 
-    // args[1]: const cap_user_data_t datap — 指向 struct __user_cap_data_struct[2]
+    // args[1]: const cap_user_data_t datap — 指向 struct
+    // __user_cap_data_struct[2]
     //   data[0] 为 capabilities 0-31，data[1] 为 capabilities 32-63
     //   合并为 64 位值以兼容 v2/v3 能力集
     struct __user_cap_data_struct cap_data[2];
-    if (bpf_probe_read_user(cap_data, sizeof(cap_data), (void *)ctx->args[1]) == 0) {
-        event->credential_event.capset.effective   = ((u64)cap_data[1].effective << 32) | cap_data[0].effective;
-        event->credential_event.capset.permitted   = ((u64)cap_data[1].permitted << 32) | cap_data[0].permitted;
-        event->credential_event.capset.inheritable = ((u64)cap_data[1].inheritable << 32) | cap_data[0].inheritable;
+    if (bpf_probe_read_user(cap_data, sizeof(cap_data), (void *)ctx->args[1]) ==
+        0) {
+        event->credential_event.capset.effective =
+            ((u64)cap_data[1].effective << 32) | cap_data[0].effective;
+        event->credential_event.capset.permitted =
+            ((u64)cap_data[1].permitted << 32) | cap_data[0].permitted;
+        event->credential_event.capset.inheritable =
+            ((u64)cap_data[1].inheritable << 32) | cap_data[0].inheritable;
     }
 
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);

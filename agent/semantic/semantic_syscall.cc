@@ -94,13 +94,13 @@ const char* syscall_name_str(enum syscall_event_name name)
 
 /**
  * @brief 进程生命周期事件 → process_semantic_data
- * @details 纯搬运：clone_flags（clone 有效）与 exit_code（exit_group 有效）。
+ * @details 纯搬运 exit_code（exit_group 有效）。进程诞生事件无载荷字段，新进程
+ * 身份由事件头给出（head.pid/pid_start_time=新进程，ppid=父进程）。
  */
 void process_to_semantic(const struct syscall_event& raw,
                          hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::process_semantic_data>();
-    d.set_clone_flags(raw.process_event.clone_flags);
     d.set_exit_code(raw.process_event.exit_code);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
@@ -108,7 +108,7 @@ void process_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 执行事件 → exec_semantic_data
  * @details filename 复用路径语义化规则引擎去除随机性，输出 semantic_filename；
- * argv0（程序名）为稳定语义，原样保留。
+ * argv0/argv1（程序名与首参数）为稳定语义，原样保留。
  */
 void exec_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
@@ -119,6 +119,7 @@ void exec_to_semantic(const struct syscall_event& raw,
     hng::path::semanticize(norm, sem);
     d.set_semantic_filename(sem);
     d.set_argv0(raw.exec_event.argv0);
+    d.set_argv1(raw.exec_event.argv1);
     d.set_flags(raw.exec_event.flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }

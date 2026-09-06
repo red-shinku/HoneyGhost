@@ -10,17 +10,19 @@ package hng;
 // 不组合任何内核侧数据结构，由语义化模块填充后推向下游。
 // ============================================================
 
-// 进程生命周期事件（fork / clone / vfork / exit_group）。
+// 进程生命周期事件：fork(进程诞生) / exit_group。
+// fork 类 sys_enter 采集已迁移为「进程诞生」事件（kprobe wake_up_new_task），
+// 事件头 head.pid/pid_start_time 即新进程、head.ppid/ppid_start_time 即父进程，
 message process_semantic_data {
-  uint64 clone_flags = 1;  // 进程创建方式（CLONE_* 标志）；fork/vfork 时为 0
   int32  exit_code   = 2;  // 进程退出码；exit_group 时有效，可为负
-  string syscall_name = 3;  // 系统调用名（如 "fork"、"clone"、"exit_group"）
+  string syscall_name = 3;  // 语义名（如 "fork"、"exit_group"）
 }
 
 // 执行事件（execve / execveat）。
 message exec_semantic_data {
   string semantic_filename = 1;  // 语义化后的可执行文件路径；不保留原始 filename
   string argv0             = 2;  // argv[0]（程序名或启动命令）
+  string argv1             = 5;  // argv[1]（第一个参数；无参数时为空）
   uint32 flags             = 3;  // execveat 有效，AT_* 标志
   string syscall_name      = 4;  // 系统调用名（如 "execve"、"execveat"）
 }

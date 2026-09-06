@@ -25,6 +25,9 @@ namespace hng {
 
 // 系统调用语义事件：手写头部 + proto 生成的载荷
 // 八种事件互斥，variant 的索引即事件类别（对应 syscall_event_type 枚举）
+// 说明：process 事件为「进程诞生(fork) / 进程退出(exit_group)」两种生命周期
+// 语义，事件头即主体进程自身（诞生事件 head 为新进程、ppid 为父），故无需额外
+// 字段区分是否新进程——线程（clone 共享 tgid）不产生诞生事件，由头语义保证。
 struct syscall_semantic_data {
     hng::event_head head;
 
