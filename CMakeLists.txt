@@ -62,6 +62,20 @@ target_include_directories(hng_context_rule PUBLIC
 target_link_libraries(hng_context_rule PUBLIC hng_event_data)
 
 # ============================================================
+# context 维护模块（ContextMaintainer，消费 rule 派生规则，经 ContextService 接入）
+# ============================================================
+add_library(hng_context_maintainer STATIC
+    agent/context/context_maintainer.cc
+)
+target_include_directories(hng_context_maintainer PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_context_maintainer PUBLIC
+    hng_context_rule
+    hng_event_data
+)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
