@@ -1,5 +1,5 @@
 /**
- * @file raw_event_queue_ss.cc
+ * @file spsc_queue.cc
  * @brief SPSC 无锁队列 —— 显式实例化单元
  * @details
  *
@@ -17,5 +17,7 @@
 
 #include "./include/spsc_queue.hpp"
 
-// template class hng::RawEventQueue_SS<struct file_access_data>;
-// template class hng::RawEventQueue_SS<struct syscall_event>;
+template class hng::SPSC_Queue<struct file_access_data>;
+template class hng::SPSC_Queue<struct syscall_event>;
+template class hng::SPSC_Queue<struct network_data>;
+// TODO: 显式实例化
