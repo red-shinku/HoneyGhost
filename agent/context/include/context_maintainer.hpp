@@ -81,10 +81,10 @@ class ContextMaintainer {
      * @} endgroup Participate_in_derive_decision
      */
 
-    /// @brief 是否进入附属 Context（分值判定，本任务不实现）
+    /// @brief TODO: 是否进入附属 Context（分值判定）
     ContextExtraDecision should_extra_context(hng::EventType type, Score score);
 
-    /// @brief 尝试更新 UNKNOWN Context 的属性（本任务不实现）
+    /// @brief TODO: 尝试更新 UNKNOWN Context 的属性 （分值判定）
     void try_update_context_attributes(Score score);
 
     /// @brief contextID 归属查询（纯查询，无副作用）
@@ -111,6 +111,11 @@ class ContextMaintainer {
 
     /// @brief 分配下一个 contextID（0 保留作"无父 context"哨兵，故从 1 起）
     uint32_t allocate_context_id();
+
+    /// @brief 追溯输入进程所属 context 的根进程
+    /// @param p 要进行追溯的进程
+    /// @return 本 context 根进程
+    hng::Process trace_context_root_process(hng::Process p);
 
     /// 以 (pid, start_time) 为键的进程包装结构
     struct ProcessKey {
