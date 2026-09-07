@@ -7,8 +7,9 @@
 #include "kernel/include/syscalls_type.h"
 #include "kernel/include/networks_type.h"
 
-#include "../../kernel/files.skel.h"
-#include "../../kernel/syscalls.skel.h"
+#include "kernel/files.skel.h"
+#include "kernel/syscalls.skel.h"
+#include "kernel/networks.skel.h"
 
 #include <array>
 #include <memory>
@@ -18,7 +19,8 @@
 
 class CollectorType {
    public:
-    virtual void collect()   = 0;
+    virtual void collect() = 0;
+    virtual bool init();
     virtual ~CollectorType() = default;
 };
 
@@ -38,7 +40,7 @@ class FileEventCollector : public CollectorType {
     FileEventCollector(hng::SPSC_Queue<struct file_access_data>& queue);
     ~FileEventCollector();
 
-    bool init();
+    bool init() override;
     void collect() override;
 
    private:
@@ -53,7 +55,7 @@ class SyscallEventCollector : public CollectorType {
     SyscallEventCollector(hng::SPSC_Queue<struct syscall_event>& queue);
     ~SyscallEventCollector();
 
-    bool init();
+    bool init() override;
     void collect() override;
 
    private:
@@ -68,10 +70,14 @@ class NetworkEventCollector : public CollectorType {
     NetworkEventCollector(hng::SPSC_Queue<struct network_data>& queue);
     ~NetworkEventCollector();
 
+    bool init() override;
     void collect() override;
 
    private:
     hng::SPSC_Queue<struct network_data>& network_rawevent_queue;
+    struct networks_collector* networks_collector;
+    struct ring_buffer* rb;
+    static int handle_rb_event(void* ctx, void* data, size_t data_sz);
 };
 
 class IPCEventCollector : public CollectorType {

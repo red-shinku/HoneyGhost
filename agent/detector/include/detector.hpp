@@ -12,6 +12,7 @@
 #include <cstdint>
 
 #include "detect_context.hpp"
+#include "util/include/spsc_queue.hpp"
 
 /**
  * @brief 异常检测器
@@ -28,7 +29,7 @@ class Detector {
     Detector(/* args */);
     ~Detector();
 
-    // TODO: detect: 1) 归类 2) 计算该维度异常 3) 异常融合
+    // TODO: detect: 1) 决定下一次 pop 的队列 2) 计算该维度异常 3) 异常融合
     void detect();
 
    private:
@@ -37,6 +38,10 @@ class Detector {
 
     /// @brief ContextID 父树，Detector 的本地缓存（且第一手）
     std::unordered_map<uint32_t, uint32_t> context_parent;
+
+    // 该队列的上游是语义化模块
+    hng::SPSC_Queue<hng::syscall_semantic_data>& syscall_event_queue;
+    hng::SPSC_Queue<hng::file_semantic_data>& file_event_queue;
 };
 
 #endif  // DETECTOR_HPP_
