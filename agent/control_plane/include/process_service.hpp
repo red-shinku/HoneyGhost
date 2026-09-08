@@ -13,19 +13,25 @@
 
 #include "agent/event_data/process.hpp"
 
-class ProcessService {
+class ProcessLookupService {
    protected:
-    virtual ~ProcessService() = default;
+    virtual ~ProcessLookupService() = default;
 
    public:
     /// @brief 查询进程信息
     virtual std::optional<hng::ProcessMessage> lookup(hng::Process p) const = 0;
+};
 
+class ProcessJoinService {
+   protected:
+    virtual ~ProcessJoinService() = default;
+
+   public:
     /// @brief 通知控制平面注册新 PID
-    virtual void register_pid(hng::event_head ehead)                        = 0;
+    virtual void register_pid(hng::event_head ehead) = 0;
 
     /// @brief 通知控制平面注销 PID
-    virtual void unregister_pid(hng::Process p)                             = 0;
+    virtual void unregister_pid(hng::Process p)      = 0;
 };
 
 #endif  // _CONTROL_PLANE_PROCESSSERVICE_HPP
