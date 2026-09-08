@@ -56,7 +56,7 @@ struct VProcessShard {
     std::unordered_map<VProcessKey, hng::ProcessMessage, KeyHash> vprocess;
 };
 
-class ProcessManager : public ProcessService {
+class ProcessManager : public ProcessLookupService, public ProcessJoinService {
    public:
     ProcessManager();
     ~ProcessManager();
