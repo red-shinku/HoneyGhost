@@ -8,6 +8,11 @@ ProcessManager::ProcessManager() : task(kTaskQueueCapacity) {}
 
 ProcessManager::~ProcessManager() {}
 
+void ProcessManager::set_context_service(ContextService* svc)
+{
+    context_service_ = svc;
+}
+
 std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
 {
     // 先查存活进程树
@@ -75,6 +80,7 @@ void ProcessManager::deletePID(hng::Process p)
     auto& shard_ref            = ptree_shard[shard_index(p.pid)];
 
     bool need_parent_decrement = false;
+    bool fully_removed         = false;  // 实进程树与虚拟根树中均已无此进程记录
     std::optional<hng::ProcessMessage> vroot_proc;
 
     {
@@ -93,10 +99,12 @@ void ProcessManager::deletePID(hng::Process p)
         // 直接删除节点，或移动至 虚拟根
         if (it->second.child_count == 0) {
             shard_ref.process.erase(it);
+            fully_removed = true;  // 无子进程,不需保留虚拟根,进程被完全删除
         }
         else {
             vroot_proc.emplace(std::move(it->second));
             shard_ref.process.erase(it);
+            // 尚有存活子进程,保留为虚拟根,暂不算完全删除
         }
         need_parent_decrement = true;
     }  // 释放本分片锁后再更新父进程计数与虚拟根,避免重入自锁
@@ -111,6 +119,10 @@ void ProcessManager::deletePID(hng::Process p)
     if (need_parent_decrement) {
         // 父进程可能在 ptree(存活)或虚拟根(已退出)中,由函数内部回退处理
         update_child_count_decrease(hng::Process{ppid, ppid_st});
+    }
+
+    if (fully_removed) {
+        notify_process_fully_removed(p);
     }
 }
 
@@ -160,17 +172,33 @@ void ProcessManager::update_child_count_decrease(hng::Process p)
 void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
 {
     auto& vshard_ref = vptree_root[shard_index(p.pid)];
-    std::unique_lock lock(vshard_ref.smtx);
+    bool evicted     = false;  // 虚拟根被逐出 → 进程被完全删除
 
-    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
-    if (it == vshard_ref.vprocess.end()) {
-        return;
+    {
+        std::unique_lock lock(vshard_ref.smtx);
+
+        auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
+        if (it == vshard_ref.vprocess.end()) {
+            return;
+        }
+        if (it->second.child_count > 0) {
+            it->second.child_count -= 1;
+        }
+        if (it->second.child_count == 0) {
+            // 子进程计数归零,不再被追溯,清理虚拟根节点
+            vshard_ref.vprocess.erase(it);
+            evicted = true;
+        }
+    }  // 释放分片锁后再上报,避免跨组件持锁
+
+    if (evicted) {
+        notify_process_fully_removed(p);
     }
-    if (it->second.child_count > 0) {
-        it->second.child_count -= 1;
-    }
-    if (it->second.child_count == 0) {
-        // 子进程计数归零,不再被追溯,清理虚拟根节点
-        vshard_ref.vprocess.erase(it);
+}
+
+void ProcessManager::notify_process_fully_removed(hng::Process p)
+{
+    if (context_service_) {
+        context_service_->on_process_removed(p);
     }
 }
