@@ -114,7 +114,10 @@ struct ToContextRootTable {
  * 负责：
  * 1) 回答任意进程属于哪个 context
  */
-class ContextManager : public ContextService {
+class ContextManager : public ContextLookupService,
+                       public ContextJoinService,
+                       public ContextUpdateService,
+                       public ContextClearService {
    public:
     ContextManager(/* args */);
     ~ContextManager();

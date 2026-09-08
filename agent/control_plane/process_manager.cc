@@ -8,9 +8,9 @@ ProcessManager::ProcessManager() : task(kTaskQueueCapacity) {}
 
 ProcessManager::~ProcessManager() {}
 
-void ProcessManager::set_context_service(ContextService* svc)
+void ProcessManager::set_context_service(ContextClearService* c_svc)
 {
-    context_service_ = svc;
+    ctx_clear_service_ = c_svc;
 }
 
 std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
@@ -198,7 +198,7 @@ void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
 
 void ProcessManager::notify_process_fully_removed(hng::Process p)
 {
-    if (context_service_) {
-        context_service_->on_process_removed(p);
+    if (ctx_clear_service_) {
+        ctx_clear_service_->on_process_removed(p);
     }
 }

@@ -73,7 +73,7 @@ class ProcessManager : public ProcessService {
     void unregister_pid(hng::Process p) override;
 
     /// @brief 注入 contextservice 接口依赖
-    void set_context_service(ContextService* svc);
+    void set_context_service(ContextClearService* c_svc);
 
    private:
     // 进程树分片数量
@@ -82,7 +82,7 @@ class ProcessManager : public ProcessService {
     // 任务队列容量(注册/注销事件),SPSC 队列,容量需为 2 的幂
     static constexpr size_t kTaskQueueCapacity = 4096;
 
-    ContextService* context_service_           = nullptr;
+    ContextClearService* ctx_clear_service_    = nullptr;
 
     // 任务队列,只支持单生产者单消费者的安全并发
     hng::SPSC_Queue<std::function<void()>> task;
