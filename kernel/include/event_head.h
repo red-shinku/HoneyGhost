@@ -23,6 +23,16 @@
 #include <linux/types.h>
 #endif
 
+/**
+ * @brief 启动时间由内核纳秒值换算为 tick 的除数：NSEC_PER_SEC / USER_HZ
+ * @details
+ * /proc/<pid>/stat 字段 22 取自 start_boottime （分辨率
+ * 10ms），eBPF 侧须换算到同一精度。
+ *
+ * USER_HZ 是 ABI 固定值 100（include/asm-generic/param.h），不是运行时可变量。
+ */
+#define NSEC_PER_USER_HZ 10000000ULL
+
 struct event_head {
     __u32 pid;
     __u64 pid_start_time;
@@ -43,9 +53,10 @@ static __always_inline void init_event_head(struct event_head *head)
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     // 以进程为最小单元
     head->pid                = BPF_CORE_READ(task, tgid);
-    head->pid_start_time     = BPF_CORE_READ(task, start_time);
-    head->ppid               = BPF_CORE_READ(task, real_parent, tgid);
-    head->ppid_start_time    = BPF_CORE_READ(task, real_parent, start_time);
+    head->pid_start_time = BPF_CORE_READ(task, start_boottime) / NSEC_PER_USER_HZ;
+    head->ppid           = BPF_CORE_READ(task, real_parent, tgid);
+    head->ppid_start_time =
+        BPF_CORE_READ(task, real_parent, start_boottime) / NSEC_PER_USER_HZ;
 }
 #endif  // __bpf__
 
