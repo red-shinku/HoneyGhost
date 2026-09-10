@@ -14,7 +14,8 @@ struct Process {
 };
 
 /**
- * @brief 进程详细信息
+ * @brief 进程结构记录
+ * @details 仅承载进程自身的结构事实（身份与父子关系、存活子进程计数）。
  */
 struct ProcessMessage {
     ProcessMessage(const hng::event_head& ehead)
@@ -24,10 +25,6 @@ struct ProcessMessage {
         pid_start_time  = ehead.pid_start_time;
         ppid_start_time = ehead.ppid_start_time;
         child_count     = 0;
-        roleID          = 0;
-        contextID       = 0;
-        is_role_root    = false;
-        is_context_root = false;
     }
     ProcessMessage() {}
 
@@ -37,12 +34,6 @@ struct ProcessMessage {
     uint64_t ppid_start_time;
 
     uint32_t child_count;
-
-    uint16_t roleID;     ///< 缓存的roleID
-    uint32_t contextID;  ///< 缓存的contextID
-
-    bool is_role_root;
-    bool is_context_root;
 
     // 虚拟PID，用于标记一个不存在的父进程
     // 这个父进程生前启动了一批持续运行的子进程

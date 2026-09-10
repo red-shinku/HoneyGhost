@@ -14,6 +14,7 @@
 #include <functional>
 
 #include "agent/util/include/spsc_queue.hpp"
+#include "context_service.hpp"
 #include "process_service.hpp"
 
 /**
@@ -55,7 +56,7 @@ struct VProcessShard {
     std::unordered_map<VProcessKey, hng::ProcessMessage, KeyHash> vprocess;
 };
 
-class ProcessManager : public ProcessService {
+class ProcessManager : public ProcessLookupService, public ProcessJoinService {
    public:
     ProcessManager();
     ~ProcessManager();
@@ -71,12 +72,17 @@ class ProcessManager : public ProcessService {
 
     void unregister_pid(hng::Process p) override;
 
+    /// @brief 注入 contextservice 接口依赖
+    void set_context_service(ContextClearService* c_svc);
+
    private:
     // 进程树分片数量
     static constexpr size_t kShardCount        = 32;
 
     // 任务队列容量(注册/注销事件),SPSC 队列,容量需为 2 的幂
     static constexpr size_t kTaskQueueCapacity = 4096;
+
+    ContextClearService* ctx_clear_service_    = nullptr;
 
     // 任务队列,只支持单生产者单消费者的安全并发
     hng::SPSC_Queue<std::function<void()>> task;
@@ -128,7 +134,12 @@ class ProcessManager : public ProcessService {
      */
     void update_vroot_child_count_decrease(hng::Process p);
 
-    // TODO: 对 contextID、roleID 的 Process缓存更新（来自其他控制面组件）
+    /**
+     * @brief 上报进程已被完全删除
+     * @details 进程在实进程树与虚拟根树中均无记录、不再可能被追溯时调用，
+     *  则通知其他组件 尝试删除与该进程 相关联的记录
+     */
+    void notify_process_fully_removed(hng::Process p);
 
     void work();
 };

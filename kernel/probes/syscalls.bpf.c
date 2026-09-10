@@ -223,9 +223,11 @@ int trace_process_birth(struct pt_regs *ctx)
     // 事件头 = 新进程自身：与子进程后续事件经 init_event_head 产出的头部一致，
     // (pid/pid_start_time, ppid/ppid_start_time) 可精确作为 Process 键与父进程键
     event->hdr.head.pid             = child_tgid;
-    event->hdr.head.pid_start_time  = BPF_CORE_READ(child, start_time);
+    event->hdr.head.pid_start_time =
+        BPF_CORE_READ(child, start_boottime) / NSEC_PER_USER_HZ;
     event->hdr.head.ppid            = BPF_CORE_READ(parent, tgid);
-    event->hdr.head.ppid_start_time = BPF_CORE_READ(parent, start_time);
+    event->hdr.head.ppid_start_time =
+        BPF_CORE_READ(parent, start_boottime) / NSEC_PER_USER_HZ;
 
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
@@ -644,3 +646,5 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
     return 0;
 }
+
+char LICENSE[] SEC("license") = "GPL";
