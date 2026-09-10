@@ -31,3 +31,21 @@ add_test(NAME test_context_rule COMMAND test_context_rule)
 add_executable(test_context_maintainer test_context_maintainer.cc)
 target_link_libraries(test_context_maintainer PRIVATE hng_context_maintainer)
 add_test(NAME test_context_maintainer COMMAND test_context_maintainer)
+
+# ============================================================
+# 阶段 01 端到端校验（需 root 与 BPF 权限，不注册为 ctest 用例）
+#
+#   clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c \
+#       kernel/probes/syscalls.bpf.c -o kernel/build/syscalls.bpf.o
+#   sudo build-agent/test/verify_starttime
+#
+# libbpf 缺失时跳过，不影响其余目标
+# ============================================================
+find_library(LIBBPF_LIB bpf)
+if(LIBBPF_LIB)
+    add_executable(verify_starttime verify_starttime.cc)
+    target_include_directories(verify_starttime PRIVATE ${HNG_SOURCE_DIR})
+    target_link_libraries(verify_starttime PRIVATE ${LIBBPF_LIB})
+else()
+    message(STATUS "libbpf 未找到，跳过 verify_starttime")
+endif()
