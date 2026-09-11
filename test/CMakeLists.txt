@@ -32,6 +32,15 @@ add_executable(test_context_maintainer test_context_maintainer.cc)
 target_link_libraries(test_context_maintainer PRIVATE hng_context_maintainer)
 add_test(NAME test_context_maintainer COMMAND test_context_maintainer)
 
+# 角色发现公共骨架：状态表与 cgroup 读取，无 IO / 无特权
+add_executable(test_role_signal_table test_role_signal_table.cc)
+target_link_libraries(test_role_signal_table PRIVATE hng_role_discovery)
+add_test(NAME test_role_signal_table COMMAND test_role_signal_table)
+
+add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
+target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
+add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
+
 # ============================================================
 # 阶段 01 端到端校验（需 root 与 BPF 权限，不注册为 ctest 用例）
 #
