@@ -76,6 +76,21 @@ target_link_libraries(hng_context_maintainer PUBLIC
 )
 
 # ============================================================
+# 角色发现模块（公共骨架：状态表与 cgroup 读取）
+#
+# 无第三方依赖，也不链接 hng_event_data——锚点类型 hng::Process 所在的
+# agent/event_data/process.hpp 是 header-only 且只依赖 <cstdint>。
+# 各发现源按源再配一个 STATIC 库（libsystemd / gRPC）。
+# ============================================================
+add_library(hng_role_discovery STATIC
+    agent/control_plane/role_discovery/role_signal_table.cc
+    agent/control_plane/role_discovery/role_cgroup_reader.cc
+)
+target_include_directories(hng_role_discovery PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
