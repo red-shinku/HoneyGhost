@@ -95,7 +95,83 @@ bool is_real_subdir(const std::filesystem::directory_entry& entry)
     return !ec && std::filesystem::is_directory(status);
 }
 
+/// 还原 mountinfo 路径中的八进制转义（如 \040 表示空格）
+std::string unescape_mount_field(const std::string& field)
+{
+    std::string out;
+    out.reserve(field.size());
+    for (std::size_t i = 0; i < field.size(); ++i) {
+        if (field[i] == '\\' && i + 3 < field.size() && field[i + 1] >= '0' &&
+            field[i + 1] <= '7' && field[i + 2] >= '0' && field[i + 2] <= '7' &&
+            field[i + 3] >= '0' && field[i + 3] <= '7') {
+            out.push_back(static_cast<char>((field[i + 1] - '0') * 64 +
+                                            (field[i + 2] - '0') * 8 +
+                                            (field[i + 3] - '0')));
+            i += 3;
+            continue;
+        }
+        out.push_back(field[i]);
+    }
+    return out;
+}
+
+/// 探测 cgroup v2 挂载点：取 mountinfo 中文件系统类型为 cgroup2 的那条
+std::string detect_cgroup_root()
+{
+    std::ifstream mountinfo("/proc/self/mountinfo");
+    std::string line;
+    while (std::getline(mountinfo, line)) {
+        std::istringstream fields(line);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (fields >> token) {
+            tokens.push_back(token);
+        }
+        // 字段：id parent major:minor root 挂载点 选项 ... - 文件系统类型 来源
+        if (tokens.size() < 9) {
+            continue;
+        }
+        std::size_t separator = tokens.size();
+        for (std::size_t i = 6; i < tokens.size(); ++i) {
+            if (tokens[i] == "-") {
+                separator = i;
+                break;
+            }
+        }
+        if (separator + 1 >= tokens.size()) {
+            continue;
+        }
+        if (tokens[separator + 1] == "cgroup2") {
+            std::string mount_point = unescape_mount_field(tokens[4]);
+            while (mount_point.size() > 1 && mount_point.back() == '/') {
+                mount_point.pop_back();
+            }
+            return mount_point;
+        }
+    }
+    return "/sys/fs/cgroup";
+}
+
 }  // namespace
+
+const std::string& RoleCgroupReader::root()
+{
+    static const std::string detected = detect_cgroup_root();
+    return detected;
+}
+
+std::string RoleCgroupReader::absolute(const std::string& cgroup_path)
+{
+    if (cgroup_path.empty() || cgroup_path.front() != '/') {
+        return cgroup_path;
+    }
+    const std::string& base = root();
+    if (cgroup_path == base ||
+        cgroup_path.compare(0, base.size() + 1, base + "/") == 0) {
+        return cgroup_path;  // 已是绝对路径
+    }
+    return base + cgroup_path;
+}
 
 std::optional<uint64_t> RoleCgroupReader::parse_start_time(
     const std::string& stat_content)

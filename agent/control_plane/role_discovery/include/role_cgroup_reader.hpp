@@ -30,6 +30,16 @@ namespace role {
  */
 class RoleCgroupReader {
    public:
+    /// cgroup v2 统一层次的挂载点，进程内只探测一次
+    /// @details 各源给出的 cgroup 路径相对本挂载点，须先拼接才可直接打开。
+    /// 自 /proc/self/mountinfo 探测，探测不到时取 /sys/fs/cgroup。
+    /// @return 不以 '/' 结尾的绝对路径
+    static const std::string& root();
+
+    /// 把源给出的相对 cgroup 路径解析成可直接打开的绝对路径
+    /// @param cgroup_path 相对挂载点的路径，已是绝对路径时原样返回
+    static std::string absolute(const std::string& cgroup_path);
+
     /// 递归枚举 cgroup 内全部进程
     /// @param cgroup_path 角色的 cgroup 路径
     /// @param proc_root procfs 根目录，默认 /proc
