@@ -287,11 +287,60 @@ void run_real_cgroup()
 
 }  // namespace
 
+/// 相对路径到绝对路径的解析：各源给出的 cgroup 路径相对挂载点
+void run_path_resolution()
+{
+    const std::string& root = RoleCgroupReader::root();
+    CHECK(!root.empty(), "挂载点非空");
+    CHECK(root.front() == '/', "挂载点为绝对路径");
+    CHECK(root.size() == 1 || root.back() != '/', "挂载点不以 '/' 结尾");
+
+    // 相对路径接到挂载点上
+    CHECK(RoleCgroupReader::absolute("/system.slice/x.service") ==
+              root + "/system.slice/x.service",
+          "相对路径接到挂载点上");
+    CHECK(RoleCgroupReader::absolute("/") == root + "/", "根相对路径可解析");
+
+    // 已是绝对路径的原样返回
+    const std::string already = root + "/system.slice/y.service";
+    CHECK(RoleCgroupReader::absolute(already) == already, "绝对路径原样返回");
+    CHECK(RoleCgroupReader::absolute(root) == root, "挂载点自身原样返回");
+
+    // 非绝对路径与空串原样返回，不臆造
+    CHECK(RoleCgroupReader::absolute("").empty(), "空串原样返回");
+    CHECK(RoleCgroupReader::absolute("relative/path") == "relative/path",
+          "非绝对路径原样返回");
+
+    // 探测出的挂载点应当真的可枚举
+    std::error_code ec;
+    if (fs::is_directory(root, ec)) {
+        std::ifstream cgroup_file("/proc/self/cgroup");
+        std::string line;
+        if (std::getline(cgroup_file, line)) {
+            const std::size_t pos = line.rfind(':');
+            if (pos != std::string::npos) {
+                const std::string self_cgroup =
+                    RoleCgroupReader::absolute(line.substr(pos + 1));
+                std::vector<Process> processes =
+                    RoleCgroupReader::read(self_cgroup);
+                bool found = false;
+                for (const Process& p : processes) {
+                    if (p.pid == static_cast<uint32_t>(::getpid())) {
+                        found = true;
+                    }
+                }
+                CHECK(found, "自身进程应出现在解析出的自身 cgroup 中");
+            }
+        }
+    }
+}
+
 int main()
 {
     run_recursion();
     run_tolerance();
     run_stat_parsing();
+    run_path_resolution();
     run_real_cgroup();
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
