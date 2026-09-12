@@ -91,6 +91,52 @@ target_include_directories(hng_role_discovery PUBLIC
 )
 
 # ============================================================
+# systemd 角色发现源（sd-bus）
+#
+# libsystemd 不可用时只跳过本目标，不使整体构建失败——纯 k8s 节点上不装
+# libsystemd-dev 是常见情况。探测先走 pkg-config，退回 find_path/find_library。
+# ============================================================
+option(HNG_ENABLE_ROLE_SYSTEMD "构建 systemd 角色发现器（需 libsystemd-dev）" ON)
+if(HNG_ENABLE_ROLE_SYSTEMD)
+    set(HNG_SYSTEMD_DEP "")
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SYSTEMD QUIET IMPORTED_TARGET libsystemd)
+        if(TARGET PkgConfig::SYSTEMD)
+            set(HNG_SYSTEMD_DEP PkgConfig::SYSTEMD)
+        endif()
+    endif()
+
+    if(NOT HNG_SYSTEMD_DEP)
+        find_path(SYSTEMD_INCLUDE_DIR systemd/sd-bus.h)
+        find_library(SYSTEMD_LIBRARY systemd)
+        if(SYSTEMD_INCLUDE_DIR AND SYSTEMD_LIBRARY)
+            add_library(hng_systemd_dep UNKNOWN IMPORTED)
+            set_target_properties(hng_systemd_dep PROPERTIES
+                IMPORTED_LOCATION "${SYSTEMD_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${SYSTEMD_INCLUDE_DIR}"
+            )
+            set(HNG_SYSTEMD_DEP hng_systemd_dep)
+        endif()
+    endif()
+
+    if(HNG_SYSTEMD_DEP)
+        add_library(hng_role_systemd STATIC
+            agent/control_plane/role_discovery/role_systemd_discoverer.cc
+        )
+        target_include_directories(hng_role_systemd PUBLIC
+            ${HNG_SOURCE_DIR}
+        )
+        target_link_libraries(hng_role_systemd
+            PUBLIC hng_role_discovery
+            PRIVATE ${HNG_SYSTEMD_DEP}
+        )
+    else()
+        message(STATUS "libsystemd 未找到，跳过 hng_role_systemd")
+    endif()
+endif()
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
