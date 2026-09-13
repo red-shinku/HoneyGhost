@@ -144,11 +144,11 @@ struct SystemdTranslation {
  * 观察量。只有被跟踪的字段真的变化、或首次得到某 unit 的快照时才产出观察量，
  * 重复与重放的输入不产出。
  *
- * 判据为「主进程已确定」而非「角色已就绪」：存活性只看 MainPID、是否进入拆除
- * 与探针可读性，ActiveState / SubState 作为属性携带，不阻塞发布。inactive 不算
- * 拆除——瞬态单元上 systemd 会先发 MainPID，再补一个值更旧的 ActiveState=
- * inactive，随后才回到 activating；把这帧读成「离开」会凭空产出一对
- * 加入/退出。
+ * 判据为「主进程已确定」而非「角色已就绪」：存在性由两层合成——进程层（MainPID
+ * 非零且 /proc 可读）与状态层（源未宣告退出）。状态层只取 deactivating / failed：
+ * MainPID 属 Service 接口、ActiveState 属 Unit 接口，两者没有共同时刻，拼接出的
+ * MainPID != 0 ∧ inactive 是系统里不存在的组合，不予采纳。ActiveState / SubState
+ * 作为属性携带，不阻塞发布。
  *
  * 非线程安全，由持有它的发现器线程独占访问。
  */

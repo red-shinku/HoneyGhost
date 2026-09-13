@@ -65,10 +65,12 @@ std::string type_key_of(const std::string& unit_id)
 }
 
 /// 源是否已宣告该 unit 退出
-/// @note 只有 deactivating / failed。inactive 不算宣告退出：瞬态单元上 systemd
-/// 会先发 MainPID，再补一个值更旧的 ActiveState=inactive，随后才回 activating，
-/// 把这帧读成退出会凭空产出一对加入/退出；正常停止路径上 active 先经
-/// deactivating，退出在该处即已发布，故不取 inactive 不改变停止路径的行为。
+/// @note 只有 deactivating / failed，不含 inactive：判据只采纳系统里
+/// 真实存在的组合。MainPID 属 Service 接口、ActiveState 属 Unit 接口，
+/// 两条通道没有共同时刻，故 MainPID != 0 ∧ inactive 是拼接产物、系统
+/// 里不存在；而 MainPID != 0 ∧ deactivating 真实存在（ExecStop 进行
+/// 中），必须采纳。正常停止路径先经 deactivating，退出在该处即已发布，
+/// 故不取 inactive 不改变停止路径的行为。
 bool declared_exit(const std::string& active_state)
 {
     return active_state == "deactivating" || active_state == "failed";
@@ -767,8 +769,6 @@ bool decode_message(sd_bus_message* message, SystemdSignal& signal)
             unit_id == nullptr || unit_path == nullptr) {
             return false;
         }
-        uint64_t cookie = 0;
-        sd_bus_message_get_cookie(message, &cookie);
         signal.kind        = (std::strcmp(member, "UnitNew") == 0)
                                  ? SystemdSignalKind::UNIT_NEW
                                  : SystemdSignalKind::UNIT_REMOVED;

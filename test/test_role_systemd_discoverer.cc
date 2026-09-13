@@ -8,8 +8,8 @@
  *    自动重启产出 LEAVE + JOIN、无 LEAVE 介入的 MainPID 变化产出主进程更换；
  *  - 载荷：锚点、cgroup_path、member_processes、就绪程度属性；
  *  - 过滤：忽略前缀与全称、后缀、白名单、Type=oneshot 照常归类；
- *  - 属性快照维护：重复与重放的输入不产出，UnitRemoved 丢弃快照，
- *    UnitNew 与 JobRemoved 都不触发重取，滞后的 inactive 不读成离开，
+ *  - 属性快照维护：重复与重放的输入不产出，UnitRemoved 丢弃快照，UnitNew 与
+ *    JobRemoved 都不触发重取；不可能组合（MainPID != 0 且 inactive）不读成离开；
  *    RemainAfterExit 的 active (exited) 由 MainPID 归零给出退出；
  *  - 对外形态：stop() 先于 run()、stop() 幂等、run() 返回后不再产出事件。
  *
@@ -533,10 +533,10 @@ void test_snapshot_maintenance()
 }
 
 // ============================================================
-// 9. 滞后到达的 inactive 不得把存活实例读成离开
+// 9. 不可能组合（MainPID != 0 且 inactive）不得读成离开
 // ============================================================
 
-void test_stale_inactive_keeps_instance_present()
+void test_impossible_combination_keeps_instance_present()
 {
     FakeSystem system;
     system.start_times[7765]  = 2737903ULL;
@@ -547,11 +547,11 @@ void test_stale_inactive_keeps_instance_present()
                                                 "activating", "start"));
     expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
 
-    // 录制的真实序列：MainPID 之后 systemd 补发了一个值更旧的 ActiveState，
-    // 随后才回到 activating。此刻实例仍在，锚点未变，不得产出任何动作。
+    // 录制的真实序列：inactive/dead 是 unit 创建时的状态，与 MainPID 分属两个
+    // 接口、发出时刻不同。两者拼在一起得到的组合系统里不存在，不得产出任何动作。
     harness.feed(sig_properties(kSvcPath, delta_unit_state("inactive", "dead")));
     expect_actions(harness.events(), {RoleAction::JOIN},
-                   "滞后的 inactive 不产出退出");
+                   "MainPID 非零且 inactive 不产出退出");
 
     harness.feed(
         sig_properties(kSvcPath, delta_unit_state("activating", "start")));
@@ -661,7 +661,7 @@ int main()
     test_filter();
     test_oneshot_is_carried_as_attribute();
     test_snapshot_maintenance();
-    test_stale_inactive_keeps_instance_present();
+    test_impossible_combination_keeps_instance_present();
     test_remain_after_exit_leaves_on_main_pid_zero();
     test_job_removed_does_not_revive_stopped_unit();
     test_run_stop_contract();
