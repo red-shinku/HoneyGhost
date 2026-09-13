@@ -45,16 +45,36 @@ struct RolePayload {
 };
 
 /**
+ * @brief 存在信号：源侧一次观察的结论
+ * @details 三种信号。UNKNOWN 表示源侧取数失败或本次枚举未覆盖该实例：既不能读成
+ * 存在，也不能读成不存在——把 取不到 压成 不存在 会让存活实例被判定退出，
+ * 载荷缓存随之销毁，下游收到一对无法撤回的幻影退出/加入。
+ * @note 未知的判定不做 errno 细分：/proc 读失败、解析失败、调用超时的后果
+ * 都是 这一侧不知道 ，而 ENOENT 在 实例确已消失 与 这一侧的 /proc 不是
+ * 宿主的 之间不可区分。
+ */
+enum class ObservationKind {
+    PRESENT,  ///< 观察到实例存在
+    ABSENT,   ///< 观察到实例不存在
+    UNKNOWN,  ///< 取数失败或未被枚举覆盖，源侧无结论
+};
+
+/**
  * @brief 观察量：状态表的输入
- * @details 源侧一次观察的结果。存在信号与当前锚点必须同时携带：前者判定存在性
- * 跃迁，后者判定锚点跃迁（实例仍存在，但主进程换了）。
- * 离开观察只需 identity.instance_key 有值——源侧在实例消失后往往已经查不到其余
- * 字段，退出事件的载荷由状态表回查本地缓存补齐。
- * @pre present 为 true 时 payload 的 identity.instance_key 非空
+ * @details 源侧一次观察的结果。存在观察必须携带当前锚点：既判定存在性跃迁，
+ * 也判定锚点跃迁（实例仍存在，但主进程换了）。
+ * 离开与未知观察只需 identity.instance_key 有值——源侧在实例消失后往往已经
+ * 查不到其余字段，退出事件的载荷由状态表回查本地缓存补齐。
+ * @pre kind 非 UNKNOWN 时 payload 的 identity.instance_key 非空
  */
 struct RoleObservation {
-    bool present = false;  ///< 存在信号：源侧此刻是否观察到该实例
-    RolePayload payload;   ///< present 为 true 时有效
+    ObservationKind kind = ObservationKind::ABSENT;  ///< 存在信号
+    /// 源内子范围标签
+    /// @details 同一源的全部观察量按此标签分组，快照段的对账只清理落在本段
+    /// 范围内的条目。容器源取 containerd namespace；systemd 源无子范围，留空。
+    /// 离开与未知观察不参与分组，一律留空。
+    std::string scope;
+    RolePayload payload;  ///< kind 为 PRESENT 时有效
 };
 
 /**
@@ -87,10 +107,13 @@ inline bool same_process(const hng::Process& a, const hng::Process& b)
 }
 
 /// 构造进入观察量
-inline RoleObservation observe_enter(RolePayload payload)
+/// @param payload 实例身份、锚点与进程补齐
+/// @param scope 该实例所属的源内子范围，见 RoleObservation::scope
+inline RoleObservation observe_enter(RolePayload payload, std::string scope = {})
 {
     RoleObservation observation;
-    observation.present = true;
+    observation.kind    = ObservationKind::PRESENT;
+    observation.scope   = std::move(scope);
     observation.payload = std::move(payload);
     return observation;
 }
@@ -99,7 +122,16 @@ inline RoleObservation observe_enter(RolePayload payload)
 inline RoleObservation observe_leave(const std::string& instance_key)
 {
     RoleObservation observation;
-    observation.present                       = false;
+    observation.kind                          = ObservationKind::ABSENT;
+    observation.payload.identity.instance_key = instance_key;
+    return observation;
+}
+
+/// 构造未知观察量：源侧对实例键无结论
+inline RoleObservation observe_unknown(const std::string& instance_key)
+{
+    RoleObservation observation;
+    observation.kind                          = ObservationKind::UNKNOWN;
     observation.payload.identity.instance_key = instance_key;
     return observation;
 }
