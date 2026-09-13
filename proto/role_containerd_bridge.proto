@@ -1,0 +1,70 @@
+// 角色发现：C++ 发现器与 containerd 翻译进程之间的协议
+//
+// 传输：Unix domain socket，每条消息前置 4 字节大端长度前缀。
+// 帧序：一条连接上只有消息序列，没有请求应答配对。快照段标记对
+// （SnapshotBegin / SnapshotEnd）可以在一条连接内重复出现：翻译进程重连
+// containerd 后重走快照段，而不是断开与 C++ 的连接。
+//
+// 职责边界：翻译进程负责订阅 containerd 事件、回查元数据、枚举快照，
+// 并把它翻译成本协议的消息；判断加入/退出、维护存活状态、cgroup 成员补齐、
+// 过滤与类型键提取全部在 C++ 侧。
+
+syntax = "proto3";
+
+package hng.role_bridge;
+
+option go_package = "honeyghost/containerd_bridge/internal/protocol;protocol";
+
+// 顶层帧：一条连接上的消息序列，每帧恰好是三者之一。
+message Frame {
+    oneof body {
+        SnapshotBegin snapshot_begin = 1;
+        Observation observation      = 2;
+        SnapshotEnd snapshot_end     = 3;
+    }
+}
+
+// 快照段的开场
+//
+// source 是后端标注（哪个翻译进程、哪个后端），只供日志与校验用，
+// 不进入 C++ 侧的存活状态表——状态表由且仅由一个发现器持有，一源一表，
+// 本字段不构成共表的许可。
+message SnapshotBegin {
+    string source          = 1;  // 翻译进程标识
+    string backend_version = 2;  // containerd 版本，如 "2.2.4"
+    // 本段确实完整枚举的 namespace，而非配置里的 namespace。枚举任一步失败时
+    // 翻译进程不发 SnapshotEnd，整段作废，故本字段只在段完整时才有对账含义。
+    repeated string namespaces = 3;
+}
+
+// 一次观察：实例的加入/退出
+message Observation {
+    enum Kind {
+        KIND_UNSPECIFIED = 0;
+        UPSERT           = 1;  // 该实例此刻存在，携带完整属性
+        REMOVE           = 2;  // 该实例已退出，只带 container_id
+    }
+
+    Kind kind           = 1;
+    // 该项是否由快照段枚举得来。false 表示它是快照段内到达、被缓冲到
+    // SnapshotEnd 之后才放行的流内项。段内出现 false 即为违约：
+    // 那意味着枚举观察与流内观察的提交顺序由消息到达顺序决定，
+    // 段内停止的角色会被读成加入（产出永不修正的幽灵角色）。
+    bool in_snapshot     = 2;
+    string container_id  = 3;  // 实例键
+    uint32 pid           = 4;  // 主进程锚点，REMOVE 时为 0
+    string namespace     = 5;  // containerd namespace
+    string pod_uid       = 6;  // 以下三项来自 CRI 标签，非 k8s 容器为空
+    string pod_name      = 7;
+    string pod_namespace = 8;
+    string container_name = 9;  // io.kubernetes.container.name
+    string image          = 10;  // 非 k8s 容器的类型退化来源
+    map<string, string> labels = 11;  // 其余标签原样透传
+    int64 timestamp_ns         = 12;  // 源侧时刻
+}
+
+// 快照段的收场：只有发出的段才是权威状态，C++ 在每个 SnapshotEnd 处对账。
+message SnapshotEnd {
+    // 本段发出的 UPSERT 条数，供与段内实收条数比对以察觉截断。
+    uint32 count = 1;
+}
