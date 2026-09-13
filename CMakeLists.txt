@@ -137,6 +137,38 @@ if(HNG_ENABLE_ROLE_SYSTEMD)
 endif()
 
 # ============================================================
+# containerd 角色发现源（经翻译进程，无 gRPC）
+#
+# C++ 侧只连翻译进程的 Unix socket，协议 .proto 由本仓库双端生成：C++ 侧在
+# 构建时生成，Go 侧产物入库（见 containerd_bridge/gen.sh）。
+# 翻译进程的构建不接 CMake，见 containerd_bridge/README.md。
+# ============================================================
+option(HNG_ENABLE_ROLE_CONTAINERD "构建 containerd 角色发现器（需 protobuf）" ON)
+if(HNG_ENABLE_ROLE_CONTAINERD)
+    set(ROLE_BRIDGE_GEN_DIR ${CMAKE_BINARY_DIR}/generated/role_bridge)
+    file(MAKE_DIRECTORY ${ROLE_BRIDGE_GEN_DIR})
+
+    add_library(hng_role_containerd STATIC
+        agent/control_plane/role_discovery/role_containerd_discoverer.cc
+    )
+    target_include_directories(hng_role_containerd PUBLIC
+        ${HNG_SOURCE_DIR}
+        ${ROLE_BRIDGE_GEN_DIR}
+    )
+    # 生成物头文件自身包含 protobuf 头，故 protobuf 是公开依赖：
+    # 单测要构造真实帧来验解码
+    target_link_libraries(hng_role_containerd
+        PUBLIC hng_role_discovery
+               protobuf::libprotobuf
+    )
+    protobuf_generate(TARGET hng_role_containerd LANGUAGE cpp
+        PROTOS proto/role_containerd_bridge.proto
+        IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
+        PROTOC_OUT_DIR ${ROLE_BRIDGE_GEN_DIR}
+    )
+endif()
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
