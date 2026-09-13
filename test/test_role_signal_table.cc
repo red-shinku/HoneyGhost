@@ -6,7 +6,9 @@
  *  - 进入观察的三条分支：不存在→加入、锚点相同→无产出、锚点不同→主进程更换；
  *  - 离开观察的三条分支：存活→退出、未知实例→无产出、重复离开→无产出；
  *  - 观察量序列：乱序、重复、重连后重放快照均不产出多余动作；
- *  - 载荷缓存：锚点更换后缓存被更新，退出事件的载荷由缓存回填。
+ *  - 载荷缓存：锚点更换后缓存被更新，退出事件的载荷由缓存回填；
+ *  - 快照对账：缺席的存活项产出退出、新增项产出加入、段未走完不结算、
+ *    范围外的条目与未知项不被清除、重复快照幂等、结算顺序确定。
  *
  * @author red_shinku
  * @date 2026.9.11
@@ -311,6 +313,265 @@ void run_payload_cache()
     }
 }
 
+// ---- 快照对账 ----
+struct SnapStep {
+    char op;  ///< 'b' 开段（key 为范围标签）、'e' 结算、'+' 进入、'-' 离开、'?'
+              ///< 未知
+    const char* key;  ///< 'b' 为范围标签，其余为实例键
+};
+
+struct SnapCase {
+    const char* name;
+    std::vector<SnapStep> steps;
+    std::vector<const char*> expect;  ///< "动作:实例键"，顺序敏感
+    std::vector<const char*> alive;   ///< 结束时应仍存活的实例键
+};
+
+/// 由实例键推导锚点：同一实例键的重复观察得到同一锚点，才谈得上重放
+hng::Process anchor_of(const char* key)
+{
+    return hng::Process{static_cast<uint32_t>(100 + key[0]), 1000};
+}
+
+std::string describe(const RoleEvent& event)
+{
+    return std::string(action_name(event.action)) + ":" +
+           event.payload.identity.instance_key;
+}
+
+bool submit_into(RoleSignalTable& table, const RoleObservation& observation,
+                 std::vector<std::string>& produced)
+{
+    std::optional<RoleEvent> event = table.submit(observation);
+    if (!event.has_value()) {
+        return false;
+    }
+    produced.push_back(describe(*event));
+    return true;
+}
+
+void expect_events(const char* name, const std::vector<std::string>& got,
+                   const std::vector<const char*>& want)
+{
+    if (got.size() != want.size()) {
+        ++g_fail;
+        std::fprintf(stderr, "[FAIL] %s: 事件数=%zu 期望=%zu\n", name, got.size(),
+                     want.size());
+        for (const std::string& s : got) {
+            std::fprintf(stderr, "        实际 %s\n", s.c_str());
+        }
+        return;
+    }
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        if (got[i] != want[i]) {
+            ++g_fail;
+            std::fprintf(stderr, "[FAIL] %s: 第 %zu 个事件=%s 期望=%s\n", name, i,
+                         got[i].c_str(), want[i]);
+        }
+    }
+}
+
+const SnapCase kSnapCases[] = {
+    {
+        // 规则 1 的反例：只喂不结算则 B 永远存活
+        "重连对账：缺席的存活项产出退出",
+        {{'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'+', "a"},
+         {'e', nullptr}},
+        {"JOIN:a", "JOIN:b", "LEAVE:b"},
+        {"a"},
+    },
+    {
+        "重连对账：新增项只产出加入",
+        {{'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'+', "c"},
+         {'e', nullptr}},
+        {"JOIN:a", "JOIN:b", "JOIN:c"},
+        {"a", "b", "c"},
+    },
+    {
+        // 不完整的快照不是权威状态，段没走完就断连时不得结算
+        "段未走完不结算",
+        {{'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'+', "a"}},
+        {"JOIN:a", "JOIN:b"},
+        {"a", "b"},
+    },
+    {
+        "空段不产出动作（首次连接）",
+        {{'b', "k8s.io"}, {'e', nullptr}},
+        {},
+        {},
+    },
+    {
+        // 另一 namespace 本轮没被枚举，既非退出也非确认，不能清
+        "范围外的存活项不被对账清除",
+        {{'b', "k8s.io"},
+         {'+', "a"},
+         {'e', nullptr},
+         {'b', "moby"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'+', "a"},
+         {'e', nullptr}},
+        {"JOIN:a", "JOIN:b"},
+        {"a", "b"},
+    },
+    {
+        "重复快照幂等：第二段不产出动作",
+        {{'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr}},
+        {"JOIN:a", "JOIN:b"},
+        {"a", "b"},
+    },
+    {
+        // 哈希遍历顺序不确定，结算产出必须按实例键定序
+        "结算顺序按实例键升序",
+        {{'b', "k8s.io"},
+         {'+', "c"},
+         {'+', "a"},
+         {'+', "b"},
+         {'e', nullptr},
+         {'b', "k8s.io"},
+         {'e', nullptr}},
+        {"JOIN:c", "JOIN:a", "JOIN:b", "LEAVE:a", "LEAVE:b", "LEAVE:c"},
+        {},
+    },
+    {
+        // 未知既不推进载荷缓存也不产出跃迁，段外更是无处可依
+        "段外未知观察无动作",
+        {{'?', "a"}},
+        {},
+        {},
+    },
+};
+
+void run_reconciliation()
+{
+    for (const SnapCase& c : kSnapCases) {
+        RoleSignalTable table;
+        std::vector<std::string> got;
+        std::string scope;
+        for (const SnapStep& step : c.steps) {
+            switch (step.op) {
+                case 'b':
+                    table.begin_snapshot({step.key});
+                    scope = step.key;
+                    break;
+                case 'e':
+                    for (const RoleEvent& event : table.end_snapshot()) {
+                        got.push_back(describe(event));
+                    }
+                    scope.clear();
+                    break;
+                case '+': {
+                    const hng::Process anchor = anchor_of(step.key);
+                    submit_into(table,
+                                hng::role::observe_enter(
+                                    mk_payload(step.key, anchor.pid,
+                                               anchor.pid_start_time),
+                                    scope),
+                                got);
+                    break;
+                }
+                case '-':
+                    submit_into(table, hng::role::observe_leave(step.key), got);
+                    break;
+                case '?':
+                    submit_into(table, hng::role::observe_unknown(step.key), got);
+                    break;
+                default:
+                    break;
+            }
+        }
+        expect_events(c.name, got, c.expect);
+        for (const char* key : c.alive) {
+            if (!table.is_alive(key)) {
+                ++g_fail;
+                std::fprintf(stderr, "[FAIL] %s: %s 应仍存活\n", c.name, key);
+            }
+        }
+    }
+}
+
+/// 段内到达的流内观察刷新代际，结算不得把它清掉（P5 的表侧一半）
+void run_snapshot_stream_inside()
+{
+    RoleSignalTable table;
+    table.submit(
+        hng::role::observe_enter(mk_payload(kSeedKey, 100, 1000), "k8s.io"));
+
+    table.begin_snapshot({"k8s.io"});
+    // 枚举行是段内较早的一笔
+    table.submit(
+        hng::role::observe_enter(mk_payload(kSeedKey, 100, 1000), "k8s.io"));
+    // 段内流内到达的一笔比枚举新：主进程已换成 200
+    std::optional<RoleEvent> live = table.submit(
+        hng::role::observe_enter(mk_payload(kSeedKey, 200, 2000), "k8s.io"));
+    CHECK(live.has_value() && live->action == RoleAction::MAIN_PROCESS_CHANGE,
+          "段内流内观察应产出主进程更换");
+
+    const std::vector<RoleEvent> settled = table.end_snapshot();
+    CHECK(settled.empty(), "段内流内观察命中的条目不应被对账清除");
+    CHECK(table.is_alive(kSeedKey), "段内流内观察命中的条目应仍存活");
+    auto cached = table.lookup(kSeedKey);
+    CHECK(cached.has_value() && cached->main_process.pid == 200,
+          "载荷缓存应取段内流内观察的锚点");
+}
+
+/// 未知态的两条边界：段内计为已见且不推进载荷缓存，段外不刷代际
+void run_unknown()
+{
+    // 段内取数失败：不产出退出，条目免于对账，缓存原样保留
+    {
+        RoleSignalTable table;
+        table.submit(
+            hng::role::observe_enter(mk_payload(kSeedKey, 100, 1000), "k8s.io"));
+        table.begin_snapshot({"k8s.io"});
+        CHECK(!table.submit(hng::role::observe_unknown(kSeedKey)).has_value(),
+              "未知观察不应产出跃迁");
+        const std::vector<RoleEvent> settled = table.end_snapshot();
+        CHECK(settled.empty(), "未知不得被读成不存在：不应产出退出");
+        CHECK(table.is_alive(kSeedKey), "未知项应计为本段已见");
+        auto cached = table.lookup(kSeedKey);
+        CHECK(cached.has_value() && cached->main_process.pid == 100,
+              "未知不应推进载荷缓存");
+    }
+
+    // 段外未知：无处可依，条目照常被后续对账清掉
+    {
+        RoleSignalTable table;
+        table.submit(
+            hng::role::observe_enter(mk_payload(kSeedKey, 100, 1000), "k8s.io"));
+        CHECK(!table.submit(hng::role::observe_unknown(kSeedKey)).has_value(),
+              "段外未知观察不应产出跃迁");
+        table.begin_snapshot({"k8s.io"});
+        const std::vector<RoleEvent> settled = table.end_snapshot();
+        CHECK(settled.size() == 1, "段外未知不得让条目免于对账");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -318,13 +579,17 @@ int main()
     run_steps();
     run_sequences();
     run_payload_cache();
+    run_reconciliation();
+    run_snapshot_stream_inside();
+    run_unknown();
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
         return 1;
     }
-    std::printf("ALL PASS (step=%zu seq=%zu)\n",
+    std::printf("ALL PASS (step=%zu seq=%zu snap=%zu)\n",
                 sizeof(kEnterCases) / sizeof(StepCase) +
                     sizeof(kLeaveCases) / sizeof(StepCase),
-                sizeof(kSeqCases) / sizeof(SeqCase));
+                sizeof(kSeqCases) / sizeof(SeqCase),
+                sizeof(kSnapCases) / sizeof(SnapCase));
     return 0;
 }

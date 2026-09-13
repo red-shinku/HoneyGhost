@@ -15,8 +15,6 @@
 
 #include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
 
-#include <unistd.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -24,6 +22,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -155,6 +154,40 @@ void run_recursion()
     check_processes("从子目录起枚举",
                     RoleCgroupReader::read(root / "child", proc),
                     {{102, 2222}, {103, 3333}});
+}
+
+// ---- 进程所属 cgroup ----
+void run_process_cgroup()
+{
+    TempDir tmp;
+    fs::path proc = tmp.path() / "proc";
+
+    // cgroup v2：唯一一行是统一层次
+    mk_proc(proc, 501, "nginx", 1111);
+    std::ofstream(proc / "501" / "cgroup")
+        << "0::/kubepods/besteffort/pod1234/cri-containerd-abc.scope\n";
+    std::optional<std::string> path =
+        RoleCgroupReader::read_process_cgroup(501, proc);
+    CHECK(
+        path && *path == "/kubepods/besteffort/pod1234/cri-containerd-abc.scope",
+        "应取出统一层次的路径");
+
+    // cgroup v1：各行都带控制器名，没有统一层次可取
+    mk_proc(proc, 502, "old", 2222);
+    std::ofstream(proc / "502" / "cgroup")
+        << "11:cpuset:/\n10:cpu,cpuacct:/system.slice/old.service\n";
+    CHECK(!RoleCgroupReader::read_process_cgroup(502, proc).has_value(),
+          "只有 v1 行时不应给出路径");
+
+    // 进程已不存在
+    CHECK(!RoleCgroupReader::read_process_cgroup(599, proc).has_value(),
+          "进程不存在时应为空");
+
+    // 真实环境：本进程的 cgroup 必可取出，且是绝对路径
+    std::optional<std::string> self =
+        RoleCgroupReader::read_process_cgroup(::getpid());
+    CHECK(self.has_value() && !self->empty() && self->front() == '/',
+          "本进程的 cgroup 应可取出");
 }
 
 // ---- 容错 ----
@@ -338,6 +371,7 @@ void run_path_resolution()
 int main()
 {
     run_recursion();
+    run_process_cgroup();
     run_tolerance();
     run_stat_parsing();
     run_path_resolution();
