@@ -53,6 +53,16 @@ class RoleCgroupReader {
     /// @return 解析失败（无右括号、字段不足、字段非数字或超出 uint64）时为空
     static std::optional<uint64_t> parse_start_time(
         const std::string& stat_content);
+
+    /// 取进程所属的 cgroup 路径
+    /// @param pid 进程号
+    /// @param proc_root procfs 根目录，默认 /proc
+    /// @return cgroup v2 统一层次那一行的路径（以 '/' 开头，可直接交给
+    ///         absolute()
+    ///         拼接）；进程不存在、文件读不到或没有统一层次那一行时为空
+    /// @note 供只有 pid 的源使用（systemd 源另有 ControlGroup 属性，不必读这里）
+    static std::optional<std::string> read_process_cgroup(
+        uint32_t pid, const std::string& proc_root = "/proc");
 };
 
 }  // namespace role

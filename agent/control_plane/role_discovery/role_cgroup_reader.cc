@@ -193,6 +193,36 @@ std::optional<uint64_t> RoleCgroupReader::parse_start_time(
     return parse_u64(token);
 }
 
+std::optional<std::string> RoleCgroupReader::read_process_cgroup(
+    uint32_t pid, const std::string& proc_root)
+{
+    std::ifstream cgroup(std::filesystem::path(proc_root) / std::to_string(pid) /
+                         "cgroup");
+    if (!cgroup) {
+        return std::nullopt;
+    }
+
+    std::string line;
+    while (std::getline(cgroup, line)) {
+        // 每行形态 <层级>:<控制器列表>:<路径>。v2 统一层次是层级 0 且控制器
+        // 列表为空，即 "0::<路径>"；v1 的行都有控制器名字，据此排除
+        const std::size_t hierarchy_end = line.find(':');
+        if (hierarchy_end == std::string::npos) {
+            continue;
+        }
+        const std::size_t controllers_end = line.find(':', hierarchy_end + 1);
+        if (controllers_end == std::string::npos) {
+            continue;
+        }
+        if (line.compare(0, hierarchy_end, "0") != 0 ||
+            controllers_end != hierarchy_end + 1) {
+            continue;
+        }
+        return line.substr(controllers_end + 1);
+    }
+    return std::nullopt;
+}
+
 std::vector<hng::Process> RoleCgroupReader::read(const std::string& cgroup_path,
                                                  const std::string& proc_root)
 {
