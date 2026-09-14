@@ -1,6 +1,6 @@
 /**
  * @file verify_starttime.cc
- * @brief 阶段 01 校验：事件头 pid_start_time 与 /proc 字段 22 相等
+ * @brief 校验：事件头 pid_start_time 与 /proc 字段 22 相等
  * @details
  * 加载 syscalls.bpf.o，附着 wake_up_new_task kprobe 与 sys_enter_exit_group
  * tracepoint，从 ringbuf 取事件，与其 /proc 取值比对。覆盖两个入口 × 两条路径

@@ -1,0 +1,63 @@
+# containerd 翻译进程的部署片段
+#
+# 项目最终落地后把下面三块并入该 DaemonSet 的 spec：
+#   1. 翻译进程这个 sidecar 容器；
+#   2. C++ 容器上的 emptyDir 挂载（与 sidecar 同一卷，路径一致）；
+#   3. volumes 里的 emptyDir 与宿主机 containerd socket 的 hostPath。
+#
+# 要点：
+#   - 两个容器都要挂 hostPath 的 /run/containerd/containerd.sock：容器里的
+#     /run/containerd 是容器自己的世界，不挂就连到了别处
+
+#   - socket 目录经 emptyDir 共享，C++ 侧看到的路径与下方 -socket 一致；
+#   - 不需要启动顺序：C++ 连不上会退避重试，两侧谁先起都正确。翻译进程崩溃
+#     也只是让 C++ 看到断连——重连即新会话、即全量快照与对账。
+
+spec:
+  template:
+    spec:
+      containers:
+        # ---- 角色发现器（C++，既有容器，此处只加挂载） ----
+        - name: agent
+          volumeMounts:
+            - name: bridge-socket
+              mountPath: /run/honeyghost
+          # C++ 侧对应配置：
+          #   ContainerdRoleDiscoverer::Config::socket_path =
+          #       /run/honeyghost/containerd-bridge.sock
+
+        # ---- containerd 翻译进程（sidecar） ----
+        - name: containerd-bridge
+          image: hng/containerd-bridge:latest
+          args:
+            - -socket=/run/honeyghost/containerd-bridge.sock
+            - -containerd=/run/containerd/containerd.sock
+            # 跟踪的 namespace。k8s 节点上主要是 k8s.io；docker 是 moby，
+            # ctr 默认是 default。不在列表内的 namespace 不被发现。
+            - -namespaces=k8s.io,moby,default
+          securityContext:
+            # 宿主 socket 权限为 srw-rw---- root:root，且需读宿主进程的
+            # /proc/<pid>（cgroup 补齐与锚点在 C++ 侧，本进程只需事件与元数据）
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: bridge-socket
+              mountPath: /run/honeyghost
+            - name: containerd-socket
+              mountPath: /run/containerd/containerd.sock
+
+      volumes:
+        - name: bridge-socket
+          emptyDir: {}
+        - name: containerd-socket
+          hostPath:
+            path: /run/containerd/containerd.sock
+
+      # 与 C++ 容器共用宿主 PID 命名空间是既有前提（eBPF 需要），
+      # 翻译进程不依赖它，但它保证两侧看到的 pid 一致。
+      hostPID: true

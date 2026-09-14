@@ -76,6 +76,99 @@ target_link_libraries(hng_context_maintainer PUBLIC
 )
 
 # ============================================================
+# 角色发现模块（公共骨架：状态表与 cgroup 读取）
+#
+# 无第三方依赖，也不链接 hng_event_data——锚点类型 hng::Process 所在的
+# agent/event_data/process.hpp 是 header-only 且只依赖 <cstdint>。
+# 各发现源按源再配一个 STATIC 库（libsystemd / gRPC）。
+# ============================================================
+add_library(hng_role_discovery STATIC
+    agent/control_plane/role_discovery/role_signal_table.cc
+    agent/control_plane/role_discovery/role_cgroup_reader.cc
+)
+target_include_directories(hng_role_discovery PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
+# systemd 角色发现源（sd-bus）
+#
+# libsystemd 不可用时只跳过本目标，不使整体构建失败——纯 k8s 节点上不装
+# libsystemd-dev 是常见情况。探测先走 pkg-config，退回 find_path/find_library。
+# ============================================================
+option(HNG_ENABLE_ROLE_SYSTEMD "构建 systemd 角色发现器（需 libsystemd-dev）" ON)
+if(HNG_ENABLE_ROLE_SYSTEMD)
+    set(HNG_SYSTEMD_DEP "")
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SYSTEMD QUIET IMPORTED_TARGET libsystemd)
+        if(TARGET PkgConfig::SYSTEMD)
+            set(HNG_SYSTEMD_DEP PkgConfig::SYSTEMD)
+        endif()
+    endif()
+
+    if(NOT HNG_SYSTEMD_DEP)
+        find_path(SYSTEMD_INCLUDE_DIR systemd/sd-bus.h)
+        find_library(SYSTEMD_LIBRARY systemd)
+        if(SYSTEMD_INCLUDE_DIR AND SYSTEMD_LIBRARY)
+            add_library(hng_systemd_dep UNKNOWN IMPORTED)
+            set_target_properties(hng_systemd_dep PROPERTIES
+                IMPORTED_LOCATION "${SYSTEMD_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${SYSTEMD_INCLUDE_DIR}"
+            )
+            set(HNG_SYSTEMD_DEP hng_systemd_dep)
+        endif()
+    endif()
+
+    if(HNG_SYSTEMD_DEP)
+        add_library(hng_role_systemd STATIC
+            agent/control_plane/role_discovery/role_systemd_discoverer.cc
+        )
+        target_include_directories(hng_role_systemd PUBLIC
+            ${HNG_SOURCE_DIR}
+        )
+        target_link_libraries(hng_role_systemd
+            PUBLIC hng_role_discovery
+            PRIVATE ${HNG_SYSTEMD_DEP}
+        )
+    else()
+        message(STATUS "libsystemd 未找到，跳过 hng_role_systemd")
+    endif()
+endif()
+
+# ============================================================
+# containerd 角色发现源（经翻译进程，无 gRPC）
+#
+# C++ 侧只连翻译进程的 Unix socket，协议 .proto 由本仓库双端生成：C++ 侧在
+# 构建时生成，Go 侧产物入库（见 containerd_bridge/gen.sh）。
+# 翻译进程的构建不接 CMake，见 containerd_bridge/README.md。
+# ============================================================
+option(HNG_ENABLE_ROLE_CONTAINERD "构建 containerd 角色发现器（需 protobuf）" ON)
+if(HNG_ENABLE_ROLE_CONTAINERD)
+    set(ROLE_BRIDGE_GEN_DIR ${CMAKE_BINARY_DIR}/generated/role_bridge)
+    file(MAKE_DIRECTORY ${ROLE_BRIDGE_GEN_DIR})
+
+    add_library(hng_role_containerd STATIC
+        agent/control_plane/role_discovery/role_containerd_discoverer.cc
+    )
+    target_include_directories(hng_role_containerd PUBLIC
+        ${HNG_SOURCE_DIR}
+        ${ROLE_BRIDGE_GEN_DIR}
+    )
+    # 生成物头文件自身包含 protobuf 头，故 protobuf 是公开依赖：
+    # 单测要构造真实帧来验解码
+    target_link_libraries(hng_role_containerd
+        PUBLIC hng_role_discovery
+               protobuf::libprotobuf
+    )
+    protobuf_generate(TARGET hng_role_containerd LANGUAGE cpp
+        PROTOS proto/role_containerd_bridge.proto
+        IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
+        PROTOC_OUT_DIR ${ROLE_BRIDGE_GEN_DIR}
+    )
+endif()
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)

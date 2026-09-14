@@ -32,6 +32,39 @@ add_executable(test_context_maintainer test_context_maintainer.cc)
 target_link_libraries(test_context_maintainer PRIVATE hng_context_maintainer)
 add_test(NAME test_context_maintainer COMMAND test_context_maintainer)
 
+# 角色发现公共骨架：状态表与 cgroup 读取，无 IO / 无特权
+add_executable(test_role_signal_table test_role_signal_table.cc)
+target_link_libraries(test_role_signal_table PRIVATE hng_role_discovery)
+add_test(NAME test_role_signal_table COMMAND test_role_signal_table)
+
+add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
+target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
+add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
+
+# containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
+if(TARGET hng_role_containerd)
+    add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)
+    target_link_libraries(test_role_containerd_discoverer PRIVATE hng_role_containerd)
+    add_test(NAME test_role_containerd_discoverer COMMAND test_role_containerd_discoverer)
+
+    # 阶段 04 端到端校验（需先起翻译进程，不注册为 ctest 用例）
+    #   sudo build-agent/test/verify_role_containerd
+    add_executable(verify_role_containerd verify_role_containerd.cc)
+    target_link_libraries(verify_role_containerd PRIVATE hng_role_containerd)
+endif()
+
+# systemd 角色发现源：libsystemd 不可用时该目标不存在，一并跳过
+if(TARGET hng_role_systemd)
+    add_executable(test_role_systemd_discoverer test_role_systemd_discoverer.cc)
+    target_link_libraries(test_role_systemd_discoverer PRIVATE hng_role_systemd)
+    add_test(NAME test_role_systemd_discoverer COMMAND test_role_systemd_discoverer)
+
+    # 阶段 03 端到端校验（需 root 连真实 system bus，不注册为 ctest 用例）
+    #   sudo build-agent/test/verify_role_systemd
+    add_executable(verify_role_systemd verify_role_systemd.cc)
+    target_link_libraries(verify_role_systemd PRIVATE hng_role_systemd)
+endif()
+
 # ============================================================
 # 阶段 01 端到端校验（需 root 与 BPF 权限，不注册为 ctest 用例）
 #
