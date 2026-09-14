@@ -100,6 +100,9 @@ void merge(SystemdUnitSnapshot& snapshot, const SystemdUnitDelta& delta)
     if (delta.main_pid) {
         snapshot.main_pid = *delta.main_pid;
     }
+    if (delta.active_enter_monotonic) {
+        snapshot.active_enter_monotonic = *delta.active_enter_monotonic;
+    }
 }
 
 /// 被跟踪字段是否全等
@@ -109,7 +112,21 @@ bool same_tracked_fields(const SystemdUnitSnapshot& a,
     return a.id == b.id && a.load_state == b.load_state &&
            a.active_state == b.active_state && a.sub_state == b.sub_state &&
            a.service_type == b.service_type && a.main_pid == b.main_pid &&
-           a.control_group == b.control_group;
+           a.control_group == b.control_group &&
+           a.active_enter_monotonic == b.active_enter_monotonic;
+}
+
+/// unit 是否在两帧之间重新进入过 active
+/// @details 只有重新进入 active 才让 ActiveEnterTimestampMonotonic 前进：原地交接
+/// 主进程不离开 active，处在 active 的 reload 也不离开，两者该值都不变。
+/// 两侧都非零是归零边界——停止后该值归零，不设这条边界会把 stop → start 读成
+/// 一次跳变；要求严格大于而非不等——倒退只是旧读数，不是重新进入。
+bool reentered_active(const SystemdUnitSnapshot& before,
+                      const SystemdUnitSnapshot& after)
+{
+    return before.active_enter_monotonic != 0 &&
+           after.active_enter_monotonic != 0 &&
+           after.active_enter_monotonic > before.active_enter_monotonic;
 }
 
 /// 默认主进程探针：读 /proc/<pid>/stat 字段 22
@@ -215,6 +232,13 @@ bool read_tracked_dict(sd_bus_message* message, SystemdUnitDelta& delta)
                 delta.main_pid = value;
             }
         }
+        else if (type == 't') {
+            uint64_t value = 0;
+            if (sd_bus_message_read(message, "t", &value) >= 0 &&
+                std::strcmp(key, "ActiveEnterTimestampMonotonic") == 0) {
+                delta.active_enter_monotonic = value;
+            }
+        }
         else {
             sd_bus_message_skip(message, nullptr);
         }
@@ -225,9 +249,21 @@ bool read_tracked_dict(sd_bus_message* message, SystemdUnitDelta& delta)
     return r == 0;
 }
 
+/// 错误是否表明「对象确实不存在」
+/// @details 与「调用失败」必须分开：前者是源侧给出的事实，后者只能算未知。
+/// 只认 UnknownObject——超时、权限、连接中断都不足以判断对象是否存在，而接口
+/// 缺失另有含义，一并归入未知更安全。
+bool is_absent_error(const sd_bus_error& error)
+{
+    return error.name != nullptr &&
+           std::strcmp(error.name, SD_BUS_ERROR_UNKNOWN_OBJECT) == 0;
+}
+
 /// 取一个对象在指定接口上的全部属性，只留下被跟踪的字段
+/// @param[out] absent 调用失败且错误表明对象确实不存在
+/// @return 调用成功且字典被完整读取
 bool get_all(sd_bus* bus, const std::string& object_path, const char* interface,
-             SystemdUnitDelta& delta)
+             SystemdUnitDelta& delta, bool& absent, uint64_t& cookie)
 {
     sd_bus_error error    = SD_BUS_ERROR_NULL;
     sd_bus_message* reply = nullptr;
@@ -235,13 +271,23 @@ bool get_all(sd_bus* bus, const std::string& object_path, const char* interface,
                                      "org.freedesktop.DBus.Properties", "GetAll",
                                      &error, &reply, "s", interface);
     if (r < 0) {
+        absent = is_absent_error(error);
         sd_bus_error_free(&error);
         return false;
     }
     sd_bus_error_free(&error);
+    sd_bus_message_get_cookie(reply, &cookie);
     const bool ok = read_tracked_dict(reply, delta);
     sd_bus_message_unref(reply);
     return ok;
+}
+
+/// 单调时钟的纳秒读数，用于结算健康度与周期快照
+std::int64_t now_ns()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
 }
 
 }  // namespace
@@ -295,6 +341,46 @@ SystemdSignalTranslator::SystemdSignalTranslator(SystemdUnitFilter filter,
     }
 }
 
+bool SystemdSignalTranslator::accept_active_enter(const std::string& unit_id,
+                                                  uint64_t value)
+{
+    if (value == 0) {
+        return true;  // 停止时归零，是真实读数
+    }
+    const auto it = active_enter_high_water_.find(unit_id);
+    if (it != active_enter_high_water_.end() && value <= it->second) {
+        return false;  // 比已见最大值小：陈旧读数
+    }
+    active_enter_high_water_[unit_id] = value;
+    return true;
+}
+
+void SystemdSignalTranslator::forget_ordering() { watermark_.clear(); }
+
+void SystemdSignalTranslator::begin_segment()
+{
+    in_segment_ = true;
+    segment_buffer_.clear();
+}
+
+std::vector<RoleObservation> SystemdSignalTranslator::end_segment()
+{
+    in_segment_ = false;
+    return std::move(segment_buffer_);
+}
+
+/// 按段内 / 段外把评估产出的观察量送出去
+/// @details 段内：流内观察进缓冲，等 end_segment 之后放行。段外：直接返回。
+void SystemdSignalTranslator::deliver(const SystemdEvaluation& evaluation,
+                                      SystemdTranslation& out)
+{
+    std::vector<RoleObservation>& sink =
+        in_segment_ ? segment_buffer_ : out.observations;
+    for (const RoleObservation& observation : evaluation.observations) {
+        sink.push_back(observation);
+    }
+}
+
 SystemdTranslation SystemdSignalTranslator::on_signal(const SystemdSignal& signal)
 {
     SystemdTranslation result;
@@ -307,15 +393,36 @@ SystemdTranslation SystemdSignalTranslator::on_signal(const SystemdSignal& signa
                 result.pending_snapshots.push_back(signal.object_path);
                 break;
             }
-            const SystemdUnitSnapshot before = it->second;
-            merge(it->second, signal.delta);
+            // 早于「已采纳读数」的增量在构造上就是旧的，采纳它只会把缓存拉回去：
+            // 段内枚举可能读到比仍在途的流内消息更新的状态，迟到的那些消息会把
+            // 同一次重启重放一遍。值上两者同形，只有序号能分
+            const auto mark = watermark_.find(signal.object_path);
+            if (signal.cookie != 0 && mark != watermark_.end() &&
+                signal.cookie <= mark->second) {
+                break;
+            }
             if (!filter_.matches(it->second.id)) {
                 break;
             }
-            if (std::optional<RoleObservation> observation =
-                    evaluate(before, it->second)) {
-                result.observations.push_back(std::move(*observation));
+            // 增量并入评估用副本，结论非未知才提交：未知时连缓存一起不推进，
+            // 否则后续观察会被去重挡住、下游锚点永久停在旧值上
+            SystemdUnitSnapshot candidate = it->second;
+            SystemdUnitDelta delta        = signal.delta;
+            if (delta.active_enter_monotonic &&
+                !accept_active_enter(candidate.id,
+                                     *delta.active_enter_monotonic)) {
+                delta.active_enter_monotonic.reset();  // 陈旧读数不采纳，保留原值
             }
+            merge(candidate, delta);
+            const SystemdEvaluation evaluation =
+                evaluate(it->second, candidate, /*announce=*/false);
+            if (evaluation.kind != SystemdEvaluation::Kind::UNKNOWN) {
+                it->second = candidate;
+                if (signal.cookie != 0) {
+                    watermark_[signal.object_path] = signal.cookie;
+                }
+            }
+            deliver(evaluation, result);
             break;
         }
         case SystemdSignalKind::UNIT_NEW:
@@ -326,10 +433,8 @@ SystemdTranslation SystemdSignalTranslator::on_signal(const SystemdSignal& signa
             break;
         case SystemdSignalKind::UNIT_REMOVED: {
             // 只丢弃属性快照，不参与存活判定
-            auto it = snapshots_.find(signal.object_path);
-            if (it != snapshots_.end()) {
-                snapshots_.erase(it);
-            }
+            snapshots_.erase(signal.object_path);
+            watermark_.erase(signal.object_path);
             break;
         }
         case SystemdSignalKind::JOB_REMOVED:
@@ -344,45 +449,85 @@ SystemdTranslation SystemdSignalTranslator::on_signal(const SystemdSignal& signa
 }
 
 SystemdTranslation SystemdSignalTranslator::on_snapshot(
-    const std::string& object_path, const SystemdUnitSnapshot& snapshot)
+    const std::string& object_path, const SystemdUnitSnapshot& snapshot,
+    uint64_t cookie)
 {
     SystemdTranslation result;
     if (snapshot.id.empty()) {
         return result;  // 拿不到 Id 就无法构造实例键
     }
+    if (cookie != 0) {
+        watermark_[object_path] = cookie;  // 本次采纳的状态有多新
+    }
 
     SystemdUnitSnapshot& stored      = snapshots_[object_path];
     const SystemdUnitSnapshot before = stored;
-    stored                           = snapshot;
-
     if (!filter_.matches(snapshot.id)) {
+        stored = snapshot;
         return result;
     }
-    if (std::optional<RoleObservation> observation = evaluate(before, stored)) {
-        result.observations.push_back(std::move(*observation));
+
+    SystemdUnitSnapshot fetched = snapshot;
+    if (!accept_active_enter(fetched.id, fetched.active_enter_monotonic)) {
+        fetched.active_enter_monotonic = before.active_enter_monotonic;
+    }
+
+    // 段内枚举要 announce：状态表按代际对账，未变化的条目也须被 submit 命中一次
+    SystemdEvaluation evaluation = evaluate(before, fetched, in_segment_);
+    if (evaluation.kind != SystemdEvaluation::Kind::UNKNOWN) {
+        stored = fetched;  // 未知不推进缓存，让下一次观察重新评估
+    }
+    // 枚举观察一律直接返回，段内也不缓冲：它要先于段内流内观察提交
+    for (const RoleObservation& observation : evaluation.observations) {
+        result.observations.push_back(observation);
     }
     return result;
 }
 
-std::optional<RoleObservation> SystemdSignalTranslator::evaluate(
-    const SystemdUnitSnapshot& before, const SystemdUnitSnapshot& after)
+SystemdEvaluation SystemdSignalTranslator::evaluate(
+    const SystemdUnitSnapshot& before, const SystemdUnitSnapshot& after,
+    bool announce)
 {
-    if (same_tracked_fields(before, after)) {
-        return std::nullopt;  // 重复观察或重放的快照：不产出
+    SystemdEvaluation result;
+    if (!announce && same_tracked_fields(before, after)) {
+        return result;  // 重复观察或重放的快照：不产出
     }
 
     // 存在判据由两层合成，缺一不可：
     //   进程层——主进程可确定（MainPID 非零且 /proc 可读）；
     //   状态层——源未宣告退出。ExecStop 未走完时主进程仍在跑、/proc 仍可读，
     //           但角色已不再对外可用，这一层只有源能给。
-    std::optional<hng::Process> main;
-    if (!declared_exit(after.active_state) && after.main_pid != 0) {
-        main = probe_.read_process(after.main_pid);
+    if (declared_exit(after.active_state) || after.main_pid == 0) {
+        // 源侧事实给出「不存在」：主进程已归零，或源已宣告退出
+        result.kind = SystemdEvaluation::Kind::OBSERVED;
+        result.observations.push_back(observe_leave(after.id));
+        return result;
     }
-    if (main.has_value()) {
-        return observe_enter(build_payload(after, *main));
+
+    const std::optional<hng::Process> main = probe_.read_process(after.main_pid);
+    if (!main.has_value()) {
+        // 读不到一律是「未知」，不是「不存在」——据此产出退出会删掉存活条目、
+        // 销毁载荷缓存，且下一次属性变化才把角色加回来
+        result.kind = SystemdEvaluation::Kind::UNKNOWN;
+        if (announce) {
+            // 段内枚举到的条目锚点补不齐：仍须刷当代际，否则会被结算成幽灵退出
+            result.observations.push_back(observe_unknown(after.id));
+        }
+        return result;
     }
-    return observe_leave(after.id);
+
+    result.kind               = SystemdEvaluation::Kind::OBSERVED;
+    // 只有锚点确实变了才轮到「交接还是重启」这个问题：锚点没变时既不是交接也
+    // 不是重启，交给状态表按同一进程去重即可
+    const bool anchor_changed = before.main_pid != after.main_pid;
+    if (anchor_changed && reentered_active(before, after)) {
+        // unit 重新进入过 active：这是重启，展开为退出 + 加入，不合并（§4.1）。
+        // 判据用时间戳而不是「有没有观察到离开 active」，才能覆盖重连盲窗内
+        // 发生的重启——那种情形下中间过程从未被观察到
+        result.observations.push_back(observe_leave(after.id));
+    }
+    result.observations.push_back(observe_enter(build_payload(after, *main)));
+    return result;
 }
 
 RolePayload SystemdSignalTranslator::build_payload(
@@ -410,6 +555,10 @@ RolePayload SystemdSignalTranslator::build_payload(
 // ============================================================
 // SystemdRoleDiscoverer
 // ============================================================
+
+SystemdRoleDiscoverer::SystemdRoleDiscoverer() : SystemdRoleDiscoverer(Config{})
+{
+}
 
 SystemdRoleDiscoverer::SystemdRoleDiscoverer(Config config)
     : config_(std::move(config)), translator_(config_.filter, config_.probe)
@@ -517,6 +666,9 @@ void SystemdRoleDiscoverer::detach_stream()
         bus_ = nullptr;
     }
     pending_snapshots_.clear();
+    // 重连后 systemd 可能另起一条连接、序号从头开始；留着旧水位会把新消息
+    // 全判成陈旧。丢掉水位最差也只是失去这一层保护，而重连后本就要重新快照
+    translator_.forget_ordering();
 }
 
 bool SystemdRoleDiscoverer::subscribe()
@@ -536,8 +688,47 @@ bool SystemdRoleDiscoverer::subscribe()
 
 void SystemdRoleDiscoverer::prime_from_snapshot()
 {
+    next_snapshot_ns_ = snapshot_deadline_ns();  // 每次尝试都重新排期
+
     if (bus_ == nullptr) {
         return;
+    }
+
+    // 快照段：段内命中的条目刷当代际，段末未再出现的存活项按退出结算。
+    // systemd 无子范围，范围留空即表的整个域
+    table_.begin_snapshot();
+    translator_.begin_segment();
+
+    bool complete          = false;
+    const std::size_t rows = enumerate_units(complete);
+
+    if (!complete) {
+        // 枚举没走完就不是权威状态，据它结算会误杀仍存活但没枚举到的角色。
+        // 退回「只喂不结算」，下一次完整段自会修正；持续作废须可见
+        ++voids_;
+        std::fprintf(stderr,
+                     "[role_systemd] 枚举未走完（%zu 行），本次段作废、不结算\n",
+                     rows);
+    }
+    else {
+        for (const RoleEvent& event : table_.end_snapshot()) {
+            config_.on_event(event);
+        }
+        ++settlements_;
+        last_settlement_ns_.store(now_ns());
+    }
+
+    // 缓冲的流内观察一律放行，顺序即到达顺序。作废只是不结算，不丢观察量
+    for (const RoleObservation& observation : translator_.end_segment()) {
+        submit(observation);
+    }
+}
+
+std::size_t SystemdRoleDiscoverer::enumerate_units(bool& complete)
+{
+    complete = false;
+    if (bus_ == nullptr) {
+        return 0;
     }
 
     sd_bus_error error    = SD_BUS_ERROR_NULL;
@@ -547,15 +738,21 @@ void SystemdRoleDiscoverer::prime_from_snapshot()
     if (r < 0) {
         report("调用 Manager.ListUnits 失败", r);
         sd_bus_error_free(&error);
-        return;
+        return 0;
     }
     sd_bus_error_free(&error);
 
+    // 应答的容器类型不符：一个 unit 都没枚举到，不能读成「枚举结果为空」
     r = sd_bus_message_enter_container(reply, 'a', "(ssssssouso)");
     if (r < 0) {
+        ++anomalies_;
+        std::fprintf(stderr,
+                     "[role_systemd] ListUnits 应答格式不符，本次段作废\n");
         sd_bus_message_unref(reply);
-        return;
+        return 0;
     }
+
+    std::size_t rows = 0;
     while ((r = sd_bus_message_enter_container(reply, 'r', "ssssssouso")) > 0) {
         const char *name = nullptr, *description = nullptr, *load_state = nullptr,
                    *active_state = nullptr, *sub_state = nullptr,
@@ -566,48 +763,101 @@ void SystemdRoleDiscoverer::prime_from_snapshot()
                                 &load_state, &active_state, &sub_state,
                                 &following, &object_path, &job_id, &job_type,
                                 &job_path) < 0) {
-            break;
+            // 逐行读取失败：剩余 unit 全部落下，收尾照常会让人以为枚举完整
+            ++anomalies_;
+            std::fprintf(stderr,
+                         "[role_systemd] ListUnits 逐行读取中断于第 %zu 行，"
+                         "本次段作废\n",
+                         rows);
+            sd_bus_message_unref(reply);
+            return rows;
         }
         sd_bus_message_exit_container(reply);
+        ++rows;
 
-        if (name != nullptr && object_path != nullptr &&
-            config_.filter.matches(name)) {
-            if (std::optional<SystemdUnitSnapshot> snapshot =
-                    fetch_snapshot(object_path)) {
-                submit(translator_.on_snapshot(object_path, *snapshot));
-            }
+        if (name == nullptr || object_path == nullptr ||
+            !config_.filter.matches(name)) {
+            continue;
         }
+        harvest_unit(object_path, name);
     }
     sd_bus_message_exit_container(reply);
     sd_bus_message_unref(reply);
+
+    complete = true;
+    return rows;
 }
 
-std::optional<SystemdUnitSnapshot> SystemdRoleDiscoverer::fetch_snapshot(
+void SystemdRoleDiscoverer::harvest_unit(const std::string& object_path,
+                                         const std::string& unit_id)
+{
+    const SystemdFetchResult fetched = fetch_snapshot(object_path);
+    switch (fetched.kind) {
+        case SystemdFetchResult::Kind::FOUND:
+            submit(translator_.on_snapshot(object_path, fetched.snapshot,
+                                           fetched.cookie));
+            break;
+        case SystemdFetchResult::Kind::ABSENT:
+            // 对象确实不存在：源侧事实，产出退出。成高频即说明 ListUnits 与
+            // 取数之间的卸载窗口在被打中
+            ++units_gone_;
+            submit(observe_leave(unit_id));
+            break;
+        case SystemdFetchResult::Kind::UNKNOWN:
+            // 取数失败不能压成「不存在」：喂一条未知观察量，它不产出跃迁，
+            // 但计为本段已见，免于被对账清掉
+            ++unknown_fetches_;
+            submit(observe_unknown(unit_id));
+            break;
+    }
+}
+
+SystemdFetchResult SystemdRoleDiscoverer::fetch_snapshot(
     const std::string& object_path)
 {
-    // Unit 接口给 Id / LoadState / ActiveState / SubState，
-    // Service 接口给 Type / MainPID / ControlGroup，两者分开取
+    SystemdFetchResult result;
+
+    // Unit 接口给 Id / LoadState / ActiveState / SubState /
+    // ActiveEnterTimestamp， Service 接口给 Type / MainPID /
+    // ControlGroup，两者分开取
     SystemdUnitDelta unit_delta;
-    if (!get_all(bus_, object_path, kUnitInterface, unit_delta)) {
-        return std::nullopt;
+    bool absent     = false;
+    uint64_t cookie = 0;
+    if (!get_all(bus_, object_path, kUnitInterface, unit_delta, absent, cookie)) {
+        result.kind = absent ? SystemdFetchResult::Kind::ABSENT
+                             : SystemdFetchResult::Kind::UNKNOWN;
+        return result;
     }
-    SystemdUnitSnapshot snapshot;
-    merge(snapshot, unit_delta);
-    if (snapshot.id.empty()) {
-        return std::nullopt;
+    // 水位取「本次读数最早的那一发应答」：早于它的消息对整次读数都是旧的。
+    // 不取较晚那一发——两次应答之间到达的增量可能携带更新的 Unit 侧字段
+    // （重启恰好落在这两次调用之间时，Unit 应答给旧化身、Service 应答给新化身），
+    // 丢掉它就再也修不回来，重启会被折叠成主进程更换
+    result.cookie = cookie;
+    merge(result.snapshot, unit_delta);
+    if (result.snapshot.id.empty()) {
+        // 拿不到 Id 就构造不出实例键，源侧对这次观察无结论
+        result.kind = SystemdFetchResult::Kind::UNKNOWN;
+        return result;
     }
     // 非 .service 单元无主进程锚点（.scope 亦然），只回 Unit 接口的部分，
     // 由翻译层按过滤器挡下并缓存，避免其每次属性变化都重取一次
-    if (unit_suffix(snapshot.id) != "service") {
-        return snapshot;
+    if (unit_suffix(result.snapshot.id) != "service") {
+        result.kind = SystemdFetchResult::Kind::FOUND;
+        return result;
     }
 
     SystemdUnitDelta service_delta;
-    if (!get_all(bus_, object_path, kServiceInterface, service_delta)) {
-        return std::nullopt;  // 取不全就不判定，避免把存活角色误报为退出
+    absent = false;
+    if (!get_all(bus_, object_path, kServiceInterface, service_delta, absent,
+                 cookie)) {
+        // 取不全就不判定：主进程锚点在 Service 接口上，缺了它无法区分「没有主
+        // 进程」与「没取到」，据半份快照结算会把存活角色误报为退出
+        result.kind = SystemdFetchResult::Kind::UNKNOWN;
+        return result;
     }
-    merge(snapshot, service_delta);
-    return snapshot;
+    merge(result.snapshot, service_delta);
+    result.kind = SystemdFetchResult::Kind::FOUND;
+    return result;
 }
 
 int SystemdRoleDiscoverer::dispatch_pending()
@@ -636,11 +886,14 @@ void SystemdRoleDiscoverer::resolve_pending_snapshots()
         if (stop_requested_.load()) {
             return;
         }
-        std::optional<SystemdUnitSnapshot> snapshot = fetch_snapshot(path);
-        if (!snapshot) {
-            continue;  // 取不到就放弃，等该 unit 的下一次属性变化再来
+        // 段外取不到就放弃，等该 unit 的下一次属性变化再来：这里是首次见到
+        // 某个对象路径，拿不到 Id 就构造不出实例键，源侧对这次观察无结论
+        const SystemdFetchResult fetched = fetch_snapshot(path);
+        if (fetched.kind != SystemdFetchResult::Kind::FOUND) {
+            ++unknown_fetches_;
+            continue;
         }
-        submit(translator_.on_snapshot(path, *snapshot));
+        submit(translator_.on_snapshot(path, fetched.snapshot, fetched.cookie));
     }
 }
 
@@ -653,10 +906,53 @@ void SystemdRoleDiscoverer::submit(const SystemdTranslation& translation)
         }
     }
     for (const RoleObservation& observation : translation.observations) {
-        if (std::optional<RoleEvent> event = table_.submit(observation)) {
-            config_.on_event(*event);
-        }
+        submit(observation);
     }
+}
+
+void SystemdRoleDiscoverer::submit(const RoleObservation& observation)
+{
+    if (std::optional<RoleEvent> event = table_.submit(observation)) {
+        config_.on_event(*event);
+    }
+}
+
+int SystemdRoleDiscoverer::next_snapshot_timeout_ms() const
+{
+    if (next_snapshot_ns_ < 0) {
+        return -1;  // 未启用周期快照：无限等待
+    }
+    const std::int64_t remaining = next_snapshot_ns_ - now_ns();
+    if (remaining <= 0) {
+        return 0;
+    }
+    return static_cast<int>(remaining / 1000000);
+}
+
+std::int64_t SystemdRoleDiscoverer::snapshot_deadline_ns() const
+{
+    if (config_.snapshot_interval.count() <= 0) {
+        return -1;
+    }
+    return now_ns() + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          config_.snapshot_interval)
+                          .count();
+}
+
+SystemdSettlementStats SystemdRoleDiscoverer::settlement_stats() const
+{
+    SystemdSettlementStats stats;
+    stats.settlements       = settlements_.load();
+    stats.voids             = voids_.load();
+    stats.anomalies         = anomalies_.load();
+    stats.units_gone        = units_gone_.load();
+    stats.unknown_fetches   = unknown_fetches_.load();
+
+    const std::int64_t last = last_settlement_ns_.load();
+    if (last >= 0) {
+        stats.since_last_settlement_ms = (now_ns() - last) / 1000000;  // 毫秒
+    }
+    return stats;
 }
 
 void SystemdRoleDiscoverer::backoff_wait(int& attempt)
@@ -714,6 +1010,13 @@ void SystemdRoleDiscoverer::loop()
             continue;  // 本轮有消息，可能又置了待补快照，再排空一次
         }
 
+        // 周期快照：给「没断连但信号被丢」产生的幽灵设上界。与重连路径共用
+        // 同一次结算，故只对本轮 ListUnits 返回、且活动的行取数
+        if (next_snapshot_ns_ >= 0 && now_ns() >= next_snapshot_ns_) {
+            prime_from_snapshot();
+            continue;
+        }
+
         struct pollfd fds[2];
         fds[0].fd       = sd_bus_get_fd(bus_);
         fds[0].events   = static_cast<short>(sd_bus_get_events(bus_));
@@ -722,7 +1025,7 @@ void SystemdRoleDiscoverer::loop()
         fds[1].events   = POLLIN;
         fds[1].revents  = 0;
 
-        const int ready = ::poll(fds, 2, -1);
+        const int ready = ::poll(fds, 2, next_snapshot_timeout_ms());
         if (ready < 0 && errno != EINTR) {
             detach_stream();
         }
@@ -758,6 +1061,7 @@ bool decode_message(sd_bus_message* message, SystemdSignal& signal)
         }
         signal.kind        = SystemdSignalKind::UNIT_PROPERTIES;
         signal.object_path = path;
+        sd_bus_message_get_cookie(message, &signal.cookie);
         return read_tracked_dict(message, signal.delta);
     }
 

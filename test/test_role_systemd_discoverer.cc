@@ -11,6 +11,16 @@
  *  - 属性快照维护：重复与重放的输入不产出，UnitRemoved 丢弃快照，UnitNew 与
  *    JobRemoved 都不触发重取；不可能组合（MainPID != 0 且 inactive）不读成离开；
  *    RemainAfterExit 的 active (exited) 由 MainPID 归零给出退出；
+ *  - 三态取数：主进程读不到即未知，既不产出加入也不产出退出，且不推进属性
+ *    快照（否则去重会挡住后续重评估）；
+ *  - 快照段：段内流内观察缓冲到结算之后放行；段内未再出现的存活项按退出结算；
+ *    未知项与段内流内观察不被对账清掉；作废的段不结算；
+ *  - 时序：取数应答与增量都是带序号的 systemd 消息，早于「已采纳读数」的增量
+ *    按序号丢弃——段内枚举读到的状态可能比仍在途的流内消息新，不丢弃会把同一次
+ *    重启重放一遍；
+ *  - 重启判据：**仅在锚点变化时**才问「交接还是重启」——该值前进即 LEAVE +
+ *    JOIN；原地交接与 reload 该值不动，走主进程更换 / 无动作；锚点未变时该值
+ *    前进（同一进程走完 activating → active）不得展开；
  *  - 对外形态：stop() 先于 run()、stop() 幂等、run() 返回后不再产出事件。
  *
  * 消息序列录自本机真实 systemd 257：
@@ -45,8 +55,10 @@ int g_fail = 0;
     } while (0)
 
 using hng::Process;
+using hng::role::observe_unknown;
 using hng::role::RoleAction;
 using hng::role::RoleEvent;
+using hng::role::RoleObservation;
 using hng::role::RoleSignalTable;
 using hng::role::SystemdProbe;
 using hng::role::SystemdRoleDiscoverer;
@@ -100,6 +112,8 @@ struct FakeSystem {
 };
 
 /// 翻译层 + 状态表的最小组合，收集产出的事件与待补快照
+/// @details 段的开合与发现器同序：开段时翻译层缓冲流内观察、状态表起代际；
+/// 结算时先取差额、再放行缓冲，顺序与 SystemdRoleDiscoverer 一致。
 class Harness {
    public:
     Harness(const SystemdUnitFilter& filter, SystemdProbe probe)
@@ -113,10 +127,35 @@ class Harness {
     }
 
     void feed_snapshot(const std::string& object_path,
-                       const SystemdUnitSnapshot& snapshot)
+                       const SystemdUnitSnapshot& snapshot, uint64_t cookie = 0)
     {
-        absorb(translator_.on_snapshot(object_path, snapshot));
+        absorb(translator_.on_snapshot(object_path, snapshot, cookie));
     }
+
+    /// 直接喂一条观察量，模拟发现器在枚举路径上按三态分流
+    void feed_observation(const RoleObservation& observation)
+    {
+        absorb_observation(observation);
+    }
+
+    /// 开快照段
+    void begin_segment()
+    {
+        table_.begin_snapshot();
+        translator_.begin_segment();
+    }
+
+    /// 结算本段并放行缓冲
+    void end_segment()
+    {
+        for (RoleEvent& event : table_.end_snapshot()) {
+            events_.push_back(std::move(event));
+        }
+        release_buffer();
+    }
+
+    /// 作废本段：不结算，但缓冲的流内观察照常放行
+    void void_segment() { release_buffer(); }
 
     const std::vector<RoleEvent>& events() const { return events_; }
 
@@ -131,15 +170,27 @@ class Harness {
     void clear_pending() { pending_.clear(); }
 
    private:
+    void release_buffer()
+    {
+        for (const RoleObservation& observation : translator_.end_segment()) {
+            absorb_observation(observation);
+        }
+    }
+
     void absorb(const SystemdTranslation& translation)
     {
         for (const std::string& path : translation.pending_snapshots) {
             pending_.push_back(path);
         }
-        for (const auto& observation : translation.observations) {
-            if (std::optional<RoleEvent> event = table_.submit(observation)) {
-                events_.push_back(*event);
-            }
+        for (const RoleObservation& observation : translation.observations) {
+            absorb_observation(observation);
+        }
+    }
+
+    void absorb_observation(const RoleObservation& observation)
+    {
+        if (std::optional<RoleEvent> event = table_.submit(observation)) {
+            events_.push_back(std::move(*event));
         }
     }
 
@@ -184,10 +235,11 @@ SystemdUnitDelta delta_unit_state(const std::string& active_state,
 }
 
 SystemdSignal sig_properties(const std::string& object_path,
-                             const SystemdUnitDelta& delta)
+                             const SystemdUnitDelta& delta, uint64_t cookie = 0)
 {
     SystemdSignal signal;
     signal.kind        = SystemdSignalKind::UNIT_PROPERTIES;
+    signal.cookie      = cookie;
     signal.object_path = object_path;
     signal.delta       = delta;
     return signal;
@@ -620,7 +672,270 @@ void test_job_removed_does_not_revive_stopped_unit()
 }
 
 // ============================================================
-// 12. 对外形态：run() / stop()
+// 12. 主进程读不到：既不出加入也不出退出，且不推进属性快照
+// ============================================================
+
+void test_unknown_probe_produces_no_transition()
+{
+    FakeSystem system;  // 7755 不在 start_times 里：探针读不到，即未知
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    CHECK(harness.events().empty(), "读不到主进程时不得产出加入");
+
+    // 未知不推进属性快照：此刻进程可读了，同一条观察重新评估即应产出加入
+    system.start_times[7755] = 111ULL;
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN},
+                   "探针转可读后重新评估并产出加入");
+}
+
+void test_unknown_probe_does_not_leave()
+{
+    FakeSystem system;
+    system.start_times[7755]  = 111ULL;
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // 主进程探针转为读不到：这是未知，不是「进程不存在」，不得产出退出
+    FakeSystem blind;
+    blind.members[kCgroup()] = {Process{7755, 111ULL}};
+    Harness blind_harness(SystemdUnitFilter(), blind.probe());
+    blind_harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service",
+                                                      7755, "active", "running"));
+    CHECK(blind_harness.events().empty(), "冷启动时读不到主进程不产出任何事件");
+
+    harness.feed(sig_properties(kSvcPath, delta_unit_state("active", "running")));
+    expect_actions(harness.events(), {RoleAction::JOIN},
+                   "被跟踪字段无变化时不重复评估");
+}
+
+// ============================================================
+// 13. 段内流内观察缓冲到结算之后放行（P5）
+// ============================================================
+
+void test_segment_buffers_stream_observations()
+{
+    FakeSystem system;
+    system.start_times[7755]  = 111ULL;
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    harness.begin_segment();
+
+    // 段内到达的流内观察：unit 在主进程归零，这是比枚举更新的那一笔
+    harness.feed(sig_properties(kSvcPath, delta_main_pid(0)));
+    CHECK(harness.events().size() == 1, "段内流内观察必须缓冲，不得就地提交");
+
+    // 同一段内枚举到停止前的陈旧行：同一实例键上它是较早的那笔
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    CHECK(harness.events().size() == 1, "枚举观察在段内提交，锚点未变故无产出");
+
+    harness.end_segment();
+    expect_actions(harness.events(), {RoleAction::JOIN, RoleAction::LEAVE},
+                   "缓冲的流内观察在结算之后放行，退出不被陈旧行抹掉");
+}
+
+// ============================================================
+// 14. 对账：段内未再出现的存活项按退出结算
+// ============================================================
+
+void test_reconciliation_clears_absent_units()
+{
+    constexpr const char* kOtherPath =
+        "/org/freedesktop/systemd1/unit/hng_2dprobe_2dother_2eservice";
+
+    FakeSystem system;
+    system.start_times[7755]  = 111ULL;
+    system.start_times[7756]  = 112ULL;
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    harness.feed_snapshot(kOtherPath, mk_snapshot("hng-probe-other.service", 7756,
+                                                  "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN, RoleAction::JOIN},
+                   "前置：两者都加入");
+
+    // 本段只枚举到后者：前者缺席即退出
+    harness.begin_segment();
+    harness.feed_snapshot(kOtherPath, mk_snapshot("hng-probe-other.service", 7756,
+                                                  "active", "running"));
+    harness.end_segment();
+    expect_actions(harness.events(),
+                   {RoleAction::JOIN, RoleAction::JOIN, RoleAction::LEAVE},
+                   "缺席的实例在结算时产出退出");
+    CHECK(harness.events().back().payload.identity.instance_key ==
+              "hng-probe-svc.service",
+          "退出的是缺席的那个实例");
+}
+
+void test_reconciliation_keeps_unknown_and_buffered_entries()
+{
+    constexpr const char* kOtherPath =
+        "/org/freedesktop/systemd1/unit/hng_2dprobe_2dother_2eservice";
+
+    FakeSystem system;
+    system.start_times[7755]  = 111ULL;
+    system.start_times[7756]  = 112ULL;
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    harness.feed_snapshot(kOtherPath, mk_snapshot("hng-probe-other.service", 7756,
+                                                  "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN, RoleAction::JOIN},
+                   "前置：两者都加入");
+
+    // 本段：前者取数失败，喂未知观察量计为本段已见；后者照常枚举到，且段内
+    // 来了一条无变化的流内增量（缓冲后放行为空）。两者都不得被对账清掉
+    harness.begin_segment();
+    harness.feed_observation(observe_unknown("hng-probe-svc.service"));
+    harness.feed_snapshot(kOtherPath, mk_snapshot("hng-probe-other.service", 7756,
+                                                  "active", "running"));
+    harness.feed(
+        sig_properties(kOtherPath, delta_unit_state("active", "running")));
+    harness.end_segment();
+    expect_actions(harness.events(), {RoleAction::JOIN, RoleAction::JOIN},
+                   "未知项与段内枚举到的条目都不被对账清掉");
+}
+
+void test_voided_segment_settles_nothing()
+{
+    FakeSystem system;
+    system.start_times[7755]  = 111ULL;
+    system.members[kCgroup()] = {Process{7755, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    harness.feed_snapshot(kSvcPath, mk_snapshot("hng-probe-svc.service", 7755,
+                                                "active", "running"));
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // 枚举没走完：整段作废，不结算——缺席可能只是没枚举到
+    harness.begin_segment();
+    harness.void_segment();
+    expect_actions(harness.events(), {RoleAction::JOIN},
+                   "作废的段不产出任何退出");
+}
+
+// ============================================================
+// 15. 重连盲窗内的重启：时间戳前进即 LEAVE + JOIN（P7）
+// ============================================================
+
+void test_blind_window_restart_uses_active_enter_timestamp()
+{
+    FakeSystem system;
+    system.start_times[100]   = 111ULL;
+    system.start_times[200]   = 222ULL;
+    system.members[kCgroup()] = {Process{100, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+
+    SystemdUnitSnapshot first =
+        mk_snapshot("hng-probe-svc.service", 100, "active", "running");
+    first.active_enter_monotonic = 9914452757ULL;
+    harness.feed_snapshot(kSvcPath, first);
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // 盲窗内停止又启动：中间过程从未被观察到，只有锚点与时间戳变了
+    SystemdUnitSnapshot restarted =
+        mk_snapshot("hng-probe-svc.service", 200, "active", "running");
+    restarted.active_enter_monotonic = 9916977341ULL;
+    system.members[kCgroup()]        = {Process{200, 222ULL}};
+    harness.feed_snapshot(kSvcPath, restarted);
+    expect_actions(harness.events(),
+                   {RoleAction::JOIN, RoleAction::LEAVE, RoleAction::JOIN},
+                   "时间戳前进即重启，展开为退出 + 加入而非主进程更换");
+}
+
+void test_activation_does_not_look_like_restart()
+{
+    FakeSystem system;
+    system.start_times[100]   = 111ULL;
+    system.members[kCgroup()] = {Process{100, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    SystemdUnitSnapshot activating =
+        mk_snapshot("hng-probe-svc.service", 100, "activating", "start");
+    // 缓存里留着上一个化身的读数：systemd 停止时不把该字段归零，实测如此
+    activating.active_enter_monotonic = 9914452757ULL;
+    harness.feed_snapshot(kSvcPath, activating);
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // 同一个进程，unit 走完 activating → active：锚点没变，该值前进到新化身的读数
+    harness.feed(sig_properties(kSvcPath, delta_unit_state("active", "running")));
+    SystemdUnitDelta advanced;
+    advanced.active_enter_monotonic = 9916977341ULL;
+    harness.feed(sig_properties(kSvcPath, advanced));
+    expect_actions(harness.events(), {RoleAction::JOIN},
+                   "锚点未变时该值前进不展开为退出 + 加入");
+}
+
+void test_reload_does_not_look_like_restart()
+{
+    FakeSystem system;
+    system.start_times[100]   = 111ULL;
+    system.members[kCgroup()] = {Process{100, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    SystemdUnitSnapshot before =
+        mk_snapshot("hng-probe-svc.service", 100, "active", "running");
+    before.active_enter_monotonic = 9914452757ULL;
+    harness.feed_snapshot(kSvcPath, before);
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // reload 期间 unit 确实离开了 active（reloading 不是 active），但时间戳不动，
+    // 且主进程没换，因此不产出任何动作
+    harness.feed(
+        sig_properties(kSvcPath, delta_unit_state("reloading", "reload")));
+    harness.feed(sig_properties(kSvcPath, delta_unit_state("active", "running")));
+    expect_actions(harness.events(), {RoleAction::JOIN}, "reload 不产出多余动作");
+}
+
+// ============================================================
+// 16. 早于已采纳读数的增量按序号丢弃
+// ============================================================
+
+void test_stale_delta_is_dropped_by_cookie()
+{
+    FakeSystem system;
+    system.start_times[100]   = 111ULL;
+    system.members[kCgroup()] = {Process{100, 111ULL}};
+
+    Harness harness(SystemdUnitFilter(), system.probe());
+    // 取数把快照推进到当前化身，应答序号 200：此刻的状态有多新有了下界
+    harness.feed_snapshot(
+        kSvcPath, mk_snapshot("hng-probe-svc.service", 100, "active", "running"),
+        200);
+    expect_actions(harness.events(), {RoleAction::JOIN}, "前置：先加入");
+
+    // 序号 150 的增量早于那次读数——停止期的消息迟到，它携带的是已被覆盖的旧状态
+    harness.feed(sig_properties(kSvcPath, delta_main_pid(0), 150));
+    expect_actions(harness.events(), {RoleAction::JOIN},
+                   "早于已采纳读数的增量不得把缓存拉回去");
+
+    // 序号 250 晚于那次读数，照常采纳
+    harness.feed(sig_properties(kSvcPath, delta_main_pid(0), 250));
+    expect_actions(harness.events(), {RoleAction::JOIN, RoleAction::LEAVE},
+                   "晚于读数的增量照常采纳");
+}
+
+// ============================================================
+// 17. 对外形态：run() / stop()
 // ============================================================
 
 void test_run_stop_contract()
@@ -664,6 +979,16 @@ int main()
     test_impossible_combination_keeps_instance_present();
     test_remain_after_exit_leaves_on_main_pid_zero();
     test_job_removed_does_not_revive_stopped_unit();
+    test_unknown_probe_produces_no_transition();
+    test_unknown_probe_does_not_leave();
+    test_segment_buffers_stream_observations();
+    test_reconciliation_clears_absent_units();
+    test_reconciliation_keeps_unknown_and_buffered_entries();
+    test_voided_segment_settles_nothing();
+    test_blind_window_restart_uses_active_enter_timestamp();
+    test_activation_does_not_look_like_restart();
+    test_stale_delta_is_dropped_by_cookie();
+    test_reload_does_not_look_like_restart();
     test_run_stop_contract();
 
     if (g_fail == 0) {

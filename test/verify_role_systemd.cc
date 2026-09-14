@@ -19,6 +19,15 @@
  *   sudo systemd-run --unit=hng-probe --property=Type=simple /bin/sleep 5
  *   sudo systemctl restart avahi-daemon.service     # 多进程 cgroup，验补齐
  *
+ * 可选参数为周期快照间隔（毫秒），0 关掉；调小可观察结算健康度累积：
+ *   sudo build-agent/test/verify_role_systemd 3000
+ *
+ * 两条需要盲窗的校验改用手动制造（单测已覆盖其逻辑，此处验的是真实时序）：
+ *   - 对账生效：`sudo systemctl daemon-reexec` 会让本连接重新订阅并重跑快照段，
+ *     在该窗口内停掉一个 unit，重连后应产出它的退出，而不是把它留在表里。
+ *   - 盲窗内重启：同上窗口内停掉再启同一个 unit，应产出 LEAVE + JOIN，
+ *     而不是被折叠成一次「主进程更换」。
+ *
  * @author red_shinku
  * @date 2026.9.12
  */
@@ -27,8 +36,10 @@
 #include "agent/control_plane/role_discovery/include/role_systemd_discoverer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -43,6 +54,7 @@ using hng::role::RoleAction;
 using hng::role::RoleCgroupReader;
 using hng::role::RoleEvent;
 using hng::role::SystemdRoleDiscoverer;
+using hng::role::SystemdSettlementStats;
 
 SystemdRoleDiscoverer* g_discoverer = nullptr;
 
@@ -204,10 +216,16 @@ void on_signal(int)
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // 事件与跟踪按真实时序交错
+
     SystemdRoleDiscoverer::Config config;
     config.on_event = on_event;
+    // 可选：周期快照间隔（毫秒），传 0 关掉。调小可以观察结算健康度累积
+    if (argc > 1) {
+        config.snapshot_interval = std::chrono::milliseconds(std::atoi(argv[1]));
+    }
 
     SystemdRoleDiscoverer discoverer(config);
     g_discoverer = &discoverer;
@@ -228,6 +246,18 @@ int main()
     std::printf("\n================ 汇总 ================\n");
     std::printf("事件 %d：加入 %d，退出 %d，主进程更换 %d\n", g_events, g_joins,
                 g_leaves, g_main_process_changes);
+
+    const SystemdSettlementStats stats = discoverer.settlement_stats();
+    std::printf(
+        "结算 %llu 段，作废 %llu 段，结构异常 %llu 次，"
+        "取数时对象已不在 %llu 次，逐项取数失败 %llu 次，"
+        "距上次成功结算 %lld ms\n",
+        static_cast<unsigned long long>(stats.settlements),
+        static_cast<unsigned long long>(stats.voids),
+        static_cast<unsigned long long>(stats.anomalies),
+        static_cast<unsigned long long>(stats.units_gone),
+        static_cast<unsigned long long>(stats.unknown_fetches),
+        static_cast<long long>(stats.since_last_settlement_ms));
     if (g_events == 0) {
         std::printf("未观察到任何事件——若确实制造了 unit 变化，说明有漏报。\n");
     }
