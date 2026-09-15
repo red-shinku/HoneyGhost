@@ -8,7 +8,7 @@
 #ifndef ROLE_DISCOVERER_HPP_
 #define ROLE_DISCOVERER_HPP_
 
-#include "agent/control_plane/role_discovery/include/role_observation.hpp"
+#include "agent/control_plane/role_discovery/include/role_event.hpp"
 
 /**
  * @brief 角色发现器的接口类

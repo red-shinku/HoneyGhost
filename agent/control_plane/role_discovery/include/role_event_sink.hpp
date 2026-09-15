@@ -9,7 +9,7 @@
 #ifndef HNG_ROLE_EVENT_SINK_HPP_
 #define HNG_ROLE_EVENT_SINK_HPP_
 
-#include "agent/control_plane/role_discovery/include/role_observation.hpp"
+#include "agent/control_plane/role_discovery/include/role_event.hpp"
 
 namespace hng {
 namespace role {

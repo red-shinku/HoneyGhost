@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "agent/control_plane/role_discovery/include/role_discoverer.hpp"
+#include "agent/control_plane/role_discovery/include/role_event.hpp"
 #include "agent/control_plane/role_discovery/include/role_event_sink.hpp"
 #include "agent/control_plane/role_discovery/include/role_observation.hpp"
 #include "agent/control_plane/role_discovery/include/role_signal_table.hpp"
