@@ -147,33 +147,6 @@ std::optional<hng::Process> read_proc_process(uint32_t pid)
     return hng::Process{pid, *start_time};
 }
 
-const char* action_name(RoleAction action)
-{
-    switch (action) {
-        case RoleAction::JOIN:
-            return "JOIN";
-        case RoleAction::LEAVE:
-            return "LEAVE";
-        case RoleAction::MAIN_PROCESS_CHANGE:
-            return "MAIN_PROCESS_CHANGE";
-    }
-    return "?";
-}
-
-/// 默认事件出口：往 stderr 打一行摘要
-void print_event(const RoleEvent& event)
-{
-    std::fprintf(
-        stderr,
-        "[role_systemd] %-19s %-32s pid=%-7u start=%-12llu 成员=%zu "
-        "cgroup=%s\n",
-        action_name(event.action), event.payload.identity.instance_key.c_str(),
-        event.payload.main_process.pid,
-        static_cast<unsigned long long>(
-            event.payload.main_process.pid_start_time),
-        event.payload.member_processes.size(), event.payload.cgroup_path.c_str());
-}
-
 void report(const char* what, int error_code)
 {
     std::fprintf(stderr, "[role_systemd] %s：%s\n", what,
@@ -556,16 +529,11 @@ RolePayload SystemdSignalTranslator::build_payload(
 // SystemdRoleDiscoverer
 // ============================================================
 
-SystemdRoleDiscoverer::SystemdRoleDiscoverer() : SystemdRoleDiscoverer(Config{})
+SystemdRoleDiscoverer::SystemdRoleDiscoverer(RoleEventSink& sink, Config config)
+    : sink_(sink),
+      config_(std::move(config)),
+      translator_(config_.filter, config_.probe)
 {
-}
-
-SystemdRoleDiscoverer::SystemdRoleDiscoverer(Config config)
-    : config_(std::move(config)), translator_(config_.filter, config_.probe)
-{
-    if (!config_.on_event) {
-        config_.on_event = print_event;
-    }
     wakeup_fd_ = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 }
 
@@ -598,10 +566,12 @@ void SystemdRoleDiscoverer::stop()
     }
 }
 
-void SystemdRoleDiscoverer::publish()
+void SystemdRoleDiscoverer::publish(const RoleEvent& event)
 {
-    // 事件当前经 Config::on_event 交付，本接口待阶段 05 定稿
+    sink_.on_role_event(event);
 }
+
+void SystemdRoleDiscoverer::emit(const RoleEvent& event) { publish(event); }
 
 void SystemdRoleDiscoverer::attach_stream()
 {
@@ -712,7 +682,7 @@ void SystemdRoleDiscoverer::prime_from_snapshot()
     }
     else {
         for (const RoleEvent& event : table_.end_snapshot()) {
-            config_.on_event(event);
+            emit(event);
         }
         ++settlements_;
         last_settlement_ns_.store(now_ns());
@@ -913,7 +883,7 @@ void SystemdRoleDiscoverer::submit(const SystemdTranslation& translation)
 void SystemdRoleDiscoverer::submit(const RoleObservation& observation)
 {
     if (std::optional<RoleEvent> event = table_.submit(observation)) {
-        config_.on_event(*event);
+        emit(*event);
     }
 }
 

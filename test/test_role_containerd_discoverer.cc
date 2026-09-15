@@ -9,7 +9,9 @@
  *    再见到的项被撤下；
  *  - 帧序违约：段内外标记不符、段内条目数与声明不符（后者不结算）；
  *  - 接线：假翻译进程经真实 Unix socket 送帧，断言产出的事件；断开后重连并
- *    以空快照对账，断言退出事件。
+ *    以空快照对账，断言退出事件；
+ *  - 出口契约：三类动作都经同一个 sink 交付、产出全部发生在 run() 的线程上、
+ *    run() 返回后不再产出、结算与流内 submit 的产出同序。
  *
  * @author red_shinku
  * @date 2026.9.13
@@ -639,15 +641,17 @@ class FakeBridge {
     int connection_fd_ = -1;
 };
 
-/// 收集事件的出口
-class EventSink {
+/// 记录型事件出口：实现 RoleEventSink，记录动作、实例键、锚点与调用线程
+/// @details 记录调用线程是为了断言 publish 全部发生在 run() 的调用栈上
+class EventSink : public hng::role::RoleEventSink {
    public:
-    void operator()(const RoleEvent& event)
+    void on_role_event(const RoleEvent& event) override
     {
         std::lock_guard<std::mutex> lock(mutex_);
         events_.push_back(event.action);
         keys_.push_back(event.payload.identity.instance_key);
         pids_.push_back(event.payload.main_process.pid);
+        threads_.push_back(std::this_thread::get_id());
     }
 
     /// 等到至少 n 个事件；超时返回此刻已收集到的
@@ -683,12 +687,23 @@ class EventSink {
         std::lock_guard<std::mutex> lock(mutex_);
         return pids_;
     }
+    std::vector<std::thread::id> threads()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return threads_;
+    }
+    std::size_t count()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return events_.size();
+    }
 
    private:
     std::mutex mutex_;
     std::vector<RoleAction> events_;
     std::vector<std::string> keys_;
     std::vector<uint32_t> pids_;
+    std::vector<std::thread::id> threads_;
 };
 
 /// 端到端：真实 socket 上的快照段、流内事件、断连重连与对账
@@ -706,13 +721,16 @@ void run_wiring()
     ContainerdRoleDiscoverer::Config config;
     config.socket_path           = socket_path;
     config.probe                 = fake.probe();
-    config.on_event              = std::ref(sink);
     config.anchor_retry_interval = std::chrono::milliseconds(20);
     config.backoff_base          = std::chrono::milliseconds(10);
     config.backoff_max           = std::chrono::milliseconds(50);
 
-    ContainerdRoleDiscoverer discoverer(config);
-    std::thread runner([&discoverer] { discoverer.run(); });
+    ContainerdRoleDiscoverer discoverer(sink, config);
+    std::thread::id run_thread;
+    std::thread runner([&discoverer, &run_thread] {
+        run_thread = std::this_thread::get_id();
+        discoverer.run();
+    });
 
     // ① 一次完整快照段：a 加入
     CHECK(bridge.accept_one(), "发现器应连上");
@@ -730,31 +748,45 @@ void run_wiring()
     CHECK(sink.wait_for(2) == 2, "流内加入应产出事件");
     CHECK(sink.keys()[1] == "a2", "第二个事件应为 a2");
 
-    // ③ 断开重连：新会话以空快照对账，a1 与 a2 各产出一个退出
+    // ③ 主进程更换：容器仍在，主进程换了，它是不带 LEAVE 的独立动作
+    fake.processes[8] = Process{8, 222};
+    bridge.send(make_upsert(k8s_attributes("a2", "nginx"), 8, false));
+    CHECK(sink.wait_for(3) == 3, "主进程更换应产出事件");
+    CHECK(sink.actions()[2] == RoleAction::MAIN_PROCESS_CHANGE &&
+              sink.keys()[2] == "a2",
+          "应为 a2 的主进程更换");
+    CHECK(sink.pids()[2] == 8, "主进程更换应携带新锚点");
+
+    // ④ 断开重连：新会话以空快照对账，a1 与 a2 各产出一个退出
     bridge.close_connection();
     CHECK(bridge.accept_one(), "发现器应重连");
     bridge.send(make_begin({"k8s.io"}));
     bridge.send(make_end(0));
-    CHECK(sink.wait_for(4) == 4, "重连后的空快照应对账出两个退出");
+    CHECK(sink.wait_for(5) == 5, "重连后的空快照应对账出两个退出");
     const std::vector<RoleAction> actions = sink.actions();
-    CHECK(actions[2] == RoleAction::LEAVE && actions[3] == RoleAction::LEAVE,
+    CHECK(actions[3] == RoleAction::LEAVE && actions[4] == RoleAction::LEAVE,
           "对账应产出退出，且按实例键升序");
-    CHECK(sink.keys()[2] == "a1" && sink.keys()[3] == "a2", "退出顺序应确定");
+    CHECK(sink.keys()[3] == "a1" && sink.keys()[4] == "a2", "退出顺序应确定");
 
-    // ④ 未结算的段不产出退出：新会话只开段不收场，表内的存活项保持
+    // ⑤ 未结算的段不产出退出：新会话只开段不收场，表内的存活项保持
     bridge.send(make_upsert(k8s_attributes("a3", "nginx"), 7, false));
-    CHECK(sink.wait_for(5) == 5, "a3 加入应产出事件");
+    CHECK(sink.wait_for(6) == 6, "a3 加入应产出事件");
+    // 出口契约：已收到的六个事件里，段结算的产出（a1 的 JOIN、对账的两个
+    // LEAVE）与流内 submit 的产出（a2 的 JOIN、主进程更换、a3 的 JOIN）落在
+    // 同一个 sink、同一次序，end_snapshot 的产出不另立通路
+    CHECK(sink.actions()[5] == RoleAction::JOIN && sink.keys()[5] == "a3",
+          "结算与流内的产出应同出口、同序");
     bridge.send(make_begin({"k8s.io"}));
     bridge.send(make_upsert(k8s_attributes("a3", "nginx"), 7, true));
     // 不发 SnapshotEnd，直接断连
     bridge.close_connection();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    CHECK(sink.wait_for(5) == 5, "未走完的段不得产出退出");
+    CHECK(sink.wait_for(6) == 6, "未走完的段不得产出退出");
 
     const SettlementStats stats = discoverer.settlement_stats();
     CHECK(stats.settlements >= 2, "应记下成功结算的段数");
 
-    // ⑤ 没有开场的收场：记为违约，且不得刷新「距上次成功结算的时长」
+    // ⑥ 没有开场的收场：记为违约，且不得刷新「距上次成功结算的时长」
     CHECK(bridge.accept_one(), "发现器应重连");
     bridge.send(make_end(0));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -762,8 +794,21 @@ void run_wiring()
     CHECK(after.settlements == stats.settlements, "无开场的收场不得记为结算");
     CHECK(after.anomalies > stats.anomalies, "无开场的收场应记为违约");
 
+    // ⑦ 出口契约：全部产出都在 run() 的调用栈上同步交付
+    const std::vector<std::thread::id> callers = sink.threads();
+    CHECK(!callers.empty(), "应记录到事件");
+    for (const std::thread::id& caller : callers) {
+        CHECK(caller == run_thread, "publish 应发生在 run() 的线程上");
+    }
+
     discoverer.stop();
     runner.join();
+
+    // ⑧ 出口契约：run() 返回后不再有产出
+    const std::size_t settled = sink.count();
+    CHECK(settled > 0, "停止前应已收到事件");  // 否则下面的比较恒真
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(sink.count() == settled, "run() 返回后不再产出事件");
 }
 
 /// 翻译进程未起：退避重试期间不产出事件，stop() 仍能打断
@@ -776,9 +821,7 @@ void run_backoff()
     config.backoff_max  = std::chrono::milliseconds(20);
 
     EventSink sink;
-    config.on_event = std::ref(sink);
-
-    ContainerdRoleDiscoverer discoverer(config);
+    ContainerdRoleDiscoverer discoverer(sink, config);
     std::thread runner([&discoverer] { discoverer.run(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     discoverer.stop();

@@ -32,6 +32,8 @@
 #include <vector>
 
 #include "agent/control_plane/role_discovery/include/role_discoverer.hpp"
+#include "agent/control_plane/role_discovery/include/role_event.hpp"
+#include "agent/control_plane/role_discovery/include/role_event_sink.hpp"
 #include "agent/control_plane/role_discovery/include/role_observation.hpp"
 #include "agent/control_plane/role_discovery/include/role_signal_table.hpp"
 #include "agent/event_data/process.hpp"
@@ -251,9 +253,7 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
         /// 翻译进程的 Unix socket 路径
         std::string socket_path = "/run/honeyghost/containerd-bridge.sock";
         ContainerFilter filter;  ///< 容器过滤策略
-        /// 事件出口，留空则往 stderr 打一行摘要
-        std::function<void(const RoleEvent&)> on_event;
-        ContainerProbe probe;  ///< IO 注入点
+        ContainerProbe probe;    ///< IO 注入点
         /// 重连退避的起始值与上限
         std::chrono::milliseconds backoff_base{200};
         std::chrono::milliseconds backoff_max{30000};
@@ -261,10 +261,9 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
         std::chrono::milliseconds anchor_retry_interval{200};
     };
 
-    ContainerdRoleDiscoverer();
-    /// @note 默认值与带参构造分开写：GCC 不接受带默认成员初始化的嵌套类型
-    /// 直接用作默认实参
-    explicit ContainerdRoleDiscoverer(Config config);
+    /// @param sink 事件出口，须比本对象活得久
+    /// @param config 构造配置
+    ContainerdRoleDiscoverer(RoleEventSink& sink, Config config);
     ~ContainerdRoleDiscoverer() override;
 
     ContainerdRoleDiscoverer(const ContainerdRoleDiscoverer&)            = delete;
@@ -278,8 +277,9 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
     /// @note 幂等、可从任意线程调用；在 run() 之前调用时 run() 立即返回
     void stop();
 
-    /// 过渡空实现：事件经 Config::on_event 交付，本接口的契约待阶段 05 定稿
-    void publish() override;
+    /// 把事件转发给构造时注入的事件出口
+    /// @note 本文件内只有一处调用本方法，见 emit
+    void publish(const RoleEvent& event) override;
 
     /// 取结算健康度
     /// @note 可从任意线程调用
@@ -300,11 +300,16 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
     void handle(const ContainerdMessage& message);
     /// 按序执行一批动作
     void execute(const ContainerTranslation& translation);
+    /// 单一出口：把一条跃迁产出交给事件出口
+    /// @details 发现器内的产出（submit 与 end_snapshot 的结算）一律经此转发，
+    /// publish 只被这一处调用，end_snapshot 的产出不另立通路
+    void emit(const RoleEvent& event);
     /// 退避等待，可被 stop() 打断
     void backoff_wait(int& attempt);
     /// 从连接的 socket 读满 n 字节
     bool read_exact(void* buffer, std::size_t length);
 
+    RoleEventSink& sink_;  ///< 事件出口，构造时注入，不接管其生命周期
     Config config_;
     ContainerdBridgeTranslator translator_;
     RoleSignalTable table_;

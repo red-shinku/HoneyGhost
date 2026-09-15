@@ -32,6 +32,8 @@
 #include <vector>
 
 #include "agent/control_plane/role_discovery/include/role_discoverer.hpp"
+#include "agent/control_plane/role_discovery/include/role_event.hpp"
+#include "agent/control_plane/role_discovery/include/role_event_sink.hpp"
 #include "agent/control_plane/role_discovery/include/role_observation.hpp"
 #include "agent/control_plane/role_discovery/include/role_signal_table.hpp"
 #include "agent/event_data/process.hpp"
@@ -329,9 +331,7 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
      */
     struct Config {
         SystemdUnitFilter filter;  ///< unit 过滤策略
-        /// 事件出口，留空则往 stderr 打一行摘要
-        std::function<void(const RoleEvent&)> on_event;
-        SystemdProbe probe;  ///< IO 注入点
+        SystemdProbe probe;        ///< IO 注入点
 
         /// 周期快照间隔，0 表示不做
         /// @details 对账只在快照段结束时发生，故“没断连但信号被丢”产生的幽灵
@@ -340,10 +340,9 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
         std::chrono::milliseconds snapshot_interval{600000};
     };
 
-    SystemdRoleDiscoverer();
-    /// @note 默认值与带参构造分开写：GCC 不接受带默认成员初始化的嵌套类型
-    /// 直接用作默认实参
-    explicit SystemdRoleDiscoverer(Config config);
+    /// @param sink 事件出口，须比本对象活得久
+    /// @param config 构造配置
+    SystemdRoleDiscoverer(RoleEventSink& sink, Config config);
     ~SystemdRoleDiscoverer() override;
 
     SystemdRoleDiscoverer(const SystemdRoleDiscoverer&)            = delete;
@@ -357,8 +356,9 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
     /// @note 幂等、可从任意线程调用；在 run() 之前调用时 run() 立即返回
     void stop();
 
-    /// 过渡空实现：事件经 Config::on_event 交付，本接口的契约待阶段 05 定稿
-    void publish() override;
+    /// 把事件转发给构造时注入的事件出口
+    /// @note 本文件内只有一处调用本方法，见 emit
+    void publish(const RoleEvent& event) override;
 
     /// 取结算健康度
     /// @note 可从任意线程调用
@@ -402,6 +402,11 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
     /// 把一条观察量喂入状态表，跃迁产出交给事件出口
     void submit(const RoleObservation& observation);
 
+    /// 单一出口：把一条跃迁产出交给事件出口
+    /// @details 发现器内的产出（submit 与 end_snapshot 的结算）一律经此转发，
+    /// publish 只被这一处调用，end_snapshot 的产出不另立通路
+    void emit(const RoleEvent& event);
+
     /// 距下次周期快照的毫秒数，用于 poll 超时
     /// @return 未启用周期快照时为 -1（无限等待）
     int next_snapshot_timeout_ms() const;
@@ -414,6 +419,7 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
     /// 处理一条已到达的 sd-bus 消息：解码、记日志、喂入翻译层
     void handle_message(struct sd_bus_message* message);
 
+    RoleEventSink& sink_;  ///< 事件出口，构造时注入，不接管其生命周期
     Config config_;
     SystemdSignalTranslator translator_;
     RoleSignalTable table_;
