@@ -113,33 +113,6 @@ std::int64_t now_ns()
         .count();
 }
 
-const char* action_name(RoleAction action)
-{
-    switch (action) {
-        case RoleAction::JOIN:
-            return "JOIN";
-        case RoleAction::LEAVE:
-            return "LEAVE";
-        case RoleAction::MAIN_PROCESS_CHANGE:
-            return "MAIN_PROCESS_CHANGE";
-    }
-    return "?";
-}
-
-/// 默认事件出口：往 stderr 打一行摘要
-void print_event(const RoleEvent& event)
-{
-    std::fprintf(
-        stderr,
-        "[role_containerd] %-19s %-24s 类型=%-16s pid=%-7u start=%-12llu "
-        "成员=%zu cgroup=%s\n",
-        action_name(event.action), event.payload.identity.instance_key.c_str(),
-        event.payload.identity.type_key.c_str(), event.payload.main_process.pid,
-        static_cast<unsigned long long>(
-            event.payload.main_process.pid_start_time),
-        event.payload.member_processes.size(), event.payload.cgroup_path.c_str());
-}
-
 void report(const char* what)
 {
     std::fprintf(stderr, "[role_containerd] %s：%s\n", what,
@@ -434,17 +407,12 @@ void ContainerdBridgeTranslator::defer_anchor(
 // ContainerdRoleDiscoverer
 // ============================================================
 
-ContainerdRoleDiscoverer::ContainerdRoleDiscoverer()
-    : ContainerdRoleDiscoverer(Config{})
+ContainerdRoleDiscoverer::ContainerdRoleDiscoverer(RoleEventSink& sink,
+                                                   Config config)
+    : sink_(sink),
+      config_(std::move(config)),
+      translator_(config_.filter, config_.probe)
 {
-}
-
-ContainerdRoleDiscoverer::ContainerdRoleDiscoverer(Config config)
-    : config_(std::move(config)), translator_(config_.filter, config_.probe)
-{
-    if (!config_.on_event) {
-        config_.on_event = print_event;
-    }
     wakeup_fd_ = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 }
 
@@ -474,10 +442,12 @@ void ContainerdRoleDiscoverer::stop()
     }
 }
 
-void ContainerdRoleDiscoverer::publish()
+void ContainerdRoleDiscoverer::publish(const RoleEvent& event)
 {
-    // 事件当前经 Config::on_event 交付，本接口待阶段 05 定稿
+    sink_.on_role_event(event);
 }
+
+void ContainerdRoleDiscoverer::emit(const RoleEvent& event) { publish(event); }
 
 SettlementStats ContainerdRoleDiscoverer::settlement_stats() const
 {
@@ -659,7 +629,7 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
                 }
                 if (std::optional<RoleEvent> event =
                         table_.submit(command.observation)) {
-                    config_.on_event(*event);
+                    emit(*event);
                 }
                 break;
             }
@@ -685,7 +655,7 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
                     break;
                 }
                 for (const RoleEvent& event : table_.end_snapshot()) {
-                    config_.on_event(event);
+                    emit(event);
                 }
                 ++settlements_;
                 last_settlement_ns_.store(now_ns());

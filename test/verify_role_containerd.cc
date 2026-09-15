@@ -161,6 +161,15 @@ void on_signal(int)
     }
 }
 
+/// 事件的接收方，把发现器送出的事件逐条交给自校验
+class VerifySink : public hng::role::RoleEventSink {
+   public:
+    void on_role_event(const hng::role::RoleEvent& event) override
+    {
+        on_event(event);
+    }
+};
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -169,9 +178,9 @@ int main(int argc, char** argv)
     if (argc > 1) {
         config.socket_path = argv[1];
     }
-    config.on_event = on_event;
 
-    hng::role::ContainerdRoleDiscoverer discoverer(config);
+    VerifySink sink;
+    hng::role::ContainerdRoleDiscoverer discoverer(sink, config);
     g_discoverer = &discoverer;
 
     std::signal(SIGINT, on_signal);
