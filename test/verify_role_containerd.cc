@@ -73,11 +73,11 @@ void check_members(const hng::role::RolePayload& payload, const char* action)
         return;
     }
     for (const hng::Process& process : live) {
-        const bool found = std::any_of(
-            payload.member_processes.begin(), payload.member_processes.end(),
-            [&process](const hng::Process& candidate) {
-                return hng::role::same_process(candidate, process);
-            });
+        const bool found = std::any_of(payload.member_processes.begin(),
+                                       payload.member_processes.end(),
+                                       [&process](const hng::Process& candidate) {
+                                           return candidate == process;
+                                       });
         if (!found) {
             ++g_fail;
             std::fprintf(stderr, "[FAIL] %s：成员缺 pid=%u\n", action,
@@ -87,7 +87,7 @@ void check_members(const hng::role::RolePayload& payload, const char* action)
     const bool has_main = std::any_of(
         payload.member_processes.begin(), payload.member_processes.end(),
         [&payload](const hng::Process& candidate) {
-            return hng::role::same_process(candidate, payload.main_process);
+            return candidate == payload.main_process;
         });
     if (!has_main) {
         ++g_fail;

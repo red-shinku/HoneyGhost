@@ -69,19 +69,15 @@ class PendingTable {
     std::optional<PendingEntry> lookup(hng::Process p) const;
 
    private:
-    /// 以进程 (pid, start_time) 为键的包装结构
+    /// 以进程身份为键的包装结构，比较与哈希沿用 hng::Process 的定义
     struct ProcessKey {
         hng::Process p;
-        bool operator==(const ProcessKey& o) const
-        {
-            return p.pid == o.p.pid && p.pid_start_time == o.p.pid_start_time;
-        }
+        bool operator==(const ProcessKey& o) const { return p == o.p; }
     };
     struct KeyHash {
         std::size_t operator()(const ProcessKey& k) const
         {
-            return std::hash<uint32_t>{}(k.p.pid) ^
-                   (std::hash<uint64_t>{}(k.p.pid_start_time) << 1);
+            return std::hash<hng::Process>{}(k.p);
         }
     };
 
