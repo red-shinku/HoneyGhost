@@ -65,12 +65,6 @@ struct RoleEvent {
     RolePayload payload;  ///< 该动作的事件载荷
 };
 
-/// 锚点比较：pid 与 pid_start_time 均相同才算同一进程
-inline bool same_process(const hng::Process& a, const hng::Process& b)
-{
-    return a.pid == b.pid && a.pid_start_time == b.pid_start_time;
-}
-
 }  // namespace role
 }  // namespace hng
 

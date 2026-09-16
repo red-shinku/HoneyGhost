@@ -27,8 +27,8 @@ std::optional<RoleEvent> RoleSignalTable::submit(
                 return RoleEvent{RoleAction::JOIN, observation.payload};
             }
             it->second.generation = generation_;
-            if (same_process(it->second.payload.main_process,
-                             observation.payload.main_process)) {
+            if (it->second.payload.main_process ==
+                observation.payload.main_process) {
                 return std::nullopt;  // 实例仍存活且锚点未变：重复观察或重连重放
             }
             it->second.payload = observation.payload;

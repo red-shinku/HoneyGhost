@@ -84,21 +84,8 @@ struct ParentTable {
  * 进程的归属在落定后不再改写（不可变），故本表也无需修改
  */
 struct ToContextRootTable {
-    struct ProcessEq {
-        bool operator()(const hng::Process& a, const hng::Process& b) const
-        {
-            return a.pid == b.pid && a.pid_start_time == b.pid_start_time;
-        }
-    };
-    struct ProcessHash {
-        std::size_t operator()(const hng::Process& k) const
-        {
-            return std::hash<uint32_t>{}(k.pid) ^
-                   (std::hash<uint64_t>{}(k.pid_start_time) << 1);
-        }
-    };
     mutable std::shared_mutex smtx;
-    std::unordered_map<hng::Process, ContextKey, ProcessHash, ProcessEq>
+    std::unordered_map<hng::Process, ContextKey>
         map;  ///< 进程(hng::Process) -> 所属主context根进程(ContextKey)
 };
 

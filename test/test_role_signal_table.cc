@@ -261,8 +261,7 @@ void run_payload_cache()
                   "加入应带 cgroup 路径");
             CHECK(event->payload.member_processes.size() == 1,
                   "加入应带成员列表");
-            CHECK(hng::role::same_process(event->payload.main_process,
-                                          sent.main_process),
+            CHECK(event->payload.main_process == sent.main_process,
                   "加入应带锚点");
         }
         CHECK(table.is_alive("a"), "加入后应存活");

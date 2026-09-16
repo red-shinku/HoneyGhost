@@ -38,16 +38,12 @@ class FakeContextService final : public ContextService {
    public:
     struct Key {
         hng::Process p;
-        bool operator==(const Key& o) const
-        {
-            return p.pid == o.p.pid && p.pid_start_time == o.p.pid_start_time;
-        }
+        bool operator==(const Key& o) const { return p == o.p; }
     };
     struct KeyHash {
         std::size_t operator()(const Key& k) const
         {
-            return std::hash<uint32_t>{}(k.p.pid) ^
-                   (std::hash<uint64_t>{}(k.p.pid_start_time) << 1);
+            return std::hash<hng::Process>{}(k.p);
         }
     };
 
