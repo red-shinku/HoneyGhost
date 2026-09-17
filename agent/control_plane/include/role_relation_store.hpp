@@ -115,6 +115,10 @@ class RoleRelationStore {
     /// @brief 角色的身份：实例键、类型键、属性字典
     std::optional<hng::role::RoleIdentity> identity(uint32_t role_id) const;
 
+    /// @brief 角色的 cgroup 路径；角色不存在时为空
+    /// @note 供 RoleManager 重枚举成员用，不属于对外查询面
+    std::optional<std::string> cgroup_path(uint32_t role_id) const;
+
     /// @brief 异常态观测快照
     RoleStoreStats stats() const;
 

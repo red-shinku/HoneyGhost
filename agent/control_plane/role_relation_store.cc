@@ -180,6 +180,17 @@ std::optional<hng::role::RoleIdentity> RoleRelationStore::identity(
     return record->second.identity;
 }
 
+std::optional<std::string> RoleRelationStore::cgroup_path(uint32_t role_id) const
+{
+    std::shared_lock lock(mutex_);
+
+    auto record = role_table_.find(role_id);
+    if (record == role_table_.end()) {
+        return std::nullopt;
+    }
+    return record->second.cgroup_path;
+}
+
 RoleStoreStats RoleRelationStore::stats() const
 {
     std::shared_lock lock(mutex_);
