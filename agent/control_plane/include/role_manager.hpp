@@ -1,54 +1,155 @@
 /**
  * @file role_manager.hpp
  * @brief 控制平面的角色管理器组件
+ * @details
+ * 进程属于哪个角色的权威。把发现器按实例键产出的角色事件落成按进程索引的
+ * 归属表，并为每个角色分配 roleID。不判定角色存活（权威在发现器的状态表）、
+ * 不加工 roleLabel（直通 type_key）、不持久化。
+ * 表与落地规则在 RoleRelationStore，本组件负责队列、消费线程、cgroup 读取与出口。
  * @author red_shinku
- * @date 2026.8.18
+ * @date 2026.9.17
  */
 
-#ifndef _CONTROL_PLANE_ROLEMANAGER_HPP
-#define _CONTROL_PLANE_ROLEMANAGER_HPP
+#ifndef HNG_ROLE_MANAGER_HPP_
+#define HNG_ROLE_MANAGER_HPP_
 
-#include <unordered_map>
-#include <shared_mutex>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
 
-#include "agent/event_data/role.hpp"
-#include "agent/event_data/process.hpp"
+#include "agent/control_plane/include/role_lifecycle_sink.hpp"
+#include "agent/control_plane/include/role_relation_store.hpp"
+#include "agent/control_plane/include/role_service.hpp"
+#include "agent/control_plane/role_discovery/include/role_event_sink.hpp"
 
-/// @brief 角色的主 Process 到其 roleID 的映射表
-struct MainProcessToRoleMap {
-    mutable std::shared_mutex smtx;
-
-    std::unordered_map<hng::Process, uint16_t> roleID;
+/**
+ * @brief 角色管理器外部 IO 的注入点
+ * @details 字段留空时用真实实现。单元测试注入替身，以便不依赖真实 cgroup 目录。
+ */
+struct RoleManagerProbe {
+    /// 按 cgroup 路径枚举进程的实现，留空时用 RoleCgroupReader::read
+    std::function<std::vector<hng::Process>(const std::string& cgroup_path)>
+        read_members;
 };
 
-/// @brief 进程到其所属角色的主进程的映射表
-struct ToMainProcessTable {
-    mutable std::shared_mutex smtx;
-    std::unordered_map<hng::Process, hng::Process> mainProcess;
+/// @brief 角色管理器的异常态观测快照
+struct RoleManagerStats {
+    RoleStoreStats store;  ///< 关系表侧的异常态
+    /// 累计：重读未返回任何进程
+    /// @note 不等于读失败：RoleCgroupReader::read 的契约不区分失败与空
+    uint64_t cgroup_read_empty = 0;
 };
 
-/// @brief roleID 到 hng::Role 的映射表
-struct RoleTable {
-    mutable std::shared_mutex smtx;
-    std::unordered_map<uint16_t, hng::Role> role;
-};
-
-class RoleManager {
+class RoleManager : public hng::role::RoleEventSink,
+                    public RoleLookupService,
+                    public RoleJoinService,
+                    public RoleClearService {
    public:
-    RoleManager();
-    ~RoleManager();
+    /// @param probe IO 注入点，留空字段用真实实现
+    explicit RoleManager(RoleManagerProbe probe = {});
 
-    void unregister_role();
+    /// @brief 注册一个下行出口
+    /// @param sink 空指针忽略；同一实现重复注册会收到重复通知
+    /// @note 只可在 run() 之前调用：出口列表是消费线程只读的数据
+    void add_lifecycle_sink(RoleLifecycleSink* sink);
+
+    /// @brief 接收一个角色事件：只入队，立即返回
+    /// @note 跑在发现器线程上
+    void on_role_event(const hng::role::RoleEvent& event) override;
+
+    /// @brief 子进程继承父进程的角色归属：入队即返回
+    void bind_to_role(hng::Process child, hng::Process parent) override;
+
+    /// @brief 进程被完全删除：入队即返回
+    void on_process_removed(hng::Process p) override;
+
+    /// @brief 消费线程入口：取队列、落地、按跃迁调出口，阻塞直到 stop()
+    /// @note 不持线程，线程由装配方创建；析构前须已返回
+    void run();
+
+    /// @brief 停止消费；幂等，可从任意线程调用
+    /// @note 已有的事件仍会被落地，队列取空后 run() 返回
+    void stop();
+
+    /**
+     * \defgroup Rolemanager_lookup_service
+     * Rolemanager 实现的 RoleLookupService 接口
+     */
+    /*@{*/
+
+    /// \ingroup Rolemanager_lookup_service
+    std::optional<uint32_t> lookup(hng::Process p) const override;
+
+    /// \ingroup Rolemanager_lookup_service
+    std::optional<hng::Role> role(uint32_t roleID) const override;
+
+    /// \ingroup Rolemanager_lookup_service
+    std::optional<hng::role::RoleIdentity> identity(
+        uint32_t roleID) const override;
+
+    /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Process> members(uint32_t roleID) const override;
+
+    /**
+     * @} endgroup Rolemanager_lookup_service
+     */
+
+    /// @brief 异常态观测快照
+    RoleManagerStats stats() const;
 
    private:
-    ToMainProcessTable to_mainprocess;
+    /// @brief 入队消息：进程被完全删除
+    struct RemovedMessage {
+        hng::Process process;
+    };
 
-    MainProcessToRoleMap roleID;
+    /// @brief 入队消息：子进程继承归属
+    struct BindMessage {
+        hng::Process child;
+        hng::Process parent;
+    };
 
-    RoleTable roletable;
+    /// 三类入口共用一个队列，按到达顺序串行落地
+    using RoleTask =
+        std::variant<hng::role::RoleEvent, BindMessage, RemovedMessage>;
 
-    void addrole();
-    void deleterole();
+    /// @brief 入队；生产者线程上只做这一次拷贝
+    void enqueue(RoleTask task);
+
+    /// @brief 落地一条队列消息
+    void land(RoleTask& task);
+
+    /// @brief 落地一个角色事件
+    void land_event(const hng::role::RoleEvent& event);
+
+    /// @brief 算成员集：载荷的成员 ∪ cgroup 重读结果（见构造时注入的实现）
+    /// @note 锚点无条件并入：重读结果可能晚于锚点退出；cgroup 路径为空时不重读
+    std::vector<hng::Process> member_set(const hng::role::RolePayload& payload);
+
+    /// @brief 按跃迁依次调全部下行出口；kind 为 NONE 或无出口时不动
+    void notify(const RoleTransition& transition);
+
+    RoleManagerProbe probe_;
+    /// 注册的下行出口，不接管生命周期；run() 之后不再变更
+    std::vector<RoleLifecycleSink*> lifecycle_sinks_;
+
+    RoleRelationStore store_;
+
+    /// 队列与停止标志共用一把锁：临界区只有出入队，不含事件处理
+    mutable std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<RoleTask> queue_;
+    bool stopped_ = false;
+
+    /// 消费线程写、任意线程读，故为原子
+    std::atomic<uint64_t> cgroup_read_empty_{0};
 };
 
-#endif  //_CONTROL_PLANE_ROLEMANAGER_HPP
+#endif  // HNG_ROLE_MANAGER_HPP_
