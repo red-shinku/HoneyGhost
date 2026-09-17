@@ -41,6 +41,11 @@ add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
 target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
 add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
 
+# 控制平面的角色关系表：纯内存，无 IO / 无特权
+add_executable(test_role_relation_store test_role_relation_store.cc)
+target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
+add_test(NAME test_role_relation_store COMMAND test_role_relation_store)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)
