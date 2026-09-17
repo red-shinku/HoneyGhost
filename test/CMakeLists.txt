@@ -41,6 +41,11 @@ add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
 target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
 add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
 
+# 通知队列（公共件，header-only）：无 IO / 无特权
+add_executable(test_notification_queue test_notification_queue.cc)
+target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_notification_queue COMMAND test_notification_queue)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)

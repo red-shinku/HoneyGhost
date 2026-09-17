@@ -14,11 +14,8 @@
 #define HNG_ROLE_MANAGER_HPP_
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <functional>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <variant>
@@ -28,6 +25,7 @@
 #include "agent/control_plane/include/role_relation_store.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/control_plane/role_discovery/include/role_event_sink.hpp"
+#include "agent/util/include/notification_queue.hpp"
 
 /**
  * @brief 角色管理器外部 IO 的注入点
@@ -45,6 +43,8 @@ struct RoleManagerStats {
     /// 累计：重读未返回任何进程
     /// @note 不等于读失败：RoleCgroupReader::read 的契约不区分失败与空
     uint64_t cgroup_read_empty = 0;
+    /// 累计：stop() 之后的入队被拒绝
+    uint64_t queue_rejected    = 0;
 };
 
 class RoleManager : public hng::role::RoleEventSink,
@@ -75,7 +75,8 @@ class RoleManager : public hng::role::RoleEventSink,
     void run();
 
     /// @brief 停止消费；幂等，可从任意线程调用
-    /// @note 已有的事件仍会被落地，队列取空后 run() 返回
+    /// @note 已入队的事件仍会被落地，队列取空后 run() 返回；此后的入队一律
+    ///       被拒绝并计入 queue_rejected
     void stop();
 
     /**
@@ -121,6 +122,7 @@ class RoleManager : public hng::role::RoleEventSink,
         std::variant<hng::role::RoleEvent, BindMessage, RemovedMessage>;
 
     /// @brief 入队；生产者线程上只做这一次拷贝
+    /// @note 被拒绝（已停止）时计数，不入队
     void enqueue(RoleTask task);
 
     /// @brief 落地一条队列消息
@@ -142,14 +144,12 @@ class RoleManager : public hng::role::RoleEventSink,
 
     RoleRelationStore store_;
 
-    /// 队列与停止标志共用一把锁：临界区只有出入队，不含事件处理
-    mutable std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
-    std::deque<RoleTask> queue_;
-    bool stopped_ = false;
+    /// 无界队列，入队不因容量而阻塞
+    hng::NotificationQueue<RoleTask> queue_;
 
     /// 消费线程写、任意线程读，故为原子
     std::atomic<uint64_t> cgroup_read_empty_{0};
+    std::atomic<uint64_t> queue_rejected_{0};
 };
 
 #endif  // HNG_ROLE_MANAGER_HPP_

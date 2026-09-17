@@ -11,7 +11,8 @@
  *    路径不可读时返回已收集结果且不改动任何表；
  *  - 入口幂等重放与未知实例键不产通知；
  *  - 多个下行出口：都恰好收到、按注册顺序、空指针忽略、重复注册即重复通知；
- *  - stop() 幂等、run() 之前 stop() 时 run() 立即返回、已入队的事件仍被落地；
+ *  - stop() 幂等、run() 之前 stop() 时 run() 立即返回、已入队的事件仍被落地、
+ *    停止后的入队被拒并计数；
  *  - 多生产者并发推送后表状态自洽（并发用例供 TSAN 构建复验）。
  * @author red_shinku
  * @date 2026.9.17
@@ -452,6 +453,22 @@ void run_stop_semantics()
         manager.stop();
         manager.run();
         CHECK(sink.calls().size() == 1, "stop() 之后已入队的事件应被落地");
+    }
+
+    // stop() 之后的三类入队都被拒并计数，且不进入落地
+    {
+        RoleManager manager;
+        manager.stop();
+        manager.on_role_event(mk_join("a", 100, 1000, {}));
+        manager.bind_to_role(proc(1, 1), proc(2, 2));
+        manager.on_process_removed(proc(3, 3));
+        CHECK(manager.stats().queue_rejected == 3,
+              "停止后三类入队都应被拒并计数");
+
+        manager.run();  // 队列为空，应直接返回
+        CHECK(manager.stats().store.rejected == 0 &&
+                  manager.stats().store.unknown_instance == 0,
+              "被拒的事件不得进入落地");
     }
 }
 

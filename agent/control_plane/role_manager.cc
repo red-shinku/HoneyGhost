@@ -31,39 +31,21 @@ void RoleManager::on_process_removed(hng::Process p)
 
 void RoleManager::enqueue(RoleTask task)
 {
-    {
-        std::lock_guard lock(queue_mutex_);
-        queue_.push_back(std::move(task));
+    if (!queue_.push(std::move(task))) {
+        queue_rejected_.fetch_add(1, std::memory_order_relaxed);
     }
-    queue_cv_.notify_one();
 }
 
 void RoleManager::run()
 {
-    for (;;) {
-        RoleTask task;
-        {
-            std::unique_lock lock(queue_mutex_);
-            queue_cv_.wait(lock, [this] { return stopped_ || !queue_.empty(); });
-            if (queue_.empty()) {
-                return;  // 已停止且取空
-            }
-            task = std::move(queue_.front());
-            queue_.pop_front();
-        }
-        // 锁外落地：cgroup 读取与出口回调都不在队列临界区内
+    RoleTask task;
+    // 取与处理分离：队列临界区内没有 cgroup 读取，也没有出口回调
+    while (queue_.wait_pop(task)) {
         land(task);
     }
 }
 
-void RoleManager::stop()
-{
-    {
-        std::lock_guard lock(queue_mutex_);
-        stopped_ = true;
-    }
-    queue_cv_.notify_all();
-}
+void RoleManager::stop() { queue_.stop(); }
 
 void RoleManager::land(RoleTask& task)
 {
@@ -171,5 +153,6 @@ RoleManagerStats RoleManager::stats() const
     snapshot.store = store_.stats();
     snapshot.cgroup_read_empty =
         cgroup_read_empty_.load(std::memory_order_relaxed);
+    snapshot.queue_rejected = queue_rejected_.load(std::memory_order_relaxed);
     return snapshot;
 }
