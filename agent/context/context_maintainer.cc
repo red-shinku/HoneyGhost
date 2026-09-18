@@ -15,17 +15,29 @@
 #include "./include/context_maintainer.hpp"
 
 #include <cstdint>
+#include <cstdlib>
+#include <iostream>
 
-ContextMaintainer::ContextMaintainer(ProcessService* p_service,
-                                     ContextService* ctx_service,
-                                     uint32_t window_size)
-    : process_service_(p_service),
-      context_service_(ctx_service),
-      window_size_(window_size)
+ContextMaintainer::ContextMaintainer(uint32_t window_size)
+    : window_size_(window_size)
 {
 }
 
 ContextMaintainer::~ContextMaintainer() {}
+
+void ContextMaintainer::set_context_service(ContextLookupService* ctx_lookup_sv,
+                                            ContextJoinService* ctx_join_sv,
+                                            ContextUpdateService* ctx_update_sv)
+{
+    if (ctx_lookup_sv && ctx_join_sv && ctx_update_sv) {
+        ctx_lookup_service_ = ctx_lookup_sv;
+        ctx_join_service_   = ctx_join_sv;
+        ctx_update_service_ = ctx_update_sv;
+        return;
+    }
+    std::cerr << "pass in nullptr at ContextMaintainer::set_context_service\n";
+    exit(2);
+}
 
 std::optional<ContextDeriveDecision> ContextMaintainer::should_derive_context(
     hng::Process p, hng::Process parent, const std::string& filename)
@@ -35,7 +47,7 @@ std::optional<ContextDeriveDecision> ContextMaintainer::should_derive_context(
         hng::rule::is_interpreter_exec(filename);
 
     // 已具自身 context 的进程：原地重 exec，属同一执行实体，不派生
-    if (context_service_ && context_service_->lookup(p)) {
+    if (ctx_lookup_service_ && ctx_lookup_service_->lookup(p)) {
         return std::nullopt;
     }
 
@@ -86,16 +98,16 @@ void ContextMaintainer::on_exit(hng::Process p)
 
 std::optional<uint32_t> ContextMaintainer::lookup_contextID(hng::Process p) const
 {
-    if (!context_service_) {
+    if (!ctx_lookup_service_) {
         return std::nullopt;
     }
     // 窗口期内的进程归属父 context（方案 B）
     if (auto e = pending_.lookup(p)) {
-        return context_service_->lookup(e->parent);
+        return ctx_lookup_service_->lookup(e->parent);
     }
     // 其余：进程自身已登记的 context（未登记返回空）
     // TODO: 这里是错误的，应当先追溯最早同context的进程
-    return context_service_->lookup(p);
+    return ctx_lookup_service_->lookup(p);
 }
 
 bool ContextMaintainer::parent_is_interpreter(hng::Process parent) const
@@ -122,12 +134,12 @@ std::optional<ContextDeriveDecision> ContextMaintainer::finalize_derive(
     d.contextID     = allocate_context_id();
     d.attr          = decide_attr(v.child, v.parent);
 
-    if (context_service_) {
+    if (ctx_lookup_service_ && ctx_join_service_) {
         uint32_t pcontextID = 0;  // 0 表示无父 context
-        if (auto pid = context_service_->lookup(v.parent)) {
+        if (auto pid = ctx_lookup_service_->lookup(v.parent)) {
             pcontextID = *pid;
         }
-        context_service_->register_contextID(v.child, d, pcontextID);
+        ctx_join_service_->register_contextID(v.child, d, pcontextID);
     }
     return d;
 }
