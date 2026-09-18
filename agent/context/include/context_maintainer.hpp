@@ -34,9 +34,16 @@ class ContextMaintainer {
     /// @param p_service 控制平面 process 服务
     /// @param ctx_service 控制平面 context 服务
     /// @param window_size 待决策进程的事件窗口配额
-    ContextMaintainer(ProcessService* p_service, ContextService* ctx_service,
-                      uint32_t window_size = kDefaultWindow);
+    ContextMaintainer(uint32_t window_size = kDefaultWindow);
     ~ContextMaintainer();
+
+    /// @brief 注入 ContextManager 服务接口
+    /// @param ctx_lookup_sv 查询接口
+    /// @param ctx_join_sv 注册接口
+    /// @param ctx_update_sv 更新接口
+    void set_context_service(ContextLookupService* ctx_lookup_sv,
+                             ContextJoinService* ctx_join_sv,
+                             ContextUpdateService* ctx_update_sv);
 
     /**
      * \defgroup Participate_in_derive_decision !!!
@@ -129,8 +136,10 @@ class ContextMaintainer {
         }
     };
 
-    ProcessService* process_service_;  ///< 控制平面进程服务
-    ContextService* context_service_;  ///< 控制平面 context 服务
+    ContextLookupService* ctx_lookup_service_ = nullptr;
+    ContextJoinService* ctx_join_service_     = nullptr;
+    ContextUpdateService* ctx_update_service_ = nullptr;
+
     hng::rule::PendingTable pending_;  ///< 待决策进程观察窗口
 
     // 进程 → 其最近一次 exec 目标是否解释器（KEEP 判定的"父是否解释器"近似来源）
