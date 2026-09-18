@@ -4,13 +4,23 @@
 
 // 进程关系管理
 
-ProcessManager::ProcessManager() : task(kTaskQueueCapacity) {}
+ProcessManager::ProcessManager() {}
 
 ProcessManager::~ProcessManager() {}
 
 void ProcessManager::set_context_service(ContextClearService* c_svc)
 {
     ctx_clear_service_ = c_svc;
+}
+
+void ProcessManager::set_role_join_service(RoleJoinService* service)
+{
+    role_join_service_ = service;
+}
+
+void ProcessManager::set_role_clear_service(RoleClearService* service)
+{
+    role_clear_service_ = service;
 }
 
 std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
@@ -35,34 +45,57 @@ std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
 
 void ProcessManager::register_pid(hng::event_head ehead)
 {
-    auto t = [this, ehead]() {
-        hng::ProcessMessage p = hng::ProcessMessage(ehead);
-        addPID(std::move(p));
-    };
-    task.push(t);
+    task.push(Task{Task::Kind::ADD, hng::ProcessMessage(ehead), {}});
 }
 
 void ProcessManager::unregister_pid(hng::Process p)
 {
-    auto t = [this, p]() { deletePID(p); };
-    task.push(t);
+    task.push(Task{Task::Kind::REMOVE, {}, p});
+}
+
+void ProcessManager::run()
+{
+    Task t;
+    // 取与处理分离：队列临界区内没有进程树操作，也没有对外通知
+    while (task.wait_pop(t)) {
+        land(t);
+    }
+}
+
+void ProcessManager::stop() { task.stop(); }
+
+void ProcessManager::land(Task& t)
+{
+    switch (t.kind) {
+        case Task::Kind::ADD:
+            addPID(std::move(t.add));
+            break;
+        case Task::Kind::REMOVE:
+            deletePID(t.remove);
+            break;
+    }
 }
 
 void ProcessManager::addPID(hng::ProcessMessage&& data)
 {
     uint32_t ppid    = data.ppid;
     uint64_t ppid_st = data.ppid_start_time;
-    auto& shard_ref  = ptree_shard[shard_index(data.pid)];
+    uint32_t pid     = data.pid;
+    uint64_t pid_st  = data.pid_start_time;
+    auto& shard_ref  = ptree_shard[shard_index(pid)];
 
     {
         std::unique_lock lock(shard_ref.smtx);
 
-        auto it = shard_ref.process.find(data.pid);
+        auto it = shard_ref.process.find(pid);
         if (it == shard_ref.process.end()) {
-            shard_ref.process.insert(std::make_pair(data.pid, data));
+            shard_ref.process.insert(std::make_pair(pid, data));
         }
-        else if (data.pid_start_time != it->second.pid_start_time) {
-            shard_ref.process.insert_or_assign(data.pid, std::move(data));
+        else if (pid_st != it->second.pid_start_time) {
+            // pid 复用：旧实例已被新实例顶掉。旧实例在虚拟根树里的条目与
+            // 其归属条目都不在此处清理，见 docs/red_shinku_logs/
+            // 控制平面context归属重构.md §4
+            shard_ref.process.insert_or_assign(pid, std::move(data));
         }
         else {
             // 幂等:同 pid + start_time 已存在,不再重复插入
@@ -71,6 +104,13 @@ void ProcessManager::addPID(hng::ProcessMessage&& data)
     }  // 释放本分片锁后再更新父进程计数,避免同线程重入自锁
 
     update_child_count_add(hng::Process{ppid, ppid_st});
+
+    // 子进程继承父进程的角色归属；父进程未归属时由对端丢弃。
+    // 幂等分支不走到这里：那是同一条 fork 事件的重复投递。
+    if (role_join_service_) {
+        role_join_service_->bind_to_role(hng::Process{pid, pid_st},
+                                         hng::Process{ppid, ppid_st});
+    }
 }
 
 void ProcessManager::deletePID(hng::Process p)
@@ -200,5 +240,8 @@ void ProcessManager::notify_process_fully_removed(hng::Process p)
 {
     if (ctx_clear_service_) {
         ctx_clear_service_->on_process_removed(p);
+    }
+    if (role_clear_service_) {
+        role_clear_service_->on_process_removed(p);
     }
 }
