@@ -56,6 +56,11 @@ add_executable(test_role_manager test_role_manager.cc)
 target_link_libraries(test_role_manager PRIVATE hng_control_plane)
 add_test(NAME test_role_manager COMMAND test_role_manager)
 
+# 角色管理器端到端校验：装配形态 + 假发现器 + 真实 cgroup 读取，无特权
+add_executable(verify_role_manager verify_role_manager.cc)
+target_link_libraries(verify_role_manager PRIVATE hng_control_plane)
+add_test(NAME verify_role_manager COMMAND verify_role_manager)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)
