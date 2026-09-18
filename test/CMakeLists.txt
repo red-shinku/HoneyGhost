@@ -41,6 +41,26 @@ add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
 target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
 add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
 
+# 通知队列（公共件，header-only）：无 IO / 无特权
+add_executable(test_notification_queue test_notification_queue.cc)
+target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_notification_queue COMMAND test_notification_queue)
+
+# 控制平面的角色关系表：纯内存，无 IO / 无特权
+add_executable(test_role_relation_store test_role_relation_store.cc)
+target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
+add_test(NAME test_role_relation_store COMMAND test_role_relation_store)
+
+# 控制平面的角色管理器：队列与消费线程，cgroup 读取走注入点，无特权
+add_executable(test_role_manager test_role_manager.cc)
+target_link_libraries(test_role_manager PRIVATE hng_control_plane)
+add_test(NAME test_role_manager COMMAND test_role_manager)
+
+# 角色管理器端到端校验：装配形态 + 假发现器 + 真实 cgroup 读取，无特权
+add_executable(verify_role_manager verify_role_manager.cc)
+target_link_libraries(verify_role_manager PRIVATE hng_control_plane)
+add_test(NAME verify_role_manager COMMAND verify_role_manager)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)

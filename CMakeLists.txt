@@ -169,6 +169,21 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
 endif()
 
 # ============================================================
+# 控制平面（角色关系表 + 角色管理器）
+#
+# 依赖角色发现公共骨架（RoleEvent / RolePayload 类型与 RoleCgroupReader）。
+# 目前只纳入本组件的两个 .cc，ProcessManager / ContextManager 尚未进 CMake。
+# ============================================================
+add_library(hng_control_plane STATIC
+    agent/control_plane/role_manager.cc
+    agent/control_plane/role_relation_store.cc
+)
+target_include_directories(hng_control_plane PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
