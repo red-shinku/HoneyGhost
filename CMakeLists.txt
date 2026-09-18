@@ -184,6 +184,18 @@ target_include_directories(hng_control_plane PUBLIC
 target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
 
 # ============================================================
+# 控制平面（进程管理器）
+#
+# 只依赖 event_data 与两个服务接口（均 header-only），不含 ContextManager。
+# ============================================================
+add_library(hng_process_manager STATIC
+    agent/control_plane/process_manager.cc
+)
+target_include_directories(hng_process_manager PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
