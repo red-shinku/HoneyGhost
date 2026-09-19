@@ -8,12 +8,13 @@
 #ifndef _CONTROL_PLANE_CONTEXTMANAGER_HPP
 #define _CONTROL_PLANE_CONTEXTMANAGER_HPP
 
+#include <atomic>
 #include <cstdint>
-#include <functional>
 #include <shared_mutex>
 #include <unordered_map>
+#include <variant>
 
-#include "agent/util/include/spsc_queue.hpp"
+#include "agent/util/include/notification_queue.hpp"
 #include "context_service.hpp"
 
 /**
@@ -89,6 +90,19 @@ struct ToContextRootTable {
         map;  ///< 进程(hng::Process) -> 所属主context根进程(ContextKey)
 };
 
+/// @brief 上下文管理器的异常态观测快照
+struct ContextManagerStats {
+    /// 累计：挂靠时父进程的归属尚未落定
+    /// @details 登记竞态（见 docs/red_shinku_logs/控制平面context归属重构.md
+    /// §4）， 该次挂靠为空操作、由工作平面补调。持续增长说明补调未生效，
+    /// 这些进程会一直无归属
+    uint64_t ctxroot_parent_unsettled = 0;
+    /// 累计：注销了未注册的 context 根
+    /// @details 注销先于注册到达，该次注销被丢弃，随后的注册会留下一个
+    /// 永不删除的 context
+    uint64_t unknown_unregister       = 0;
+};
+
 /**
  * @brief 上下文管理器
  * @details
@@ -97,6 +111,9 @@ struct ToContextRootTable {
  * 具体 Context结构 维护在工作平面本地，形式是 contextID -> Context。
  * 工作平面本地也会维护每个角色的 Context 树关系，并且是第一手的。
  * 控制平面这里则是权威的，所有离散无状态事件的归属标准。
+ *
+ * 五个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
+ * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
  *
  * 负责：
  * 1) 回答任意进程属于哪个 context
@@ -142,13 +159,57 @@ class ContextManager : public ContextLookupService,
     /// 实际清理逻辑（归属条目，若为 context 根则连同 context）在私有方法中执行
     void on_process_removed(hng::Process p) override;
 
+    /// @brief 消费线程入口：取队列、按到达顺序串行落地，阻塞直到 stop()
+    /// @note 不持线程，线程由装配方创建；析构前须已返回
+    void run();
+
+    /// @brief 停止消费；幂等，可从任意线程调用
+    /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
+    void stop();
+
+    /// @brief 异常态观测快照
+    ContextManagerStats stats() const;
+
    private:
-    // 通知写任务的队列。所有对内部数据的修改都经公共接口入队、由消费者串行执行，
-    // 避免把写操作外泄到调用方线程（ProcessManager 同款写法）。
-    // TODO: 当前为 SPSC 占位：消费线程 / 生产者汇聚（含 ProcessManager 线程与
-    // 工作面线程两类来源）的确定是后续任务。
-    static constexpr size_t kTaskQueueCapacity = 4096;
-    hng::SPSC_Queue<std::function<void()>> task;
+    /// @brief 入队任务：注册一个 context
+    struct AddTask {
+        hng::Process process;
+        uint32_t contextID;     ///< 新 context 的 ID，由工作面生成
+        hng::contextattr attr;  ///< 新 context 的属性
+        uint32_t parent_contextID;
+    };
+
+    /// @brief 入队任务：注销某个根进程的 context
+    struct DelTask {
+        hng::Process process;
+    };
+
+    /// @brief 入队任务：修改 context 属性
+    struct SetAttrTask {
+        hng::Process process;
+        uint32_t contextID;
+        hng::contextattr attr;
+    };
+
+    /// @brief 入队任务：把进程挂靠到父进程所属的 context
+    struct BindTask {
+        hng::Process process;
+        hng::Process parent;
+    };
+
+    /// @brief 入队任务：进程被完全删除
+    struct RemovedTask {
+        hng::Process process;
+    };
+
+    /// 五个写接口共用一条队列：多生产者、无界，按到达顺序串行落地
+    using Task =
+        std::variant<AddTask, DelTask, SetAttrTask, BindTask, RemovedTask>;
+    hng::NotificationQueue<Task> task;
+
+    /// 消费线程写、任意线程读，故为原子
+    std::atomic<uint64_t> ctxroot_parent_unsettled_{0};
+    std::atomic<uint64_t> unknown_unregister_{0};
 
     // 进程 → 所属 context 根进程 的映射（归属索引）
     // lookup/lookup_extra/bind_to_ctxroot/on_process_removed 均经该表解析。
@@ -205,8 +266,8 @@ class ContextManager : public ContextLookupService,
     /// 若为 context 根则连同 context 清除
     void on_process_removed_(hng::Process p);
 
-    // 任务队列消费循环（装配期启动线程运行）
-    void work();
+    /// @brief 落地一条队列任务
+    void land(Task& task);
 };
 
 #endif  //_CONTROL_PLANE_CONTEXTMANAGER_HPP

@@ -4,7 +4,7 @@
 
 // 上下文关系管理
 
-ContextManager::ContextManager() : task(kTaskQueueCapacity) {}
+ContextManager::ContextManager() {}
 
 ContextManager::~ContextManager() {}
 
@@ -60,30 +60,60 @@ void ContextManager::register_contextID(hng::Process p,
                                         ContextDeriveDecision newcontext,
                                         uint32_t pcontextID)
 {
-    task.push([=]() {
-        addContextID(p, newcontext.contextID, newcontext.attr, pcontextID);
-    });
+    task.push(
+        Task{AddTask{p, newcontext.contextID, newcontext.attr, pcontextID}});
 }
 
 void ContextManager::unregister_contextID(hng::Process p)
 {
-    task.push([=]() { delContextID(p); });
+    task.push(Task{DelTask{p}});
 }
 
 void ContextManager::set_attr(hng::Process p, uint32_t contextID,
                               hng::contextattr attr)
 {
-    task.push([=]() { set_attr_(p, contextID, attr); });
+    task.push(Task{SetAttrTask{p, contextID, attr}});
 }
 
 void ContextManager::bind_to_ctxroot(hng::Process p, hng::Process parent)
 {
-    task.push([=]() { bind_to_ctxroot_(p, parent); });
+    task.push(Task{BindTask{p, parent}});
 }
 
 void ContextManager::on_process_removed(hng::Process p)
 {
-    task.push([=]() { on_process_removed_(p); });
+    task.push(Task{RemovedTask{p}});
+}
+
+void ContextManager::run()
+{
+    Task t;
+    // 取与处理分离：队列临界区内没有任何表的读写
+    while (task.wait_pop(t)) {
+        land(t);
+    }
+}
+
+void ContextManager::stop() { task.stop(); }
+
+void ContextManager::land(Task& t)
+{
+    if (auto* add = std::get_if<AddTask>(&t)) {
+        addContextID(add->process, add->contextID, add->attr,
+                     add->parent_contextID);
+    }
+    else if (auto* del = std::get_if<DelTask>(&t)) {
+        delContextID(del->process);
+    }
+    else if (auto* attr = std::get_if<SetAttrTask>(&t)) {
+        set_attr_(attr->process, attr->contextID, attr->attr);
+    }
+    else if (auto* bind = std::get_if<BindTask>(&t)) {
+        bind_to_ctxroot_(bind->process, bind->parent);
+    }
+    else if (auto* removed = std::get_if<RemovedTask>(&t)) {
+        on_process_removed_(removed->process);
+    }
 }
 
 void ContextManager::addContextID(hng::Process p, uint32_t contextID,
@@ -134,6 +164,9 @@ void ContextManager::delContextID(hng::Process p)
 
         auto it = contexts.map.find(key);
         if (it == contexts.map.end()) {
+            // 注销先于注册到达：该次注销被丢弃，随后的注册会留下永不删除的
+            // context（见 ContextManagerStats::unknown_unregister）
+            ++unknown_unregister_;
             return;
         }
         primaryID = it->second.contextID;
@@ -217,10 +250,23 @@ void ContextManager::bind_to_ctxroot_(hng::Process p, hng::Process parent)
     std::unique_lock lock(to_context_root.smtx);
     auto it = to_context_root.map.find(parent);
     if (it == to_context_root.map.end()) {
-        return;  // 父进程尚未落定归属
+        // 父进程尚未落定归属：登记竞态，该次挂靠为空操作，待工作平面补调
+        // （见 ContextManagerStats::ctxroot_parent_unsettled）
+        ++ctxroot_parent_unsettled_;
+        return;
     }
     // 归属不可变：同一进程重复挂靠时写入相同值，幂等
     to_context_root.map[p] = it->second;
+}
+
+ContextManagerStats ContextManager::stats() const
+{
+    ContextManagerStats snapshot;
+    snapshot.ctxroot_parent_unsettled =
+        ctxroot_parent_unsettled_.load(std::memory_order_relaxed);
+    snapshot.unknown_unregister =
+        unknown_unregister_.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 void ContextManager::on_process_removed_(hng::Process p)
