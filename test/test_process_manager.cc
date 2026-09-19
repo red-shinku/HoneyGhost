@@ -5,7 +5,8 @@
  * 覆盖 ProcessManager：
  *  - 注册 / 注销经队列在消费线程上落地，查询按 (pid, start_time) 判等；
  *  - 角色归属转交：真正插入或替换后转交一次，幂等重放不转交；
- *  - pid 复用：替换旧实例，且按暂缓项不报「完全删除」；
+ *  - pid 复用：旧实例按退役路径处理——无存活子进程时立刻报完全删除，
+ *    有子进程时转入虚拟根、待其子进程退出后才报，且不虚增其父进程的孩子计数；
  *  - 完全删除的两条路径：无子进程直接删除、虚拟根计数归零后驱逐，
  *    两条都通知 context 与角色两路清理；
  *  - 未知进程与重复注销：不报、不崩；
@@ -204,8 +205,93 @@ void run_bind_transfer()
     CHECK(wait_until([&] { return rec.binds.load() == 3; }), "覆盖应转交");
     CHECK(!manager.lookup(proc(200, 2000)).has_value(), "旧实例应被顶掉");
     CHECK(manager.lookup(proc(200, 2001)).has_value(), "新实例应在");
-    CHECK(rec.ctx_removed.load() == 0 && rec.role_removed.load() == 0,
-          "覆盖不报完全删除（暂缓项）");
+    CHECK(manager.stats().pid_reused == 1, "pid 复用应计数");
+}
+
+void run_pid_reuse()
+{
+    Recorder rec;
+    FakeContextClear ctx(rec);
+    FakeRoleClear roles(rec);
+    FakeRoleJoin join(rec);
+    ProcessManager manager;
+    manager.set_context_service(&ctx);
+    manager.set_role_clear_service(&roles);
+    manager.set_role_join_service(&join);
+    Runner runner(manager);
+
+    // 覆盖的旧实例无存活子进程：应立刻报完全删除
+    manager.register_pid(head(200, 2000, 1, 10));
+    CHECK(wait_until([&] { return manager.lookup(proc(200, 2000)).has_value(); }),
+          "注册应落地");
+    manager.register_pid(head(200, 2001, 1, 10));  // pid 复用
+    CHECK(wait_until([&] {
+              return rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1;
+          }),
+          "无子进程的旧实例应立刻报完全删除");
+    CHECK(!manager.lookup(proc(200, 2000)).has_value(), "旧实例应失配");
+    CHECK(manager.lookup(proc(200, 2001)).has_value(), "新实例应可查");
+    {
+        std::lock_guard lock(rec.mutex);
+        CHECK(rec.ctx_detail.size() == 1 && rec.ctx_detail[0] == proc(200, 2000),
+              "报的应是旧实例");
+    }
+
+    // 覆盖的旧实例有存活子进程：转入虚拟根，仍可追溯，且不报完全删除
+    manager.register_pid(head(300, 3000, 1, 10));
+    manager.register_pid(head(301, 3001, 300, 3000));  // 子进程
+    CHECK(wait_until([&] { return manager.lookup(proc(301, 3001)).has_value(); }),
+          "子进程应落地");
+    CHECK(manager.lookup(proc(300, 3000))->child_count == 1,
+          "旧实例的孩子计数应为 1");
+
+    manager.register_pid(head(300, 3002, 1, 10));  // 覆盖，此时旧实例有子
+    manager.register_pid(head(500, 5000, 1, 10));  // 屏障
+    CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
+          "屏障应落地");
+    CHECK(rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1,
+          "有存活子进程的旧实例不得报完全删除");
+    CHECK(manager.lookup(proc(300, 3000)).has_value(),
+          "旧实例应留在虚拟根里，仍可追溯");
+    CHECK(manager.lookup(proc(300, 3002)).has_value(), "新实例应可查");
+
+    // 子进程退出后，旧实例在虚拟根里的计数归零，此时才报完全删除
+    manager.unregister_pid(proc(301, 3001));
+    CHECK(wait_until([&] {
+              return rec.ctx_removed.load() == 3 && rec.role_removed.load() == 3;
+          }),
+          "最后一个子进程退出后应报子进程与旧实例两者的完全删除");
+    CHECK(!manager.lookup(proc(300, 3000)).has_value(), "被驱逐的旧实例应失配");
+    {
+        std::lock_guard lock(rec.mutex);
+        CHECK(rec.ctx_detail.size() == 3 &&
+                  rec.ctx_detail[1] == proc(301, 3001) &&
+                  rec.ctx_detail[2] == proc(300, 3000),
+              "应先报子进程、后报被驱逐的旧实例");
+    }
+
+    // 父进程的孩子计数不得被虚增：爷爷最终仍应能被完全删除
+    manager.register_pid(head(400, 4000, 1, 10));      // 爷爷
+    manager.register_pid(head(401, 4001, 400, 4000));  // 父
+    manager.register_pid(head(401, 4002, 400, 4000));  // 覆盖父
+    CHECK(wait_until([&] { return rec.ctx_removed.load() == 4; }),
+          "被覆盖的父应报完全删除");
+    CHECK(manager.lookup(proc(400, 4000))->child_count == 1,
+          "爷爷的孩子计数应仍是 1，不得虚增");
+
+    manager.unregister_pid(proc(401, 4002));
+    CHECK(wait_until([&] { return rec.ctx_removed.load() == 5; }),
+          "新父退出应报完全删除");
+    manager.unregister_pid(proc(400, 4000));
+    CHECK(wait_until([&] { return rec.ctx_removed.load() == 6; }),
+          "孩子计数不虚增，爷爷退出时才能被完全删除");
+    CHECK(!manager.lookup(proc(400, 4000)).has_value(), "爷爷应已失配");
+    {
+        std::lock_guard lock(rec.mutex);
+        CHECK(rec.ctx_detail.back() == proc(400, 4000), "最后报的应是爷爷");
+    }
+
+    CHECK(manager.stats().pid_reused == 3, "三次 pid 复用都应计数");
 }
 
 void run_fully_removed_paths()
@@ -396,6 +482,7 @@ int main()
 {
     run_register_and_lookup();
     run_bind_transfer();
+    run_pid_reuse();
     run_fully_removed_paths();
     run_unknown_and_duplicate();
     run_stop_semantics();

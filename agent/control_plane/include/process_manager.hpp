@@ -9,6 +9,7 @@
 #define _CONTROL_PLANE_PROCESSMANAGER_HPP
 
 #include <array>
+#include <atomic>
 #include <unordered_map>
 #include <shared_mutex>
 
@@ -56,6 +57,14 @@ struct VProcessShard {
     std::unordered_map<VProcessKey, hng::ProcessMessage, KeyHash> vprocess;
 };
 
+/// @brief 进程管理器的异常态观测快照
+struct ProcessManagerStats {
+    /// 累计：注册时发现该 pid 的旧实例仍在实进程树中
+    /// @details 即 pid 已被复用，而旧实例的退出事件缺失或晚于本条到达。
+    /// 出现即说明采集侧丢过事件或跨通道乱序；旧实例已按退役路径处理
+    uint64_t pid_reused = 0;
+};
+
 class ProcessManager : public ProcessLookupService, public ProcessJoinService {
    public:
     ProcessManager();
@@ -92,6 +101,10 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
     /// @brief 注入角色清理接口依赖（可空）
     void set_role_clear_service(RoleClearService* service);
 
+    /// @brief 异常态观测快照
+    /// @note 只供 ProcessManager 的装配者/运维端使用
+    ProcessManagerStats stats() const;
+
    private:
     // 进程树分片数量
     static constexpr size_t kShardCount = 32;
@@ -111,6 +124,9 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
 
     // 任务队列：多生产者、无界，写入方是各个采集线程与其他组件的转交
     hng::NotificationQueue<Task> task;
+
+    // 消费线程写、任意线程读，故为原子
+    std::atomic<uint64_t> pid_reused_{0};
 
     // 维护一组进程树的分片，PID 通过哈希落到对应的分片中
     // 该数据结构是频繁访问的，局部的共享锁一定程度上优化了访问
@@ -143,6 +159,15 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
      *  只要 PID 从 ptree_shard 中实际删除，其父进程的孩子计数就会递减
      */
     void deletePID(hng::Process p);
+
+    /**
+     * @brief 退役一条已从实进程树取下的进程记录
+     * @details 有存活子进程时转入虚拟根（待其子进程全部退出后再报完全删除），
+     *  否则报完全删除。两种情况都递减其父进程的孩子计数。
+     * @param old 已从 ptree 取出的记录，含其孩子计数
+     * @note 调用方须已释放分片锁：本函数会写虚拟根、改父计数、发通知
+     */
+    void retire(hng::ProcessMessage&& old);
 
     /**
      * @brief 递增 / 递减父进程的引用计数
