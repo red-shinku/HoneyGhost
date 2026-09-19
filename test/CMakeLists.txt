@@ -41,6 +41,11 @@ add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
 target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
 add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
 
+# 控制平面的上下文管理器：五个写接口经队列落地，无 IO / 无特权
+add_executable(test_context_manager test_context_manager.cc)
+target_link_libraries(test_context_manager PRIVATE hng_context_manager)
+add_test(NAME test_context_manager COMMAND test_context_manager)
+
 # 控制平面的进程管理器：三个注入点走替身，无 IO / 无特权
 add_executable(test_process_manager test_process_manager.cc)
 target_link_libraries(test_process_manager PRIVATE hng_process_manager)
