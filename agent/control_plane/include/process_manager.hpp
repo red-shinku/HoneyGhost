@@ -11,9 +11,9 @@
 #include <array>
 #include <unordered_map>
 #include <shared_mutex>
-#include <functional>
 
-#include "agent/util/include/spsc_queue.hpp"
+#include "agent/control_plane/include/role_service.hpp"
+#include "agent/util/include/notification_queue.hpp"
 #include "context_service.hpp"
 #include "process_service.hpp"
 
@@ -68,24 +68,49 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
      */
     std::optional<hng::ProcessMessage> lookup(hng::Process p) const override;
 
+    /// @brief 通知注册新 PID：入队即返回
+    /// @note 可被任意采集线程调用
     void register_pid(hng::event_head ehead) override;
 
+    /// @brief 通知注销 PID：入队即返回
     void unregister_pid(hng::Process p) override;
+
+    /// @brief 消费线程入口：取队列、落地、按判定推送完全删除通知，阻塞直到 stop()
+    /// @note 不持线程，线程由装配方创建；析构前须已返回
+    void run();
+
+    /// @brief 停止消费；幂等，可从任意线程调用
+    /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
+    void stop();
 
     /// @brief 注入 contextservice 接口依赖
     void set_context_service(ContextClearService* c_svc);
 
+    /// @brief 注入角色归属接口依赖（可空）
+    void set_role_join_service(RoleJoinService* service);
+
+    /// @brief 注入角色清理接口依赖（可空）
+    void set_role_clear_service(RoleClearService* service);
+
    private:
     // 进程树分片数量
-    static constexpr size_t kShardCount        = 32;
+    static constexpr size_t kShardCount = 32;
 
-    // 任务队列容量(注册/注销事件),SPSC 队列,容量需为 2 的幂
-    static constexpr size_t kTaskQueueCapacity = 4096;
+    /// @brief 入队任务：注册或注销一个进程
+    struct Task {
+        enum class Kind { ADD, REMOVE };
 
-    ContextClearService* ctx_clear_service_    = nullptr;
+        Kind kind = Kind::ADD;
+        hng::ProcessMessage add;  ///< kind 为 ADD 时有效
+        hng::Process remove;      ///< kind 为 REMOVE 时有效
+    };
 
-    // 任务队列,只支持单生产者单消费者的安全并发
-    hng::SPSC_Queue<std::function<void()>> task;
+    ContextClearService* ctx_clear_service_ = nullptr;
+    RoleJoinService* role_join_service_     = nullptr;
+    RoleClearService* role_clear_service_   = nullptr;
+
+    // 任务队列：多生产者、无界，写入方是各个采集线程与其他组件的转交
+    hng::NotificationQueue<Task> task;
 
     // 维护一组进程树的分片，PID 通过哈希落到对应的分片中
     // 该数据结构是频繁访问的，局部的共享锁一定程度上优化了访问
@@ -141,7 +166,8 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
      */
     void notify_process_fully_removed(hng::Process p);
 
-    void work();
+    /// @brief 落地一条队列任务
+    void land(Task& task);
 };
 
 #endif  // _CONTROL_PLANE_PROCESSMANAGER_HPP

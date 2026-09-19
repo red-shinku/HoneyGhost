@@ -41,6 +41,11 @@ add_executable(test_role_cgroup_reader test_role_cgroup_reader.cc)
 target_link_libraries(test_role_cgroup_reader PRIVATE hng_role_discovery)
 add_test(NAME test_role_cgroup_reader COMMAND test_role_cgroup_reader)
 
+# 控制平面的进程管理器：三个注入点走替身，无 IO / 无特权
+add_executable(test_process_manager test_process_manager.cc)
+target_link_libraries(test_process_manager PRIVATE hng_process_manager)
+add_test(NAME test_process_manager COMMAND test_process_manager)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
