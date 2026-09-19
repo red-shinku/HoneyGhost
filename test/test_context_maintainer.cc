@@ -34,7 +34,10 @@ int g_fail = 0;
 hng::Process mk(uint32_t pid, uint64_t start) { return hng::Process{pid, start}; }
 
 /// 控制平面 context 服务的极简替身：仅登记 context 根进程 → contextID
-class FakeContextService final : public ContextService {
+/// @note 一个替身同时充当查询 / 注册 / 更新三个接口；清理接口不属于本模块的注入面
+class FakeContextService final : public ContextLookupService,
+                                 public ContextJoinService,
+                                 public ContextUpdateService {
    public:
     struct Key {
         hng::Process p;
@@ -72,14 +75,22 @@ class FakeContextService final : public ContextService {
         ctx[Key{p}] = nd.contextID;
     }
     void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
+    void bind_to_ctxroot(hng::Process, hng::Process) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
+
+/// 经三个接口注入同一个替身
+void inject(ContextMaintainer& m, FakeContextService& svc)
+{
+    m.set_context_service(&svc, &svc, &svc);
+}
 
 // ---- 派生流程 ----
 void run_derive()
 {
     FakeContextService svc;
-    ContextMaintainer m(&svc);
+    ContextMaintainer m;
+    inject(m, svc);
 
     // 父进程已有 context（如 nginx），非解释器
     hng::Process parent = mk(50, 500);
@@ -108,11 +119,12 @@ void run_derive()
 void run_keep()
 {
     FakeContextService svc;
-    ContextMaintainer m(&svc);
+    ContextMaintainer m;
+    inject(m, svc);
 
     // 先让父进程成为"解释器"：惰性 exec bash 派生并记录解释器类别
     hng::Process shell = mk(10, 100);
-    auto sd = m.should_derive_context(shell, mk(1, 1), "/bin/bash");
+    auto sd            = m.should_derive_context(shell, mk(1, 1), "/bin/bash");
     CHECK(sd.has_value(), "父解释器派生成功");
 
     // 会话内普通命令 ls → KEEP（不派生，留在父）
@@ -129,7 +141,8 @@ void run_keep()
 void run_noexec()
 {
     FakeContextService svc;
-    ContextMaintainer m(&svc, /*window_size=*/3);
+    ContextMaintainer m(3);
+    inject(m, svc);
 
     hng::Process parent = mk(50, 500);
     svc.seed(parent, 100);
@@ -149,17 +162,17 @@ void run_noexec()
 void run_lazy()
 {
     FakeContextService svc;
-    ContextMaintainer m(&svc);
+    ContextMaintainer m;
+    inject(m, svc);
 
     // 无诞生事件直接 exec 解释器 → 惰性 DERIVE
     hng::Process node = mk(300, 3000);
-    auto d = m.should_derive_context(node, mk(1, 1), "/usr/bin/node");
+    auto d            = m.should_derive_context(node, mk(1, 1), "/usr/bin/node");
     CHECK(d.has_value(), "无诞生的惰性 exec 解释器应派生");
 
     // 乱序：派生后补到的诞生事件应被忽略（不重复开窗）
     m.on_birth(node, mk(1, 1));
-    CHECK(!m.on_event(node).has_value(),
-          "重复诞生被忽略，不产生 NO_EXEC 派生");
+    CHECK(!m.on_event(node).has_value(), "重复诞生被忽略，不产生 NO_EXEC 派生");
     CHECK(m.lookup_contextID(node) == std::optional<uint32_t>(d->contextID),
           "乱序诞生后仍归自身 context");
 }
@@ -168,9 +181,11 @@ void run_lazy()
 void run_default_derive()
 {
     FakeContextService svc;
-    ContextMaintainer m(&svc);
+    ContextMaintainer m;
+    inject(m, svc);
 
-    // 父进程非解释器（exec 普通二进制后派生为自身 context），fork 子进程跑普通命令
+    // 父进程非解释器（exec 普通二进制后派生为自身 context），fork
+    // 子进程跑普通命令
     hng::Process server = mk(20, 200);
     auto sd = m.should_derive_context(server, mk(1, 1), "/usr/bin/nginx");
     CHECK(sd.has_value(), "服务进程自身派生");
