@@ -196,6 +196,19 @@ target_include_directories(hng_process_manager PUBLIC
 )
 
 # ============================================================
+# 控制平面（上下文管理器）
+#
+# 只依赖 event_data 与 context 服务接口（均 header-only）；
+# 工作平面的 ContextMaintainer 不在本目标内。
+# ============================================================
+add_library(hng_context_manager STATIC
+    agent/control_plane/context_manager.cc
+)
+target_include_directories(hng_context_manager PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
