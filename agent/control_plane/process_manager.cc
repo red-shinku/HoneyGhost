@@ -84,6 +84,7 @@ void ProcessManager::addPID(hng::ProcessMessage&& data)
     uint64_t pid_st  = data.pid_start_time;
     auto& shard_ref  = ptree_shard[shard_index(pid)];
 
+    std::optional<hng::ProcessMessage> retired;
     {
         std::unique_lock lock(shard_ref.smtx);
 
@@ -92,16 +93,21 @@ void ProcessManager::addPID(hng::ProcessMessage&& data)
             shard_ref.process.insert(std::make_pair(pid, data));
         }
         else if (pid_st != it->second.pid_start_time) {
-            // pid 复用：旧实例已被新实例顶掉。旧实例在虚拟根树里的条目与
-            // 其归属条目都不在此处清理，见 docs/red_shinku_logs/
-            // 控制平面context归属重构.md §4
-            shard_ref.process.insert_or_assign(pid, std::move(data));
+            // pid 复用：旧实例已死，只是它的退出事件没到（丢了或晚于本条）。
+            // 按与 deletePID 相同的路径退役它，再让新实例顶上
+            retired.emplace(std::move(it->second));
+            it->second = std::move(data);
+            pid_reused_.fetch_add(1, std::memory_order_relaxed);
         }
         else {
             // 幂等:同 pid + start_time 已存在,不再重复插入
             return;
         }
-    }  // 释放本分片锁后再更新父进程计数,避免同线程重入自锁
+    }  // 释放本分片锁后再退役旧实例、更新父进程计数,避免同线程重入自锁
+
+    if (retired.has_value()) {
+        retire(std::move(*retired));
+    }
 
     update_child_count_add(hng::Process{ppid, ppid_st});
 
@@ -115,13 +121,8 @@ void ProcessManager::addPID(hng::ProcessMessage&& data)
 
 void ProcessManager::deletePID(hng::Process p)
 {
-    uint32_t ppid              = 0;
-    uint64_t ppid_st           = 0;
-    auto& shard_ref            = ptree_shard[shard_index(p.pid)];
-
-    bool need_parent_decrement = false;
-    bool fully_removed         = false;  // 实进程树与虚拟根树中均已无此进程记录
-    std::optional<hng::ProcessMessage> vroot_proc;
+    auto& shard_ref = ptree_shard[shard_index(p.pid)];
+    std::optional<hng::ProcessMessage> retired;
 
     {
         std::unique_lock lock(shard_ref.smtx);
@@ -131,39 +132,38 @@ void ProcessManager::deletePID(hng::Process p)
             return;
         }
         if (p.pid_start_time != it->second.pid_start_time) {
+            // 该 pid 已被复用：本条是旧实例迟到的退出事件，实例早已退役，
+            // 忽略即可（重复投递）
             return;
         }
-        ppid    = it->second.ppid;
-        ppid_st = it->second.ppid_start_time;
+        retired.emplace(std::move(it->second));
+        shard_ref.process.erase(it);
+    }  // 释放本分片锁后再退役,避免同线程重入自锁
 
-        // 直接删除节点，或移动至 虚拟根
-        if (it->second.child_count == 0) {
-            shard_ref.process.erase(it);
-            fully_removed = true;  // 无子进程,不需保留虚拟根,进程被完全删除
-        }
-        else {
-            vroot_proc.emplace(std::move(it->second));
-            shard_ref.process.erase(it);
-            // 尚有存活子进程,保留为虚拟根,暂不算完全删除
-        }
-        need_parent_decrement = true;
-    }  // 释放本分片锁后再更新父进程计数与虚拟根,避免重入自锁
+    retire(std::move(*retired));
+}
 
-    if (vroot_proc.has_value()) {
-        auto& vshard_ref = vptree_root[shard_index(p.pid)];
+void ProcessManager::retire(hng::ProcessMessage&& old)
+{
+    const hng::Process self{old.pid, old.pid_start_time};
+    const hng::Process parent{old.ppid, old.ppid_start_time};
+    const bool keep_as_vroot = old.child_count > 0;
+
+    if (keep_as_vroot) {
+        auto& vshard_ref = vptree_root[shard_index(old.pid)];
         std::unique_lock vlock(vshard_ref.smtx);
-        vshard_ref.vprocess.emplace(VProcessKey{p.pid, p.pid_start_time},
-                                    std::move(*vroot_proc));
+        vshard_ref.vprocess.emplace(VProcessKey{old.pid, old.pid_start_time},
+                                    std::move(old));
+    }
+    else {
+        // 无存活子进程：不保留虚拟根，进程被完全删除。
+        // 先报自己再递减父计数：后者可能引发父的虚拟根驱逐与通知，
+        // 由此通知沿子到父的次序发出
+        notify_process_fully_removed(self);
     }
 
-    if (need_parent_decrement) {
-        // 父进程可能在 ptree(存活)或虚拟根(已退出)中,由函数内部回退处理
-        update_child_count_decrease(hng::Process{ppid, ppid_st});
-    }
-
-    if (fully_removed) {
-        notify_process_fully_removed(p);
-    }
+    // 父进程可能在 ptree(存活)或虚拟根(已退出)中,由函数内部回退处理
+    update_child_count_decrease(parent);
 }
 
 void ProcessManager::update_child_count_add(hng::Process p)
@@ -234,6 +234,13 @@ void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
     if (evicted) {
         notify_process_fully_removed(p);
     }
+}
+
+ProcessManagerStats ProcessManager::stats() const
+{
+    ProcessManagerStats snapshot;
+    snapshot.pid_reused = pid_reused_.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 void ProcessManager::notify_process_fully_removed(hng::Process p)
