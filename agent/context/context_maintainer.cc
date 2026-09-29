@@ -106,7 +106,6 @@ std::optional<uint32_t> ContextMaintainer::lookup_contextID(hng::Process p) cons
         return ctx_lookup_service_->lookup(e->parent);
     }
     // 其余：进程自身已登记的 context（未登记返回空）
-    // TODO: 这里是错误的，应当先追溯最早同context的进程
     return ctx_lookup_service_->lookup(p);
 }
 
