@@ -14,7 +14,7 @@
 #ifndef _BPF_SYSCALL_TYPE_H_
 #define _BPF_SYSCALL_TYPE_H_
 
-#include "../include/syscall_event_head.h"
+#include "kernel/include/syscall_event_head.h"
 
 // syscall参数最大长度
 #define MAX_ARG_LEN 64

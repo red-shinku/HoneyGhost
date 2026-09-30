@@ -10,7 +10,7 @@
 #ifndef _BPF_FILE_TYPE_H_
 #define _BPF_FILE_TYPE_H_
 
-#include "../include/event_head.h"
+#include "kernel/include/event_head.h"
 
 /**
  * @brief 每个文件事件都会生成该结构的对象

@@ -10,9 +10,9 @@
  * @date 2026.08.06
  */
 
-#include "../include/vmlinux.h"
-#include "../include/syscalls_type.h"
-#include "../include/uapi_const.h"
+#include "kernel/include/vmlinux.h"
+#include "kernel/include/syscalls_type.h"
+#include "kernel/include/uapi_const.h"
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>

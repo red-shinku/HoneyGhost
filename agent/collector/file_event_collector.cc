@@ -11,7 +11,7 @@
  */
 
 #include "./include/collector.hpp"
-#include "../../kernel/include/files_type.h"
+#include "kernel/include/files_type.h"
 
 FileEventCollector::FileEventCollector(
     hng::SPSC_Queue<struct file_access_data>& queue)

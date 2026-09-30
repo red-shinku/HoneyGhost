@@ -1,5 +1,5 @@
 #include "./include/collector.hpp"
-#include "../kernel/include/syscalls_type.h"
+#include "kernel/include/syscalls_type.h"
 
 SyscallEventCollector::SyscallEventCollector(
     hng::SPSC_Queue<struct syscall_event>& queue)
