@@ -12,6 +12,13 @@ add_compile_options(-Wall -Wextra)
 set(HNG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ============================================================
+# eBPF 探针与骨架
+#
+# 不依赖任何 C++ 目标，产物落源码树；clang / bpftool 缺失时整个子目录为空目标。
+# ============================================================
+add_subdirectory(kernel)
+
+# ============================================================
 # 事件数据结构：proto 生成载荷 + 手写组合结构
 #   proto/file_event.proto   → ${PROTO_GEN_DIR}/file_event.pb.{h,cc}
 #   proto/syscall_event.proto → ${PROTO_GEN_DIR}/syscall_event.pb.{h,cc}
