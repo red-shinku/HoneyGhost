@@ -22,8 +22,8 @@
 
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/context_service.hpp"
-#include "agent/context/rule/include/derive_types.hpp"
-#include "agent/context/rule/include/pending_table.hpp"
+#include "agent/context_maintainer/rule/include/derive_types.hpp"
+#include "agent/context_maintainer/rule/include/pending_table.hpp"
 #include "agent/detector/include/score.hpp"
 #include "agent/event_data/process.hpp"
 #include "agent/event_data/event_type.hpp"

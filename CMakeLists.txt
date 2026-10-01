@@ -60,8 +60,8 @@ target_link_libraries(hng_semantic PUBLIC hng_event_data)
 # context 派生规则模块
 # ============================================================
 add_library(hng_context_rule STATIC
-    agent/context/rule/derive_types.cc
-    agent/context/rule/pending_table.cc
+    agent/context_maintainer/rule/derive_types.cc
+    agent/context_maintainer/rule/pending_table.cc
 )
 target_include_directories(hng_context_rule PUBLIC
     ${HNG_SOURCE_DIR}
@@ -72,7 +72,7 @@ target_link_libraries(hng_context_rule PUBLIC hng_event_data)
 # context 维护模块（ContextMaintainer，消费 rule 派生规则，经 ContextService 接入）
 # ============================================================
 add_library(hng_context_maintainer STATIC
-    agent/context/context_maintainer.cc
+    agent/context_maintainer/context_maintainer.cc
 )
 target_include_directories(hng_context_maintainer PUBLIC
     ${HNG_SOURCE_DIR}
