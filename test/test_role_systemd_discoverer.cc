@@ -2,7 +2,7 @@
  * @file test_role_systemd_discoverer.cc
  * @brief systemd 角色发现器的表驱动单元测试
  * @details
- * 覆盖 agent/control_plane/role_discovery 的 SystemdSignalTranslator 与
+ * 覆盖 agent/role_discovery 的 SystemdSignalTranslator 与
  * SystemdRoleDiscoverer：
  *  - 信号翻译：首次 MainPID 非 0 触发加入、activating 且 MainPID 为 0 不产出、
  *    自动重启产出 LEAVE + JOIN、无 LEAVE 介入的 MainPID 变化产出主进程更换；
@@ -33,8 +33,8 @@
  * @date 2026.9.12
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_systemd_discoverer.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_systemd_discoverer.hpp"
 
 #include <chrono>
 #include <cstdio>

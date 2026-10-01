@@ -12,8 +12,8 @@
 #include <optional>
 #include <cstdint>
 
-#include "agent/event_data/context.hpp"
-#include "agent/event_data/process.hpp"
+#include "agent/event_data/include/context.hpp"
+#include "agent/event_data/include/process.hpp"
 #include "agent/context_maintainer/include/context_maintainer_decision.hpp"
 
 /**

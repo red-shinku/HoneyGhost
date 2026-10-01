@@ -16,7 +16,7 @@
  * @date 2026.9.18
  */
 
-#include "agent/control_plane/include/role_manager.hpp"
+#include "agent/control_plane/src/role_manager.hpp"
 
 #include <unistd.h>
 
@@ -33,7 +33,7 @@
 #include <thread>
 #include <vector>
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
 
 namespace {
 

@@ -11,8 +11,8 @@
 #include <unordered_map>
 #include <cstdint>
 
-#include "detect_context.hpp"
-#include "util/include/spsc_queue.hpp"
+#include "agent/detector/include/detect_context.hpp"
+#include "agent/util/include/spsc_queue.hpp"
 
 /**
  * @brief 异常检测器

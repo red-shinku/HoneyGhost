@@ -2,7 +2,7 @@
  * @file test_role_containerd_discoverer.cc
  * @brief containerd 角色发现器的单元测试：协议解码、翻译层与 socket 接线
  * @details
- * 覆盖 agent/control_plane/role_discovery 的 role_containerd_discoverer：
+ * 覆盖 agent/role_discovery 的 role_containerd_discoverer：
  *  - 解码：真实生成物构造的帧 → 本地消息表示，空帧被拒；
  *  - 翻译层：快照段与流内观察产出的动作序列、类型键、属性、cgroup 补齐与过滤；
  *  - 待补锚点队列：段内失败计为已见并产出未知观察量、重试补齐、段末未被
@@ -17,7 +17,7 @@
  * @date 2026.9.13
  */
 
-#include "agent/control_plane/role_discovery/include/role_containerd_discoverer.hpp"
+#include "agent/role_discovery/src/role_containerd_discoverer.hpp"
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -36,7 +36,7 @@
 #include <thread>
 #include <vector>
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
 #include "role_containerd_bridge.pb.h"
 
 namespace {

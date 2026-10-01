@@ -12,8 +12,8 @@
  * @date 2026.9.5
  */
 
-#include "agent/context_maintainer/rule/include/derive_types.hpp"
-#include "agent/context_maintainer/rule/include/pending_table.hpp"
+#include "agent/context_maintainer/src/rule/derive_types.hpp"
+#include "agent/context_maintainer/src/rule/pending_table.hpp"
 
 #include <cstdio>
 
@@ -29,8 +29,8 @@ int g_fail = 0;
         }                                                                        \
     } while (0)
 
-using hng::rule::DeriveReason;
-using hng::rule::DeriveVerdict;
+using hng::detail::DeriveReason;
+using hng::detail::DeriveVerdict;
 
 hng::Process mk(uint32_t pid, uint64_t start) { return hng::Process{pid, start}; }
 
@@ -69,7 +69,7 @@ constexpr FamilyCase kFamilyCases[] = {
 void run_family()
 {
     for (const FamilyCase& c : kFamilyCases) {
-        if (hng::rule::is_interpreter_exec(c.file) != c.expect) {
+        if (hng::detail::is_interpreter_exec(c.file) != c.expect) {
             ++g_fail;
             std::fprintf(stderr, "[FAIL] is_interpreter_exec(%s) expect %d\n",
                          c.file, (int)c.expect);
@@ -107,7 +107,7 @@ void run_decide()
 {
     for (const DeriveCase& c : kDeriveCases) {
         DeriveVerdict v =
-            hng::rule::decide_exec(mk(1, 1), mk(2, 2), c.pci, c.file);
+            hng::detail::decide_exec(mk(1, 1), mk(2, 2), c.pci, c.file);
         if (v.derive != c.derive || (c.derive && v.reason != c.reason)) {
             ++g_fail;
             std::fprintf(stderr,
@@ -124,7 +124,7 @@ void run_pending()
 {
     // 1. exec(解释器) 即时派生，附 parent/child，移除登记
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(100, 1000), pa = mk(50, 500);
         t.on_fork(ch, pa, true, 8);
         CHECK(t.is_pending(ch), "fork 后应待决策");
@@ -138,7 +138,7 @@ void run_pending()
     }
     // 2. exec(普通命令) + 解释器父 → KEEP：无派生动作，移出登记
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(101, 1001), pa = mk(50, 500);
         t.on_fork(ch, pa, true, 8);
         auto v = t.on_exec(ch, "/usr/bin/ls");
@@ -147,7 +147,7 @@ void run_pending()
     }
     // 3. 事件配额耗尽（窗口内无 exec）→ NO_EXEC_WINDOW 派生
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(102, 1002), pa = mk(50, 500);
         t.on_fork(ch, pa, false, 3);
         CHECK(!t.on_event(ch).has_value(), "配额未耗尽仍待决策");
@@ -160,7 +160,7 @@ void run_pending()
     }
     // 4. window_size <= 0 按 1 处理：首个事件即派生
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(103, 1003);
         t.on_fork(ch, mk(50, 500), false, 0);
         auto v = t.on_event(ch);
@@ -169,7 +169,7 @@ void run_pending()
     }
     // 5. 退出清理：决策未完成即退出
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(104, 1004);
         t.on_fork(ch, mk(50, 500), false, 8);
         t.on_exit(ch);
@@ -177,14 +177,14 @@ void run_pending()
     }
     // 6. 非待决策进程的 exec：不动作（既有进程原地重 exec）
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         CHECK(!t.on_exec(mk(999, 9), "/usr/bin/foo").has_value(),
               "非待决策 exec 不动作");
         CHECK(!t.is_pending(mk(999, 9)), "非待决策进程不在表内");
     }
     // 7. 同 child 重复登记忽略（保留首次登记的父与配额）
     {
-        hng::rule::PendingTable t;
+        hng::detail::PendingTable t;
         hng::Process ch = mk(105, 1005), pa1 = mk(50, 500), pa2 = mk(60, 600);
         t.on_fork(ch, pa1, false, 8);
         t.on_fork(ch, pa2, false, 2);

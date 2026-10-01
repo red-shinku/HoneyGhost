@@ -17,7 +17,7 @@
  * @date 2026.9.19
  */
 
-#include "agent/control_plane/include/context_manager.hpp"
+#include "agent/control_plane/src/context_manager.hpp"
 
 #include <chrono>
 #include <cstdio>

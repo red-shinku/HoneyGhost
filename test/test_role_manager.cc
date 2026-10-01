@@ -18,7 +18,7 @@
  * @date 2026.9.17
  */
 
-#include "agent/control_plane/include/role_manager.hpp"
+#include "agent/control_plane/src/role_manager.hpp"
 
 #include <chrono>
 #include <condition_variable>

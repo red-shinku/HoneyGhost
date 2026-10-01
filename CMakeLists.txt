@@ -45,11 +45,11 @@ protobuf_generate(TARGET hng_event_data LANGUAGE cpp
 # 语义化模块
 # ============================================================
 add_library(hng_semantic STATIC
-    agent/semantic/path/path_normalizer.cc
-    agent/semantic/path/path_rule.cc
-    agent/semantic/path/token_validator.cc
-    agent/semantic/semantic_file.cc
-    agent/semantic/semantic_syscall.cc
+    agent/semantic/src/path/path_normalizer.cc
+    agent/semantic/src/path/path_rule.cc
+    agent/semantic/src/path/token_validator.cc
+    agent/semantic/src/semantic_file.cc
+    agent/semantic/src/semantic_syscall.cc
 )
 target_include_directories(hng_semantic PUBLIC
     ${HNG_SOURCE_DIR}
@@ -60,8 +60,8 @@ target_link_libraries(hng_semantic PUBLIC hng_event_data)
 # context 派生规则模块
 # ============================================================
 add_library(hng_context_rule STATIC
-    agent/context_maintainer/rule/derive_types.cc
-    agent/context_maintainer/rule/pending_table.cc
+    agent/context_maintainer/src/rule/derive_types.cc
+    agent/context_maintainer/src/rule/pending_table.cc
 )
 target_include_directories(hng_context_rule PUBLIC
     ${HNG_SOURCE_DIR}
@@ -72,7 +72,7 @@ target_link_libraries(hng_context_rule PUBLIC hng_event_data)
 # context 维护模块（ContextMaintainer，消费 rule 派生规则，经 ContextService 接入）
 # ============================================================
 add_library(hng_context_maintainer STATIC
-    agent/context_maintainer/context_maintainer.cc
+    agent/context_maintainer/src/context_maintainer.cc
 )
 target_include_directories(hng_context_maintainer PUBLIC
     ${HNG_SOURCE_DIR}
@@ -86,12 +86,12 @@ target_link_libraries(hng_context_maintainer PUBLIC
 # 角色发现模块（公共骨架：状态表与 cgroup 读取）
 #
 # 无第三方依赖，也不链接 hng_event_data——锚点类型 hng::Process 所在的
-# agent/event_data/process.hpp 是 header-only 且只依赖 <cstdint>。
+# agent/event_data/include/process.hpp 是 header-only 且只依赖 <cstdint>。
 # 各发现源按源再配一个 STATIC 库（libsystemd / gRPC）。
 # ============================================================
 add_library(hng_role_discovery STATIC
-    agent/control_plane/role_discovery/role_signal_table.cc
-    agent/control_plane/role_discovery/role_cgroup_reader.cc
+    agent/role_discovery/src/role_signal_table.cc
+    agent/role_discovery/src/role_cgroup_reader.cc
 )
 target_include_directories(hng_role_discovery PUBLIC
     ${HNG_SOURCE_DIR}
@@ -129,7 +129,7 @@ if(HNG_ENABLE_ROLE_SYSTEMD)
 
     if(HNG_SYSTEMD_DEP)
         add_library(hng_role_systemd STATIC
-            agent/control_plane/role_discovery/role_systemd_discoverer.cc
+            agent/role_discovery/src/role_systemd_discoverer.cc
         )
         target_include_directories(hng_role_systemd PUBLIC
             ${HNG_SOURCE_DIR}
@@ -147,8 +147,8 @@ endif()
 # containerd 角色发现源（经翻译进程，无 gRPC）
 #
 # C++ 侧只连翻译进程的 Unix socket，协议 .proto 由本仓库双端生成：C++ 侧在
-# 构建时生成，Go 侧产物入库（见 containerd_bridge/gen.sh）。
-# 翻译进程的构建不接 CMake，见 containerd_bridge/README.md。
+# 构建时生成，Go 侧产物入库（见 agent/role_discovery/containerd_bridge/gen.sh）。
+# 翻译进程的构建不接 CMake，见 agent/role_discovery/containerd_bridge/README.md。
 # ============================================================
 option(HNG_ENABLE_ROLE_CONTAINERD "构建 containerd 角色发现器（需 protobuf）" ON)
 if(HNG_ENABLE_ROLE_CONTAINERD)
@@ -156,7 +156,7 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
     file(MAKE_DIRECTORY ${ROLE_BRIDGE_GEN_DIR})
 
     add_library(hng_role_containerd STATIC
-        agent/control_plane/role_discovery/role_containerd_discoverer.cc
+        agent/role_discovery/src/role_containerd_discoverer.cc
     )
     target_include_directories(hng_role_containerd PUBLIC
         ${HNG_SOURCE_DIR}
@@ -182,8 +182,8 @@ endif()
 # 目前只纳入本组件的两个 .cc，ProcessManager / ContextManager 尚未进 CMake。
 # ============================================================
 add_library(hng_control_plane STATIC
-    agent/control_plane/role_manager.cc
-    agent/control_plane/role_relation_store.cc
+    agent/control_plane/src/role_manager.cc
+    agent/control_plane/src/role_relation_store.cc
 )
 target_include_directories(hng_control_plane PUBLIC
     ${HNG_SOURCE_DIR}
@@ -196,7 +196,7 @@ target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
 # 只依赖 event_data 与两个服务接口（均 header-only），不含 ContextManager。
 # ============================================================
 add_library(hng_process_manager STATIC
-    agent/control_plane/process_manager.cc
+    agent/control_plane/src/process_manager.cc
 )
 target_include_directories(hng_process_manager PUBLIC
     ${HNG_SOURCE_DIR}
@@ -209,7 +209,7 @@ target_include_directories(hng_process_manager PUBLIC
 # 工作平面的 ContextMaintainer 不在本目标内。
 # ============================================================
 add_library(hng_context_manager STATIC
-    agent/control_plane/context_manager.cc
+    agent/control_plane/src/context_manager.cc
 )
 target_include_directories(hng_context_manager PUBLIC
     ${HNG_SOURCE_DIR}

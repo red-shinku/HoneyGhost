@@ -14,7 +14,7 @@
 BUILD_DIR ?= build-agent
 BIN_DIR   ?= bin
 CMAKE     ?= cmake
-BRIDGE_DIR := agent/control_plane/role_discovery/containerd_bridge
+BRIDGE_DIR := agent/role_discovery/containerd_bridge
 
 .PHONY: all agent ebpf go test clean
 

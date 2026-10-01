@@ -32,8 +32,8 @@
  * @date 2026.9.12
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_systemd_discoverer.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_systemd_discoverer.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -16,18 +16,26 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
 
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/context_service.hpp"
-#include "agent/context_maintainer/rule/include/derive_types.hpp"
-#include "agent/context_maintainer/rule/include/pending_table.hpp"
 #include "agent/detector/include/score.hpp"
-#include "agent/event_data/process.hpp"
-#include "agent/event_data/event_type.hpp"
-#include "./context_maintainer_decision.hpp"
+#include "agent/event_data/include/process.hpp"
+#include "agent/event_data/include/event_type.hpp"
+#include "agent/context_maintainer/include/context_maintainer_decision.hpp"
+
+// rule 派生规则是本模块的实现细节（src/rule/），此处只前置声明其类型，
+// 不得改为包含定义——公共头一旦引入 src 头，该细节就随之外泄。
+namespace hng {
+namespace detail {
+class PendingTable;
+struct DeriveVerdict;
+}  // namespace detail
+}  // namespace hng
 
 class ContextMaintainer {
    public:
@@ -114,7 +122,7 @@ class ContextMaintainer {
     /// @brief 派生决策落定：分配 contextID、判定 attr、经 ContextService 注册
     /// @param v 规则层派生判定
     std::optional<ContextDeriveDecision> finalize_derive(
-        const hng::rule::DeriveVerdict& v);
+        const hng::detail::DeriveVerdict& v);
 
     /// @brief 分配下一个 contextID（0 保留作"无父 context"哨兵，故从 1 起）
     uint32_t allocate_context_id();
@@ -140,7 +148,8 @@ class ContextMaintainer {
     ContextJoinService* ctx_join_service_     = nullptr;
     ContextUpdateService* ctx_update_service_ = nullptr;
 
-    hng::rule::PendingTable pending_;  ///< 待决策进程观察窗口
+    ///< 待决策进程观察窗口；指向不完整类型，定义见 src/rule/pending_table.hpp
+    std::unique_ptr<hng::detail::PendingTable> pending_;
 
     // 进程 → 其最近一次 exec 目标是否解释器（KEEP 判定的"父是否解释器"近似来源）
     std::unordered_map<ProcessKey, bool, KeyHash> exec_is_interpreter_;
