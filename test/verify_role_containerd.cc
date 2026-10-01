@@ -15,7 +15,7 @@
  * 从仓库根手动执行：
  *
  *   sudo /usr/local/go/bin/go run
- * ./agent/control_plane/role_discovery/containerd_bridge/cmd/containerd-bridge &
+ * ./agent/role_discovery/containerd_bridge/cmd/containerd-bridge &
  *   sudo build-agent/test/verify_role_containerd
  *
  * 另开一个终端制造事件：
@@ -27,8 +27,8 @@
  * @date 2026.9.13
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_containerd_discoverer.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_containerd_discoverer.hpp"
 
 #include <algorithm>
 #include <csignal>

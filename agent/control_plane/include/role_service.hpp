@@ -14,9 +14,9 @@
 #include <optional>
 #include <vector>
 
-#include "agent/control_plane/role_discovery/include/role_event.hpp"
-#include "agent/event_data/process.hpp"
-#include "agent/event_data/role.hpp"
+#include "agent/role_discovery/include/role_event.hpp"
+#include "agent/event_data/include/process.hpp"
+#include "agent/event_data/include/role.hpp"
 
 /// @brief 角色归属的查询接口
 class RoleLookupService {

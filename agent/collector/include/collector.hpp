@@ -1,7 +1,7 @@
 #ifndef COLLECTOR_HPP
 #define COLLECTOR_HPP
 
-#include "../../util/include/spsc_queue.hpp"
+#include "agent/util/include/spsc_queue.hpp"
 
 #include "kernel/include/files_type.h"
 #include "kernel/include/syscalls_type.h"

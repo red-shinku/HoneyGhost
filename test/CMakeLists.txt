@@ -98,8 +98,7 @@ endif()
 # ============================================================
 # 阶段 01 端到端校验（需 root 与 BPF 权限，不注册为 ctest 用例）
 #
-#   clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c \
-#       kernel/probes/syscalls.bpf.c -o kernel/build/syscalls.bpf.o
+#   make ebpf        # 产出 kernel/build/syscalls.bpf.o，见 kernel/CMakeLists.txt
 #   sudo build-agent/test/verify_starttime
 #
 # libbpf 缺失时跳过，不影响其余目标

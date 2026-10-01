@@ -16,7 +16,7 @@
  * @date 2026.9.17
  */
 
-#include "agent/control_plane/include/role_relation_store.hpp"
+#include "agent/control_plane/src/role_relation_store.hpp"
 
 #include <cstdio>
 #include <optional>

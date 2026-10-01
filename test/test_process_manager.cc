@@ -16,7 +16,7 @@
  * @date 2026.9.18
  */
 
-#include "agent/control_plane/include/process_manager.hpp"
+#include "agent/control_plane/src/process_manager.hpp"
 
 #include <atomic>
 #include <chrono>

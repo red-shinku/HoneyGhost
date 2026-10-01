@@ -21,8 +21,8 @@
  * @date 2026.08.07
  */
 
-#include "../include/vmlinux.h"
-#include "../include/networks_type.h"
+#include "kernel/include/vmlinux.h"
+#include "kernel/include/networks_type.h"
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>

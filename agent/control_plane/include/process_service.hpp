@@ -11,7 +11,7 @@
 
 #include <optional>
 
-#include "agent/event_data/process.hpp"
+#include "agent/event_data/include/process.hpp"
 
 class ProcessLookupService {
    protected:

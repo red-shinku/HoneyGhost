@@ -6,9 +6,9 @@
  * @date 2026.08.05
  */
 
-#include "./include/vmlinux.h"
-#include "../include/files_type.h"
-#include "../include/uapi_const.h"
+#include "kernel/include/vmlinux.h"
+#include "kernel/include/files_type.h"
+#include "kernel/include/uapi_const.h"
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

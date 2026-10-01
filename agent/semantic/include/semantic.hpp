@@ -4,8 +4,8 @@
 #include <array>
 #include <memory>
 #include "agent/util/include/spsc_queue.hpp"
-#include "agent/event_data/file_event.hpp"
-#include "agent/event_data/syscall_event.hpp"
+#include "agent/event_data/include/file_event.hpp"
+#include "agent/event_data/include/syscall_event.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/syscalls_type.h"
 

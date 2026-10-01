@@ -12,9 +12,9 @@
  * @date 2026.08.14
  */
 
-#include "agent/semantic/path/include/path_normalizer.hpp"
-#include "agent/semantic/path/include/path_rule.hpp"
-#include "agent/semantic/path/include/token_validator.hpp"
+#include "agent/semantic/src/path/path_normalizer.hpp"
+#include "agent/semantic/src/path/path_rule.hpp"
+#include "agent/semantic/src/path/token_validator.hpp"
 
 #include <cstdio>
 #include <string>

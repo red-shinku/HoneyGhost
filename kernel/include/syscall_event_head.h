@@ -9,7 +9,7 @@
 #ifndef _BPF_SYSCALLS_EVENT_HEAD_H_
 #define _BPF_SYSCALLS_EVENT_HEAD_H_
 
-#include "event_head.h"
+#include "kernel/include/event_head.h"
 
 enum syscall_event_name {
     SYSCALL_EVENT_FORK,
