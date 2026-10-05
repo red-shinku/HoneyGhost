@@ -107,13 +107,13 @@ void RoleManager::notify(const RoleTransition& transition)
             case RoleTransition::Kind::NONE:
                 break;  // 上面已排除
             case RoleTransition::Kind::JOINED:
-                sink->on_role_joined(transition.roleID);
+                sink->on_role_joined(transition.role);
                 break;
             case RoleTransition::Kind::LEFT:
-                sink->on_role_left(transition.roleID);
+                sink->on_role_left(transition.role);
                 break;
             case RoleTransition::Kind::MAIN_PROCESS_CHANGED:
-                sink->on_role_main_process_changed(transition.roleID);
+                sink->on_role_main_process_changed(transition.role);
                 break;
         }
     }

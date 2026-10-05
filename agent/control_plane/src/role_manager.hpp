@@ -4,7 +4,7 @@
  * @details
  * 进程属于哪个角色的权威。把发现器按实例键产出的角色事件落成按进程索引的
  * 归属表，并为每个角色分配 roleID。不判定角色存活（权威在发现器的状态表）、
- * 不加工 roleLabel（直通 type_key）、不持久化。
+ * 不持久化。roleLabel 由内部件 RoleLabelBuilder 按身份来源生成。
  * 表与落地规则在 RoleRelationStore，本组件负责队列、消费线程、cgroup 读取与出口。
  * @author red_shinku
  * @date 2026.9.17

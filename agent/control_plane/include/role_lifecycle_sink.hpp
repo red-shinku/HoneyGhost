@@ -4,7 +4,7 @@
  * 需要角色生命周期通知的模块，可实现该接口，决定如何接受角色管理组件的通知。
  * @details 通过 RoleManager::add_lifecycle_sink 注册。
  * 三个动作与角色事件的三类动作一一对应，但携带的是 RoleManager 分配的
- * roleID，不是转发。
+ * hng::Role（roleID + roleLabel），不是转发。
  * @author red_shinku
  * @date 2026.9.17
  */
@@ -12,7 +12,7 @@
 #ifndef HNG_ROLE_LIFECYCLE_SINK_HPP_
 #define HNG_ROLE_LIFECYCLE_SINK_HPP_
 
-#include <cstdint>
+#include "agent/event_data/include/role.hpp"
 
 /**
  * @brief 角色生命周期的下游接收方
@@ -25,14 +25,14 @@ class RoleLifecycleSink {
     virtual ~RoleLifecycleSink() = default;
 
    public:
-    /// @brief 角色加入；此刻起 lookup 可命中该 roleID
-    virtual void on_role_joined(uint32_t roleID)               = 0;
+    /// @brief 角色加入；此刻起 lookup 可命中该 role.roleID
+    virtual void on_role_joined(const hng::Role& role)               = 0;
 
-    /// @brief 角色退出；此刻起该 roleID 一律失配
-    virtual void on_role_left(uint32_t roleID)                 = 0;
+    /// @brief 角色退出；此刻起该 role.roleID 一律失配
+    virtual void on_role_left(const hng::Role& role)                 = 0;
 
-    /// @brief 锚点更换；roleID 不变
-    virtual void on_role_main_process_changed(uint32_t roleID) = 0;
+    /// @brief 锚点更换；role.roleID 不变，roleLabel 可能被重算
+    virtual void on_role_main_process_changed(const hng::Role& role) = 0;
 };
 
 #endif  // HNG_ROLE_LIFECYCLE_SINK_HPP_
