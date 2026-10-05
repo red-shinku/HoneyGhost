@@ -44,6 +44,7 @@ int g_fail = 0;
 
 using hng::role::RoleAction;
 using hng::role::RoleEvent;
+using hng::role::RoleSource;
 
 /// 不存在的 cgroup 路径：交给真实读取器时读不到任何进程
 constexpr const char* kDeadCgroup = "/nonexistent-hng/cgroup";
@@ -56,19 +57,23 @@ class RecordingSink : public RoleLifecycleSink {
     struct Call {
         Kind kind;
         uint32_t roleID;
+        hng::role_label_t roleLabel;
         bool probe_hit;  ///< 回调内反查的结果
     };
 
     /// 回调内执行的反查；留空则 probe_hit 恒为 true
     std::function<bool(uint32_t role_id)> probe;
 
-    void on_role_joined(uint32_t role_id) override { add(Kind::JOINED, role_id); }
-
-    void on_role_left(uint32_t role_id) override { add(Kind::LEFT, role_id); }
-
-    void on_role_main_process_changed(uint32_t role_id) override
+    void on_role_joined(const hng::Role& role) override
     {
-        add(Kind::MP_CHANGED, role_id);
+        add(Kind::JOINED, role);
+    }
+
+    void on_role_left(const hng::Role& role) override { add(Kind::LEFT, role); }
+
+    void on_role_main_process_changed(const hng::Role& role) override
+    {
+        add(Kind::MP_CHANGED, role);
     }
 
     /// 等到已收到 n 次回调；超时返回 false
@@ -86,13 +91,13 @@ class RecordingSink : public RoleLifecycleSink {
     }
 
    private:
-    void add(Kind kind, uint32_t role_id)
+    void add(Kind kind, const hng::Role& role)
     {
         // 反查在回调内、sink 锁外执行，与被测组件不构成嵌套加锁
-        const bool hit = probe ? probe(role_id) : true;
+        const bool hit = probe ? probe(role.roleID) : true;
         {
             std::lock_guard lock(mutex_);
-            calls_.push_back(Call{kind, role_id, hit});
+            calls_.push_back(Call{kind, role.roleID, role.roleLabel, hit});
         }
         cv_.notify_all();
     }
@@ -137,6 +142,7 @@ RoleEvent mk_join(const std::string& key, uint32_t pid, uint64_t start,
     event.payload.identity.instance_key     = key;
     event.payload.identity.type_key         = "nginx";
     event.payload.identity.attributes["ns"] = "hng";
+    event.payload.identity.source           = RoleSource::SYSTEMD;
     event.payload.main_process              = proc(pid, start);
     event.payload.cgroup_path               = kDeadCgroup;
     event.payload.member_processes          = std::move(members);
@@ -149,6 +155,8 @@ RoleEvent mk_other(RoleAction action, const std::string& key, uint32_t pid,
     RoleEvent event;
     event.action                        = action;
     event.payload.identity.instance_key = key;
+    event.payload.identity.type_key     = "nginx";
+    event.payload.identity.source       = RoleSource::SYSTEMD;
     event.payload.main_process          = proc(pid, start);
     event.payload.cgroup_path           = kDeadCgroup;
     return event;
@@ -171,14 +179,15 @@ void run_join()
     CHECK(calls.size() == 1 && calls[0].kind == RecordingSink::Kind::JOINED,
           "加入应恰好通知一次 JOINED");
     CHECK(calls[0].roleID == 1, "roleID 应自 1 起");
+    CHECK(calls[0].roleLabel == "a", "出口应携带 systemd 的 unit 名");
     CHECK(calls[0].probe_hit, "出口回调内反查应命中");
 
     const uint32_t role = calls[0].roleID;
     CHECK(manager.lookup(proc(100, 1000)).value_or(0) == role, "锚点应归属");
     CHECK(manager.lookup(proc(101, 1001)).value_or(0) == role, "载荷成员应归属");
     std::optional<hng::Role> view = manager.role(role);
-    CHECK(view.has_value() && view->roleLabel == "nginx",
-          "roleLabel 应直通 type_key");
+    CHECK(view.has_value() && view->roleLabel == "a",
+          "roleLabel 应取 unit 名（实例键）");
     std::optional<hng::role::RoleIdentity> identity = manager.identity(role);
     CHECK(identity.has_value() && identity->instance_key == "a" &&
               identity->attributes.at("ns") == "hng",
