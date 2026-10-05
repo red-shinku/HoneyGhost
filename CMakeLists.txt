@@ -182,6 +182,7 @@ endif()
 # 目前只纳入本组件的两个 .cc，ProcessManager / ContextManager 尚未进 CMake。
 # ============================================================
 add_library(hng_control_plane STATIC
+    agent/control_plane/src/role_label_builder.cc
     agent/control_plane/src/role_manager.cc
     agent/control_plane/src/role_relation_store.cc
 )
