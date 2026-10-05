@@ -3,6 +3,8 @@
 #include <mutex>
 #include <utility>
 
+#include "agent/control_plane/src/role_label_builder.hpp"
+
 namespace {
 
 /// 入口拒收判据：缺实例键或锚点
@@ -44,13 +46,13 @@ RoleTransition RoleRelationStore::join(const hng::role::RolePayload& payload,
     auto record          = role_table_.emplace(role_id, RoleRecord{});
     RoleRecord& fresh    = record.first->second;
     fresh.role.roleID    = role_id;
-    fresh.role.roleLabel = payload.identity.type_key;
+    fresh.role.roleLabel = RoleLabelBuilder::build(payload.identity);
     fresh.identity       = payload.identity;
     fresh.main_process   = payload.main_process;
     fresh.cgroup_path    = payload.cgroup_path;
     adopt_all(role_id, fresh, payload.main_process, members);
 
-    return RoleTransition{RoleTransition::Kind::JOINED, role_id};
+    return RoleTransition{RoleTransition::Kind::JOINED, fresh.role};
 }
 
 RoleTransition RoleRelationStore::main_process_change(
@@ -108,10 +110,11 @@ RoleTransition RoleRelationStore::leave(const std::string& instance_key)
     if (record->second.anchor_removed) {
         --stats_.anchors_removed;
     }
+    const hng::Role role = record->second.role;
     instance_to_role_.erase(instance);
     role_table_.erase(record);
 
-    return RoleTransition{RoleTransition::Kind::LEFT, role_id};
+    return RoleTransition{RoleTransition::Kind::LEFT, role};
 }
 
 void RoleRelationStore::bind_to_role(hng::Process child, hng::Process parent)
@@ -238,7 +241,8 @@ RoleTransition RoleRelationStore::rebind_anchor(
     record.identity       = payload.identity;
     record.main_process   = payload.main_process;
     record.cgroup_path    = payload.cgroup_path;
-    record.role.roleLabel = payload.identity.type_key;
+    record.role.roleLabel = RoleLabelBuilder::build(payload.identity);
 
-    return RoleTransition{RoleTransition::Kind::MAIN_PROCESS_CHANGED, role_id};
+    return RoleTransition{RoleTransition::Kind::MAIN_PROCESS_CHANGED,
+                          record.role};
 }

@@ -37,8 +37,8 @@ struct RoleTransition {
         MAIN_PROCESS_CHANGED  ///< 同一 roleID 的锚点更换
     };
 
-    Kind kind       = Kind::NONE;
-    uint32_t roleID = 0;  ///< kind 为 NONE 时无意义
+    Kind kind = Kind::NONE;
+    hng::Role role;  ///< 跃迁后的对外视图，含重算过的 roleLabel；NONE 时无意义
 };
 
 /// @brief 异常态观测快照
