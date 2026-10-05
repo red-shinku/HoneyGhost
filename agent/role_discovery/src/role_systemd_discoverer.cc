@@ -509,6 +509,7 @@ RolePayload SystemdSignalTranslator::build_payload(
     RolePayload payload;
     payload.identity.instance_key               = snapshot.id;
     payload.identity.type_key                   = type_key_of(snapshot.id);
+    payload.identity.source                     = RoleSource::SYSTEMD;
 
     payload.identity.attributes["active_state"] = snapshot.active_state;
     payload.identity.attributes["sub_state"]    = snapshot.sub_state;
