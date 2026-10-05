@@ -19,6 +19,16 @@ namespace hng {
 namespace role {
 
 /**
+ * @brief 角色来源
+ * @details 决定下游由身份的哪个字段构造 roleLabel
+ */
+enum class RoleSource {
+    UNSPECIFIED,  ///< 未声明来源
+    SYSTEMD,      ///< systemd 单元
+    CONTAINERD,   ///< containerd 容器
+};
+
+/**
  * @brief 角色身份
  * @details
  * 实例键是状态表去重所用的键，选择依据是「该键变化等价于换了一个实例」。
@@ -30,6 +40,7 @@ struct RoleIdentity {
     std::string instance_key;                       ///< 实例键
     std::string type_key;                           ///< 类型键
     std::map<std::string, std::string> attributes;  ///< 属性字典
+    RoleSource source = RoleSource::UNSPECIFIED;  ///< 来源：构造 roleLabel 的依据
 };
 
 /**

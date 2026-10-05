@@ -11,7 +11,9 @@
  *  - bind_to_role：父已归属则继承，未归属则丢弃；
  *  - on_process_removed：归属条目消失而角色记录仍在；
  *  - 锚点 gauge：锚点被删时计入、重复上报不重复计入、换锚点与退出时退出计数；
- *  - 入口拒收与异常态计数；roleID 从 1 起单调递增、不复用。
+ *  - 入口拒收与异常态计数；roleID 从 1 起单调递增、不复用；
+ *  - roleLabel：按来源取 unit 名 / 镜像引用，缺镜像与未声明来源各退到类型键，
+ *    锚点更换时随新身份重算。
  * @author red_shinku
  * @date 2026.9.17
  */
@@ -36,6 +38,7 @@ int g_fail = 0;
     } while (0)
 
 using hng::role::RolePayload;
+using hng::role::RoleSource;
 using Kind = RoleTransition::Kind;
 
 hng::Process proc(uint32_t pid, uint64_t start)
@@ -49,6 +52,7 @@ RolePayload mk_payload(const char* key, uint32_t pid, uint64_t start)
     payload.identity.instance_key     = key;
     payload.identity.type_key         = "nginx";
     payload.identity.attributes["ns"] = "hng";
+    payload.identity.source           = RoleSource::SYSTEMD;
     payload.main_process              = proc(pid, start);
     payload.cgroup_path = std::string("/system.slice/") + key + ".service";
     return payload;
@@ -60,7 +64,7 @@ uint32_t join_new(RoleRelationStore& store, const char* key, uint32_t pid,
 {
     RoleTransition transition = store.join(mk_payload(key, pid, start), members);
     CHECK(transition.kind == Kind::JOINED, "首次加入应产出 JOINED");
-    return transition.roleID;
+    return transition.role.roleID;
 }
 
 /// 谓词：该进程归属给定的 roleID
@@ -81,8 +85,8 @@ void run_join()
     CHECK(!store.lookup(proc(999, 9)).has_value(), "未归属进程应失配");
 
     std::optional<hng::Role> view = store.role(role);
-    CHECK(view.has_value() && view->roleID == role && view->roleLabel == "nginx",
-          "角色视图应为 roleID + type_key 直通");
+    CHECK(view.has_value() && view->roleID == role && view->roleLabel == "a",
+          "systemd 角色的 roleLabel 应取 unit 名（实例键）");
     CHECK(!store.role(role + 1).has_value(), "不存在的 roleID 应失配");
 
     std::optional<hng::role::RoleIdentity> identity = store.identity(role);
@@ -120,7 +124,7 @@ void run_join_normalize()
         store.join(mk_payload("a", 200, 2000), {proc(200, 2000)});
     CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED,
           "异锚点的 JOIN 应归一为锚点更换");
-    CHECK(moved.roleID == role, "归一不得换 roleID");
+    CHECK(moved.role.roleID == role, "归一不得换 roleID");
     CHECK(owned_by(store, proc(200, 2000), role), "新锚点应写入");
     CHECK(owned_by(store, proc(100, 1000), role),
           "旧条目不得被删，清理由 on_process_removed 负责");
@@ -141,7 +145,7 @@ void run_main_process_change()
 
     RoleTransition moved =
         store.main_process_change(mk_payload("a", 200, 2000), {proc(200, 2000)});
-    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED && moved.roleID == role,
+    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED && moved.role.roleID == role,
           "锚点更换应保持 roleID");
     CHECK(owned_by(store, proc(200, 2000), role), "锚点更换应写入新成员");
     CHECK(owned_by(store, proc(101, 1001), role), "反向索引并入不得丢旧键");
@@ -239,7 +243,7 @@ void run_anchor_gauge()
     // 换锚点后该角色不再是「锚点已删」：那个状态说的是旧锚点
     RoleTransition moved =
         store.main_process_change(mk_payload("a", 300, 3000), {proc(300, 3000)});
-    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED && moved.roleID == role_a,
+    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED && moved.role.roleID == role_a,
           "锚点已删的角色仍应能更换锚点");
     CHECK(store.stats().anchors_removed == 0, "换锚点后应退出该计数");
 
@@ -280,6 +284,39 @@ void run_reject_and_ids()
     CHECK(role_c == 3, "退出的 roleID 不得复用");
 }
 
+void run_label_rules()
+{
+    RoleRelationStore store;
+
+    // 容器：roleLabel 取镜像引用
+    RolePayload container                  = mk_payload("c1", 200, 2000);
+    container.identity.source              = RoleSource::CONTAINERD;
+    container.identity.attributes["image"] = "hng/nginx:v1.2";
+    RoleTransition joined = store.join(container, {proc(200, 2000)});
+    CHECK(joined.role.roleLabel == "hng/nginx:v1.2", "容器应取镜像引用");
+
+    // 容器缺镜像：退到类型键
+    RolePayload no_image     = mk_payload("c2", 300, 3000);
+    no_image.identity.source = RoleSource::CONTAINERD;
+    joined                   = store.join(no_image, {proc(300, 3000)});
+    CHECK(joined.role.roleLabel == "nginx", "容器缺镜像应退到类型键");
+
+    // 未声明来源：退到类型键
+    RolePayload unknown     = mk_payload("c3", 400, 4000);
+    unknown.identity.source = RoleSource::UNSPECIFIED;
+    joined                  = store.join(unknown, {proc(400, 4000)});
+    CHECK(joined.role.roleLabel == "nginx", "未声明来源应退到类型键");
+
+    // 锚点更换：roleLabel 随更换后的身份重算
+    container.identity.attributes["image"] = "hng/nginx:v1.3";
+    container.main_process                 = proc(201, 2001);
+    RoleTransition moved =
+        store.main_process_change(container, {proc(201, 2001)});
+    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED &&
+              moved.role.roleLabel == "hng/nginx:v1.3",
+          "锚点更换应重算 roleLabel");
+}
+
 }  // namespace
 
 int main()
@@ -293,6 +330,7 @@ int main()
     run_process_removed();
     run_anchor_gauge();
     run_reject_and_ids();
+    run_label_rules();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

@@ -367,6 +367,7 @@ std::optional<RoleObservation> ContainerdBridgeTranslator::build_enter(
     payload.identity.instance_key             = attributes.container_id;
     payload.identity.type_key                 = type_key_of(attributes);
     payload.identity.attributes               = attributes.labels;
+    payload.identity.source                   = RoleSource::CONTAINERD;
 
     std::map<std::string, std::string>& extra = payload.identity.attributes;
     set_attribute(extra, "namespace", attributes.container_namespace);

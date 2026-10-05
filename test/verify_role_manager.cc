@@ -49,6 +49,7 @@ int g_fail = 0;
 
 using hng::role::RoleAction;
 using hng::role::RoleEvent;
+using hng::role::RoleSource;
 
 constexpr int kDiscoverers        = 2;   ///< 假发现器线程数
 constexpr int kRolesPerSource     = 16;  ///< 每个发现器推的角色数
@@ -74,6 +75,7 @@ RoleEvent mk_event(RoleAction action, const RoleSpec& spec, hng::Process anchor)
     event.action                                = action;
     event.payload.identity.instance_key         = spec.instance_key;
     event.payload.identity.type_key             = "nginx";
+    event.payload.identity.source               = RoleSource::SYSTEMD;
     event.payload.identity.attributes["source"] = "verify";
     event.payload.main_process                  = anchor;
     event.payload.cgroup_path                   = spec.cgroup_path;
@@ -109,32 +111,32 @@ class BaselineSink : public RoleLifecycleSink {
    public:
     explicit BaselineSink(RoleLookupService& lookups) : lookups_(lookups) {}
 
-    void on_role_joined(uint32_t role_id) override
+    void on_role_joined(const hng::Role& role) override
     {
         // 加入：此刻起该 roleID 必须可查，否则下游的基线就是错的
-        if (!lookups_.role(role_id).has_value()) {
+        if (!lookups_.role(role.roleID).has_value()) {
             ++errors_;
         }
         std::lock_guard lock(mutex_);
-        alive_.insert(role_id);
+        alive_.insert(role.roleID);
         ++joined_;
         cv_.notify_all();
     }
 
-    void on_role_left(uint32_t role_id) override
+    void on_role_left(const hng::Role& role) override
     {
-        if (lookups_.role(role_id).has_value()) {
+        if (lookups_.role(role.roleID).has_value()) {
             ++errors_;
         }
         std::lock_guard lock(mutex_);
-        alive_.erase(role_id);
+        alive_.erase(role.roleID);
         ++left_;
         cv_.notify_all();
     }
 
-    void on_role_main_process_changed(uint32_t role_id) override
+    void on_role_main_process_changed(const hng::Role& role) override
     {
-        if (!lookups_.role(role_id).has_value()) {
+        if (!lookups_.role(role.roleID).has_value()) {
             ++errors_;
         }
         std::lock_guard lock(mutex_);
@@ -235,8 +237,8 @@ int main()
         std::optional<uint32_t> role = lookups.lookup(spec.anchor);
         CHECK(role.has_value(), "每个角色的锚点都应有归属");
         std::optional<hng::Role> view = lookups.role(role.value_or(0));
-        CHECK(view.has_value() && view->roleLabel == "nginx",
-              "角色视图应可查且 roleLabel 直通 type_key");
+        CHECK(view.has_value() && view->roleLabel == spec.instance_key,
+              "角色视图应可查且 roleLabel 取 systemd 的 unit 名");
         std::optional<hng::role::RoleIdentity> identity =
             lookups.identity(role.value_or(0));
         CHECK(identity.has_value() && identity->instance_key == spec.instance_key,
