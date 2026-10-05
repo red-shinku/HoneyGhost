@@ -1,0 +1,7 @@
+# 本目录头文件的 __u32/__u64 有两个来源（见 event_head.h）：BPF 侧由先包含的
+# vmlinux.h 提供；用户态侧由 #ifdef __cplusplus 下的 <linux/types.h> 提供。
+# 单独打开时两者都不成立（推断出的探针命令又是 -target bpf，连 <linux/types.h>
+# 都解析不了），故按 C++ 解析并去掉 -target bpf。
+CompileFlags:
+  Remove: [-target, bpf]
+  Add: [-x, c++-header]

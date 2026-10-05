@@ -105,3 +105,21 @@ endforeach()
 
 # ALL：既有的 `cmake --build build-agent`（不带 --target）也要产出探针与骨架
 add_custom_target(hng_ebpf ALL DEPENDS ${HNG_EBPF_OUTPUTS})
+
+# 仅供 clangd / CLion 等：CMake 只为编译目标导出 compile_commands.json，而上面探针是
+# add_custom_command 直接调 clang，不是编译目标，语言服务器因此拿不到探针参数（会退化成
+# 套用邻近 C++ 文件的 -std=gnu++17 等，与探针的 C 语言冲突）。此目标只用来导出条目，
+# EXCLUDE_FROM_ALL 使其不参与正常构建。
+#
+# C 编译器必须指定为 clang：探针用了 __builtin_preserve_access_index 等 clang 内建，
+# gcc 无法解析；CLion 收集编译信息时若调用 gcc 会直接报错。
+set(CMAKE_C_COMPILER ${HNG_CLANG})
+enable_language(C)
+add_library(hng_ebpf_cdb OBJECT EXCLUDE_FROM_ALL)
+foreach(probe IN LISTS HNG_EBPF_PROBES)
+    target_sources(hng_ebpf_cdb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/probes/${probe}.bpf.c)
+endforeach()
+target_include_directories(hng_ebpf_cdb PRIVATE ${HNG_SOURCE_DIR})
+target_compile_options(hng_ebpf_cdb PRIVATE
+    -target bpf -D__TARGET_ARCH_x86 -O2 -g)
