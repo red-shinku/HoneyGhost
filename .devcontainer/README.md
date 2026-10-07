@@ -23,15 +23,15 @@
 
 ### 2.1 首次
 
-宿主需为 Linux，且 `/sys/kernel/btf/vmlinux` 存在——`kernel/include/vmlinux.h` 由它生成，缺此项 eBPF 部分不构建。
+开发容器的宿主机需为 Linux 内核，且 `/sys/kernel/btf/vmlinux` 存在——`kernel/include/vmlinux.h` 由它生成，缺此项 eBPF 部分不构建。
 
 以 VS Code 为例，需装 **Dev Containers** 扩展（WSL2 下另需 **WSL** 扩展）：
 
 1. 把仓库克隆到 Linux 原生文件系统。WSL2 下**不要放在 `/mnt/c/...`**：它经 9p / virtiofs 转发，构建慢数倍，且 inotify 监听不可靠，会让 clangd 索引与 CMake Tools 的自动重配时灵时不灵。
 2. `Dev Containers: Reopen in Container`。
-3. 首次构建镜像需拉取 apt 包与 Go 压缩包，需要网络。
+3. 首次构建镜像需拉取 apt 包与 Go 压缩包，需要网络（如果网络很闹麻见[注意事项](#3-注意事项)第4点）。
 
-WSL2 下若要在**宿主**上跑 `verify_role_systemd`，需在 `/etc/wsl.conf` 开启 systemd：
+WSL2 下若要跑 `verify_role_systemd`，需在 `/etc/wsl.conf` 开启 systemd：
 
 ```ini
 [boot]
@@ -59,7 +59,24 @@ make test     # ctest
 
 3. **容器内 `go` 不在 `PATH` 上是个已修的坑，不要改回去。** Debian 的 `/etc/profile` 会无条件 `export PATH`，覆盖掉 Docker 的 `ENV PATH`，而 devcontainer 默认走登录 shell。现由 `/etc/profile.d/go-path.sh` 与 `/usr/local/bin` 下的符号链接双保险——两条都留，只留其一会漏掉 `sudo` 的 `secure_path` 等不经 profile 的场景。
 
-4. **`GOPROXY` 默认取 `https://goproxy.cn,direct`**。`proxy.golang.org` 在部分网络下不可达，用默认值 `make go` 会 i/o timeout；网络可直连时用 `--build-arg GOPROXY=...` 覆盖。
+4. **下载源可在构建时覆盖。** 受限网络下默认源可能不可达或极慢，以下参数均可经 `--build-arg` 改：
+
+   | 参数 | 默认 | 说明 |
+   | --- | --- | --- |
+   | `BASE_IMAGE` | `debian:13-slim` | 基础镜像。覆盖即放弃版本对齐前提，仅适用于同发行版同版本的副本 |
+   | `APT_MIRROR` | `deb.debian.org` | apt 源主机名，只替换主机名，协议与路径不变 |
+   | `APT_MIRROR_FALLBACK` | 空 | 上一档失败后的备选 |
+   | `GO_DOWNLOAD_BASE` | `https://go.dev/dl` | Go 工具链压缩包的下载前缀 |
+   | `GO_DOWNLOAD_FALLBACK` | 空 | 上一档失败后的备选 |
+   | `GO_SHA256_BASE` | `https://dl.google.com/go` | 压缩包校验值的来源，**刻意独立于压缩包的来源** |
+   | `GO_SHA256` | 空 | 直接指定期望哈希、不联网取；值为 `none` 则跳过校验 |
+   | `GOPROXY` | `https://goproxy.cn,direct` | Go **模块**代理，供构建期 `make go` 用，与 Go 工具链的下载是两回事 |
+
+   几处 `*_FALLBACK` 语义一致：值为空则跳过，官方源始终是最后一档，故不改默认值时行为与不设覆盖一致。
+
+   例：`--build-arg APT_MIRROR=mirrors.example.org --build-arg GO_DOWNLOAD_BASE=https://mirrors.example.org/golang`
+
+   默认的基础镜像拉取走 Docker daemon 的 `registry-mirrors`，与 `BASE_IMAGE` 参数是两条互不相干的路径。
 
 5. **`kernel/include/vmlinux.h` 由宿主 BTF 生成**，宿主内核不同则内容不同。项目用的是 CO-RE（`__builtin_preserve_access_index`），字段偏移在**加载时**按目标内核的 BTF 重定位，故跨内核编译、运行是设计内的；但不同宿主上产出的构建产物不可逐字比对。
 

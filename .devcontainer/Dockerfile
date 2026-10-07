@@ -8,7 +8,10 @@
 # containerd 的观测都在宿主上做。
 # ============================================================
 
-FROM debian:13-slim
+# 基础镜像可覆盖，供内网以同发行版同版本的副本代用时使用。覆盖它即放弃下面的版本
+# 对齐前提——非同一 trixie 快照的镜像不保证可用。
+ARG BASE_IMAGE=debian:13-slim
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -23,10 +26,33 @@ ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 
+# apt 源可在构建时覆盖：受限网络下 deb.debian.org 可能不可达或极慢。APT_MIRROR 是首选
+# 主机名，APT_MIRROR_FALLBACK 是它的备选，官方源始终作为最后一档兜底——故不改默认值时
+# 行为与不设覆盖一致。两者只替换主机名，协议与路径保持不变。
+ARG APT_MIRROR=deb.debian.org
+ARG APT_MIRROR_FALLBACK=
+
 # 只装元包 `clang` 而非 `clang-19`：kernel/CMakeLists.txt 的 find_program 按 `clang`
 # 这个名字查找，元包才会建出 /usr/bin/clang 这个符号链接。clang-format / clangd 反之
 # 显式带 19 后缀——.clang-format 的换行行为随版本变化，语言服务器的诊断也随版本增删。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# 逐档试源而非直接写死：每轮都从原文件重生成，故上一档的替换不会累积到下一档。
+#
+# --error-on=any 不可省：默认语义下源全部不可达时 apt-get update 仍退出 0，循环会在第一档
+# 就 break，兜底形同虚设，报错还会推迟到 apt-get install 且信息误导。
+RUN set -eux; \
+    src=/etc/apt/sources.list.d/debian.sources; \
+    cp "$src" /tmp/debian.sources.orig; \
+    ok=''; \
+    for m in "${APT_MIRROR}" "${APT_MIRROR_FALLBACK}" deb.debian.org; do \
+        [ -n "$m" ] || continue; \
+        sed "s|deb\.debian\.org|$m|g" /tmp/debian.sources.orig > "$src"; \
+        if apt-get update --error-on=any; then ok="$m"; break; fi; \
+        echo "apt 源 $m 不可用，尝试下一档"; \
+    done; \
+    [ -n "$ok" ] || { echo "所有 apt 源均不可用" >&2; exit 1; }; \
+    echo "apt 源已选用：$ok"; \
+    apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         clang \
@@ -45,13 +71,60 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sudo \
         gdb \
         less \
-        vim \
-    && rm -rf /var/lib/apt/lists/*
+        vim; \
+    rm -rf /var/lib/apt/lists/*
 
-# 系统级安装而非装进用户家目录，工作区与家目录之间无隐含依赖
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" -o /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz
+# Go 下载源同样可覆盖与逐档兜底，取值语义与上面的 apt 源一致，官方源始终是最后一档。
+ARG GO_DOWNLOAD_BASE=https://go.dev/dl
+ARG GO_DOWNLOAD_FALLBACK=
+
+# GO_SHA256 非空则直接用作期望值，不联网取（触达不到 dl.google.com，或需要钉死版本时用）；
+# 其值为 none 则跳过校验，是上述两者都不可行时的最后退路。
+ARG GO_SHA256=
+ARG GO_SHA256_BASE=https://dl.google.com/go
+
+# 系统级安装而非装进用户家目录，工作区与家目录之间无隐含依赖。
+# 用到的 curl 由上面的 apt 步装入，故本步须排在它之后。
+#
+# 取包后先 `tar -tzf` 过一遍再认这一档，这里不能只靠后面的 sha256 代替：镜像站返回
+# 被截断或非 gzip 的内容时 curl 未必退出非零，若留到 sha256 才判失败，报错会变成"哈希
+# 不匹配"——正确但指向错误的方向，且不会去试下一档镜像。
+RUN set -eux; \
+    file="go${GO_VERSION}.linux-${TARGETARCH}.tar.gz"; \
+    ok=''; \
+    for b in "${GO_DOWNLOAD_BASE}" "${GO_DOWNLOAD_FALLBACK}" https://go.dev/dl; do \
+        [ -n "$b" ] || continue; \
+        if curl -fsSL "$b/$file" -o /tmp/go.tar.gz && tar -tzf /tmp/go.tar.gz > /dev/null 2>&1; then \
+            ok="$b"; break; \
+        fi; \
+        echo "Go 下载源 $b 不可用，尝试下一档"; \
+    done; \
+    [ -n "$ok" ] || { echo "所有 Go 下载源均不可用" >&2; exit 1; }; \
+    echo "Go 下载源已选用：$ok"; \
+    if [ "$GO_SHA256" = none ]; then \
+        echo "警告：GO_SHA256=none，已跳过 Go 压缩包的完整性校验" >&2; \
+    else \
+        expect="$GO_SHA256"; \
+        if [ -z "$expect" ]; then \
+            curl -fsSL "${GO_SHA256_BASE}/${file}.sha256" -o /tmp/go.sha256 \
+                || { echo "无法从 ${GO_SHA256_BASE} 取校验文件。" >&2; \
+                     echo "可用 --build-arg GO_SHA256=<hash> 指定期望值，" >&2; \
+                     echo "或以 --build-arg GO_SHA256=none 跳过校验。" >&2; \
+                     exit 1; }; \
+            expect=$(cut -d' ' -f1 < /tmp/go.sha256); \
+            case "$expect" in \
+                *[!0-9a-f]*|'') \
+                    echo "取自 ${GO_SHA256_BASE} 的校验值不是十六进制串，多半落到了 HTML 页面：$expect" >&2; \
+                    exit 1;; \
+            esac; \
+        fi; \
+        actual=$(sha256sum /tmp/go.tar.gz | cut -d' ' -f1); \
+        [ "$expect" = "$actual" ] \
+            || { echo "Go 压缩包 SHA256 不匹配：期望 $expect，实际 $actual" >&2; exit 1; }; \
+        echo "Go 压缩包 SHA256 校验通过：$actual"; \
+    fi; \
+    tar -C /usr/local -xzf /tmp/go.tar.gz; \
+    rm -f /tmp/go.tar.gz /tmp/go.sha256
 
 # 不设则部分网络下 make go 必 i/o timeout，详见 README 的「注意事项」
 ARG GOPROXY=https://goproxy.cn,direct
