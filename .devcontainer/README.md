@@ -58,27 +58,13 @@ make test     # ctest
 
 ### 2.3 如果你是 JetBrains IDE 用户
 
-需要自己做一些事：
+JetBrains IDE 跑在 windows 下，是用不了开发容器的（已经测过，用wsl连接的方式打开项目，不会识别.devcontainer；直接用wsl路径打开项目，在构建镜像时会因为路径问题报错）。如果你在 windows 环境，需要使用 JetBrains 系 IDE，那得在 wsl 里装 linux 版的编辑器，GUI 用 WSLg 解决。（太折腾了）
 
-#### 2.3.1 加 `sshd` feature
+如果直接在 linux 环境用 IDE，那直接打开项目就能识别到，然后自动化跑完。  
 
-据 JetBrains 官方 FAQ，Gateway 要求 devcontainer 中提供 SSH 服务（该条未能实测，本机无 Gateway 可验）。加在 `devcontainer.json` 的**顶层**，与 `build`、`mounts` 同级：
+需要注意以下几点：
 
-```jsonc
-{
-  "build": { ... },                                  // 已存在
-  "features": {                                      // ← 新增这一段
-    "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
-  },
-  "mounts": [ ... ]                                  // 已存在
-}
-```
-
-加完要 **Rebuild Container**——feature 只在构建容器时生效，改完重开不算。它会**同样作用于 VS Code**（容器里多一个 ssh 守护进程），正因这个代价不该由仓库替所有人决定，它没有提交进仓库。
-
-#### 2.3.2 让 CLion 与 `make` 共用 `build-agent/`
-
-CLion 的 CMake 配置只存在 `.idea/`，`devcontainer.json` 覆盖不到，必须手动设。默认它会在 `cmake-build-debug/` 下另起一份，与 `make` 的 `build-agent/` 分成两份缓存。
+#### 2.3.1 让 CLion 与 `make` 共用 `build-agent/`
 
 打开 **Settings → Build, Execution, Deployment → CMake**（每项目生效，不是全局设置），修改：
 
@@ -89,11 +75,9 @@ CLion 的 CMake 配置只存在 `.idea/`，`devcontainer.json` 覆盖不到，�
 
 改完点 **Reload CMake Project**。若 CLion 以目录非空为由拒绝，先 `rm -rf build-agent` 让它自己配置一遍，之后 `make` 会复用同一份。
 
-#### 2.3.3 关于插件
-
-`customizations.jetbrains.plugins` 是**按需再加**的：值是 JetBrains Marketplace 的插件 ID，写进 `customizations` 下的 `jetbrains` 命名空间。
-
 ## 3. 注意事项
+
+>[!notice] 所有为了本机环境对 devcontainer 和镜像配置作出的修改，不应该提交到仓库。
 
 1. **Go 模块与构建缓存挂在命名卷上**，跨 Rebuild Container 保留；否则每次都要重下 containerd v2 等一大批依赖。两个挂载点在 Dockerfile 中预建并归属 `dev`——命名卷首次挂载继承镜像中该路径的归属。新增此类挂载点时同样要预建，否则卷归 root 所有，容器内写入直接失败。
 
@@ -114,7 +98,25 @@ CLion 的 CMake 配置只存在 `.idea/`，`devcontainer.json` 覆盖不到，�
 
    几处 `*_FALLBACK` 语义一致：值为空则跳过，官方源始终是最后一档，故不改默认值时行为与不设覆盖一致。
 
-   例：`--build-arg APT_MIRROR=mirrors.example.org --build-arg GO_DOWNLOAD_BASE=https://mirrors.example.org/golang`
+   手动构建镜像：
+
+  ```
+  docker build -f .devcontainer/Dockerfile \
+  --build-arg APT_MIRROR=mirrors.example.org \
+  --build-arg GO_DOWNLOAD_BASE=https://mirrors.example.org/golang \
+  -t hng-buildtest .
+   ```
+
+   IDE自动化构建，要提前修改 devcontainer.json，在 build 块中添加 arg：
+
+   ```
+     "build": {
+      "dockerfile": "Dockerfile",
+      "context": "..",
+      "args": {
+          "APT_MIRROR": "mirrors.aliyun.com"
+      }
+   ```
 
    默认的基础镜像拉取走 Docker daemon 的 `registry-mirrors`，与 `BASE_IMAGE` 参数是两条互不相干的路径。
 
