@@ -29,7 +29,12 @@
 
 1. 把仓库克隆到 Linux 原生文件系统。WSL2 下**不要放在 `/mnt/c/...`**：它经 9p / virtiofs 转发，构建慢数倍，且 inotify 监听不可靠，会让 clangd 索引与 CMake Tools 的自动重配时灵时不灵。
 2. `Dev Containers: Reopen in Container`。
-3. 首次构建镜像需拉取 apt 包与 Go 压缩包，需要网络（如果网络很闹麻见[注意事项](#3-注意事项)第4点）。
+3. 首次构建镜像需拉取 apt 包与 Go 压缩包，需要网络（如果网络很闹麻见[注意事项](#3-注意事项)第3点）。
+4. 首次进入容器时 `kernel/include/vmlinux.h` 与 `kernel/*.skel.h` 不存在。如有需要，进入**容器终端**中，在项目根目录执行：
+
+```
+make ebpf
+```
 
 WSL2 下若要跑 `verify_role_systemd`，需在 `/etc/wsl.conf` 开启 systemd：
 
@@ -51,15 +56,50 @@ make test     # ctest
 
 改了 `kernel/` 下的探针或共用头不必手动清理：`kernel/CMakeLists.txt` 把全部共用头列进了 `DEPENDS`，会触发重编与骨架重生成。
 
+### 2.3 如果你是 JetBrains IDE 用户
+
+需要自己做一些事：
+
+#### 2.3.1 加 `sshd` feature
+
+据 JetBrains 官方 FAQ，Gateway 要求 devcontainer 中提供 SSH 服务（该条未能实测，本机无 Gateway 可验）。加在 `devcontainer.json` 的**顶层**，与 `build`、`mounts` 同级：
+
+```jsonc
+{
+  "build": { ... },                                  // 已存在
+  "features": {                                      // ← 新增这一段
+    "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
+  },
+  "mounts": [ ... ]                                  // 已存在
+}
+```
+
+加完要 **Rebuild Container**——feature 只在构建容器时生效，改完重开不算。它会**同样作用于 VS Code**（容器里多一个 ssh 守护进程），正因这个代价不该由仓库替所有人决定，它没有提交进仓库。
+
+#### 2.3.2 让 CLion 与 `make` 共用 `build-agent/`
+
+CLion 的 CMake 配置只存在 `.idea/`，`devcontainer.json` 覆盖不到，必须手动设。默认它会在 `cmake-build-debug/` 下另起一份，与 `make` 的 `build-agent/` 分成两份缓存。
+
+打开 **Settings → Build, Execution, Deployment → CMake**（每项目生效，不是全局设置），修改：
+
+| 字段 | 改为 | 为什么 |
+| --- | --- | --- |
+| Generator | `Unix Makefiles` | CLion 默认 Ninja，而 `build-agent/` 是 Makefiles 生成的。生成器不符会让它丢弃缓存全量重生成 |
+| Build directory | `build-agent` | 相对项目根即可 |
+
+改完点 **Reload CMake Project**。若 CLion 以目录非空为由拒绝，先 `rm -rf build-agent` 让它自己配置一遍，之后 `make` 会复用同一份。
+
+#### 2.3.3 关于插件
+
+`customizations.jetbrains.plugins` 是**按需再加**的：值是 JetBrains Marketplace 的插件 ID，写进 `customizations` 下的 `jetbrains` 命名空间。
+
 ## 3. 注意事项
 
-1. **clangd 与 CMake Tools 的配置在 `devcontainer.json` 里，不在 `.vscode/`。** 后者被 `.gitignore` 覆盖，克隆出来并不存在，写进去也不会随仓库分发。改配置请改 `devcontainer.json`。
+1. **Go 模块与构建缓存挂在命名卷上**，跨 Rebuild Container 保留；否则每次都要重下 containerd v2 等一大批依赖。两个挂载点在 Dockerfile 中预建并归属 `dev`——命名卷首次挂载继承镜像中该路径的归属。新增此类挂载点时同样要预建，否则卷归 root 所有，容器内写入直接失败。
 
-2. **Go 模块与构建缓存挂在命名卷上**，跨 Rebuild Container 保留；否则每次都要重下 containerd v2 等一大批依赖。两个挂载点在 Dockerfile 中预建并归属 `dev`——命名卷首次挂载继承镜像中该路径的归属。新增此类挂载点时同样要预建，否则卷归 root 所有，容器内写入直接失败。
+2. **容器内 `go` 不在 `PATH` 上是个已修的坑，不要改回去。** Debian 的 `/etc/profile` 会无条件 `export PATH`，覆盖掉 Docker 的 `ENV PATH`，而 devcontainer 默认走登录 shell。现由 `/etc/profile.d/go-path.sh` 与 `/usr/local/bin` 下的符号链接双保险——两条都留，只留其一会漏掉 `sudo` 的 `secure_path` 等不经 profile 的场景。
 
-3. **容器内 `go` 不在 `PATH` 上是个已修的坑，不要改回去。** Debian 的 `/etc/profile` 会无条件 `export PATH`，覆盖掉 Docker 的 `ENV PATH`，而 devcontainer 默认走登录 shell。现由 `/etc/profile.d/go-path.sh` 与 `/usr/local/bin` 下的符号链接双保险——两条都留，只留其一会漏掉 `sudo` 的 `secure_path` 等不经 profile 的场景。
-
-4. **下载源可在构建时覆盖。** 受限网络下默认源可能不可达或极慢，以下参数均可经 `--build-arg` 改：
+3. **下载源可在构建时覆盖。** 受限网络下默认源可能不可达或极慢，以下参数均可经 `--build-arg` 改：
 
    | 参数 | 默认 | 说明 |
    | --- | --- | --- |
@@ -78,7 +118,7 @@ make test     # ctest
 
    默认的基础镜像拉取走 Docker daemon 的 `registry-mirrors`，与 `BASE_IMAGE` 参数是两条互不相干的路径。
 
-5. **`kernel/include/vmlinux.h` 由宿主 BTF 生成**，宿主内核不同则内容不同。项目用的是 CO-RE（`__builtin_preserve_access_index`），字段偏移在**加载时**按目标内核的 BTF 重定位，故跨内核编译、运行是设计内的；但不同宿主上产出的构建产物不可逐字比对。
+4. **`kernel/include/vmlinux.h` 由宿主 BTF 生成**，宿主内核不同则内容不同。项目用的是 CO-RE（`__builtin_preserve_access_index`），字段偏移在**加载时**按目标内核的 BTF 重定位，故跨内核编译、运行是设计内的；但不同宿主上产出的构建产物不可逐字比对。
 
 ## 4. 装配取值
 
