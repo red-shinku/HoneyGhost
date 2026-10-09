@@ -240,6 +240,41 @@ target_link_libraries(hng_runtime_engine PUBLIC
 )
 
 # ============================================================
+# CLI 服务端
+# ============================================================
+option(HNG_ENABLE_CLI_SERVER "构建 CLI 服务端模块（需 userver）" ON)
+if(HNG_ENABLE_CLI_SERVER)
+    set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
+    get_property(HNG_COMPILE_OPTIONS_SAVED DIRECTORY PROPERTY COMPILE_OPTIONS)
+
+    # 临时抬 c++ 标准
+    set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
+    set(CMAKE_CXX_STANDARD 20)
+    get_property(HNG_COMPILE_OPTIONS_SAVED DIRECTORY PROPERTY COMPILE_OPTIONS)
+
+    find_package(userver QUIET COMPONENTS core grpc)
+
+    set(CMAKE_CXX_STANDARD "${HNG_CXX_STANDARD_SAVED}")
+
+    set(CMAKE_CXX_STANDARD "${HNG_CXX_STANDARD_SAVED}")
+    unset(CMAKE_CXX_EXTENSIONS)             # userver 置 OFF；本项目未使用该变量
+    unset(CMAKE_VISIBILITY_INLINES_HIDDEN)  # userver 置 ON；同上
+    set_property(DIRECTORY PROPERTY COMPILE_OPTIONS "${HNG_COMPILE_OPTIONS_SAVED}")
+    unset(HNG_CXX_STANDARD_SAVED)
+    unset(HNG_COMPILE_OPTIONS_SAVED)
+
+    if(NOT userver_FOUND)
+        message(FATAL_ERROR
+            "未找到 userver（find_package(userver COMPONENTS core grpc) 失败）。\n"
+            "  容器内：先执行 scripts/install-userver.sh，见 .devcontainer/README.md 第 3 节\n"
+            "  容器外：给 -Duserver_ROOT=<userver 安装前缀>，或设同名环境变量\n"
+            "  只想要其余模块：-DHNG_ENABLE_CLI_SERVER=OFF")
+    endif()
+
+    add_subdirectory(agent/cli_server)
+endif()
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
