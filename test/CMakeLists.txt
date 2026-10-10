@@ -61,6 +61,11 @@ add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
 target_link_libraries(test_runtime_info_filter PRIVATE hng_event_data)
 add_test(NAME test_runtime_info_filter COMMAND test_runtime_info_filter)
 
+# 运行时引擎的包装器：纯转换，无 IO / 无特权
+add_executable(test_runtime_packaging test_runtime_packaging.cc)
+target_link_libraries(test_runtime_packaging PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_packaging COMMAND test_runtime_packaging)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
