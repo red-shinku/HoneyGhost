@@ -111,3 +111,12 @@ if(LIBBPF_LIB)
 else()
     message(STATUS "libbpf 未找到，跳过 verify_starttime")
 endif()
+
+add_executable(test_role_filter test_role_filter.cc)
+target_link_libraries(test_role_filter PRIVATE hng_role_filter)
+add_test(NAME test_role_filter COMMAND test_role_filter)
+set_tests_properties(test_role_filter PROPERTIES WORKING_DIRECTORY ${HNG_SOURCE_DIR})
+
+add_executable(test_role_filter_integration test_role_filter_integration.cc)
+target_link_libraries(test_role_filter_integration PRIVATE hng_role_filter hng_control_plane)
+add_test(NAME test_role_filter_integration COMMAND test_role_filter_integration)

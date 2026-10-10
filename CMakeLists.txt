@@ -218,6 +218,9 @@ target_include_directories(hng_context_manager PUBLIC
     ${HNG_SOURCE_DIR}
 )
 
+# 角色标签名单维护：无额外运行时依赖
+add_subdirectory(agent/role_filter)
+
 # ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
