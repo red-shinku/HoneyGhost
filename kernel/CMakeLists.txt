@@ -36,6 +36,8 @@ set(HNG_BTF /sys/kernel/btf/vmlinux)
 # 探针依赖的全部头。共用头若不在依赖里，改它不会触发重编，骨架会静默沿用旧 BTF。
 set(HNG_EBPF_HEADERS
     ${HNG_VMLINUX}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter_types.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/event_head.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/files_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/networks_type.h

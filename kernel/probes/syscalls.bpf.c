@@ -11,6 +11,7 @@
  */
 
 #include "kernel/include/vmlinux.h"
+#include "kernel/include/role_filter.bpf.h"
 #include "kernel/include/syscalls_type.h"
 #include "kernel/include/uapi_const.h"
 
@@ -80,6 +81,7 @@ static __always_inline struct syscall_event *init_exec_event(
 static __always_inline struct syscall_event *init_credential_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
@@ -99,6 +101,7 @@ static __always_inline struct syscall_event *init_credential_event(
 static __always_inline struct syscall_event *init_namespace_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
@@ -116,6 +119,7 @@ static __always_inline struct syscall_event *init_namespace_event(
 static __always_inline struct syscall_event *init_file_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
@@ -133,6 +137,7 @@ static __always_inline struct syscall_event *init_file_event(
 static __always_inline struct syscall_event *init_memory_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
@@ -150,6 +155,7 @@ static __always_inline struct syscall_event *init_memory_event(
 static __always_inline struct syscall_event *init_network_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
@@ -168,6 +174,7 @@ static __always_inline struct syscall_event *init_network_event(
 static __always_inline struct syscall_event *init_kernel_event(
     enum syscall_event_name name)
 {
+    if (!hng_should_collect()) return NULL;
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {

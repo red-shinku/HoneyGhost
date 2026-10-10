@@ -22,6 +22,7 @@
  */
 
 #include "kernel/include/vmlinux.h"
+#include "kernel/include/role_filter.bpf.h"
 #include "kernel/include/networks_type.h"
 
 #include <bpf/bpf_core_read.h>
@@ -53,6 +54,7 @@ struct {
  */
 static __always_inline struct network_data *init_network_data(void)
 {
+    if (!hng_should_collect()) return NULL;
     struct network_data *data = bpf_ringbuf_reserve(&network_events, sizeof(struct network_data), 0);
     if (!data) {
         return NULL;
