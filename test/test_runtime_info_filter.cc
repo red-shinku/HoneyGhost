@@ -39,8 +39,8 @@ hng::RuntimeInformation make_info(uint32_t pid, uint64_t start_time,
 void run_take_all()
 {
     const RuntimeInfoFilter take_all;
-    CHECK(take_all.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0,
-                                         0)),
+    CHECK(take_all.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
           "全选过滤器应命中未落定的信息");
     CHECK(take_all.should_take(
               make_info(99, 12345, hng::EventType::IPC_EVENT, 7, 8)),
@@ -51,9 +51,9 @@ void run_process_dimension()
 {
     RuntimeInfoFilter filter;
     filter.set_process(hng::Process{100, 500});
-    CHECK(filter.should_take(
-              make_info(100, 500, hng::EventType::FILE_EVENT, 1, 2)),
-          "进程两个字段均相等才命中");
+    CHECK(
+        filter.should_take(make_info(100, 500, hng::EventType::FILE_EVENT, 1, 2)),
+        "进程两个字段均相等才命中");
     CHECK(!filter.should_take(
               make_info(100, 501, hng::EventType::FILE_EVENT, 1, 2)),
           "同 pid 而 start_time 不同是另一个进程实体，不应命中");
@@ -78,9 +78,9 @@ void run_context_dimension()
 {
     RuntimeInfoFilter filter;
     filter.set_context(9);
-    CHECK(filter.should_take(
-              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 9)),
-          "上下文相等应命中");
+    CHECK(
+        filter.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 9)),
+        "上下文相等应命中");
     CHECK(!filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
           "上下文不等不应命中");
@@ -90,8 +90,7 @@ void run_etype_dimension()
 {
     RuntimeInfoFilter filter;
     filter.set_etype(hng::EventType::FILE_EVENT);
-    CHECK(filter.should_take(
-              make_info(1, 10, hng::EventType::FILE_EVENT, 0, 0)),
+    CHECK(filter.should_take(make_info(1, 10, hng::EventType::FILE_EVENT, 0, 0)),
           "事件类型相等应命中");
     CHECK(!filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
@@ -105,17 +104,13 @@ void run_and_composition()
     filter.set_process(proc).set_role(3).set_context(5).set_etype(
         hng::EventType::FILE_EVENT);
 
-    CHECK(filter.should_take(
-              make_info(7, 70, hng::EventType::FILE_EVENT, 3, 5)),
+    CHECK(filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 5)),
           "四个维度全中应命中");
-    CHECK(!filter.should_take(
-              make_info(7, 70, hng::EventType::FILE_EVENT, 3, 6)),
+    CHECK(!filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 6)),
           "仅上下文不符即不命中");
-    CHECK(!filter.should_take(
-              make_info(7, 70, hng::EventType::FILE_EVENT, 4, 5)),
+    CHECK(!filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 4, 5)),
           "仅角色不符即不命中");
-    CHECK(!filter.should_take(
-              make_info(7, 71, hng::EventType::FILE_EVENT, 3, 5)),
+    CHECK(!filter.should_take(make_info(7, 71, hng::EventType::FILE_EVENT, 3, 5)),
           "仅进程不符即不命中");
     CHECK(!filter.should_take(
               make_info(7, 70, hng::EventType::SYSCALL_EVENT, 3, 5)),
@@ -141,8 +136,7 @@ void run_copyable()
     filter.set_role(3).set_etype(hng::EventType::SYSCALL_EVENT);
 
     const RuntimeInfoFilter copy = filter;
-    CHECK(copy.should_take(
-              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 3, 0)),
+    CHECK(copy.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 3, 0)),
           "拷贝应保持各维度");
     CHECK(!copy.should_take(make_info(1, 10, hng::EventType::FILE_EVENT, 3, 0)),
           "拷贝应保持各维度（事件类型）");
