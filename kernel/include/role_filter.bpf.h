@@ -27,7 +27,7 @@ static __always_inline int hng_should_collect(void)
     struct hng_role_filter_key key = {};
     key.tgid = BPF_CORE_READ(leader, tgid);
     key.start_time = BPF_CORE_READ(leader, start_boottime) / NSEC_PER_USER_HZ;
-    const __u32 *allowed = bpf_map_lookup_elem(&hng_role_filter, &key);
+    const __u32 *allowed = (const __u32 *)bpf_map_lookup_elem(&hng_role_filter, &key);
     return allowed && *allowed == 1;
 }
 
