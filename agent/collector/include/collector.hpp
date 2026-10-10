@@ -20,7 +20,7 @@
 class CollectorType {
    public:
     virtual void collect() = 0;
-    virtual bool init();
+    virtual bool init() = 0;
     virtual ~CollectorType() = default;
 };
 
@@ -42,6 +42,8 @@ class FileEventCollector : public CollectorType {
 
     bool init() override;
     void collect() override;
+    // init 成功后返回借用 fd；调用方须复制 fd 或保持采集器存活。
+    int role_filter_map_fd() const noexcept;
 
    private:
     hng::SPSC_Queue<struct file_access_data>& file_rawevent_queue;
@@ -57,6 +59,8 @@ class SyscallEventCollector : public CollectorType {
 
     bool init() override;
     void collect() override;
+    // init 成功后返回借用 fd；调用方须复制 fd 或保持采集器存活。
+    int role_filter_map_fd() const noexcept;
 
    private:
     hng::SPSC_Queue<struct syscall_event>& syscall_rawevent_queue;
@@ -72,6 +76,8 @@ class NetworkEventCollector : public CollectorType {
 
     bool init() override;
     void collect() override;
+    // init 成功后返回借用 fd；调用方须复制 fd 或保持采集器存活。
+    int role_filter_map_fd() const noexcept;
 
    private:
     hng::SPSC_Queue<struct network_data>& network_rawevent_queue;
@@ -80,15 +86,7 @@ class NetworkEventCollector : public CollectorType {
     static int handle_rb_event(void* ctx, void* data, size_t data_sz);
 };
 
-class IPCEventCollector : public CollectorType {
-   public:
-    IPCEventCollector(hng::SPSC_Queue& queue);
-    ~IPCEventCollector();
-
-    void collect() override;
-
-   private:
-    hng::SPSC_Queue& ipc_rawevent_queue;
-};
+// IPC 探针/载荷尚未定义；保留类型声明，不提前设计队列元素 ABI。
+class IPCEventCollector;
 
 #endif  // COLLECTOR_HPP

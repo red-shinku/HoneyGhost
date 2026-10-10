@@ -1,14 +1,18 @@
 #include "agent/collector/include/collector.hpp"
 #include "kernel/include/networks_type.h"
 
-NetworkEventCollector(hng::SPSC_Queue<struct network_data>& queue)
+NetworkEventCollector::NetworkEventCollector(hng::SPSC_Queue<struct network_data>& queue)
     : network_rawevent_queue(queue), networks_collector(NULL), rb(NULL)
 {
 }
 
-~NetworkEventCollector() {}
+NetworkEventCollector::~NetworkEventCollector()
+{
+    ring_buffer__free(rb);
+    networks_collector__destroy(networks_collector);
+}
 
-static int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
+int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
                                                   size_t data_sz)
 {
     if (data_sz < sizeof(struct network_data)) {
@@ -22,16 +26,17 @@ static int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
 
 bool NetworkEventCollector::init()
 {
+    if (networks_collector) return false; // 避免重复初始化泄漏已有资源
     int err;
     networks_collector = networks_collector__open_and_load();
     if (!networks_collector) {
         return false;
     }
-    err = networks_collector__attach();
+    err = networks_collector__attach(networks_collector);
     if (err) {
         return false;
     }
-    rb = ring_buffer__new(bpf_map__fd(networks_collector->maps.network_data),
+    rb = ring_buffer__new(bpf_map__fd(networks_collector->maps.network_events),
                           handle_rb_event, this, NULL);
     if (!rb) {
         return false;
@@ -51,4 +56,9 @@ void NetworkEventCollector::collect()
             break;
         }
     }
+}
+
+int NetworkEventCollector::role_filter_map_fd() const noexcept
+{
+    return networks_collector ? bpf_map__fd(networks_collector->maps.hng_role_filter) : -1;
 }

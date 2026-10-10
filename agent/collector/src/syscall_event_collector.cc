@@ -9,8 +9,8 @@ SyscallEventCollector::SyscallEventCollector(
 
 SyscallEventCollector::~SyscallEventCollector()
 {
-    syscalls_collector__destroy(syscalls_collector);
     ring_buffer__free(rb);
+    syscalls_collector__destroy(syscalls_collector);
 }
 
 int SyscallEventCollector::handle_rb_event(void* ctx, void* data, size_t data_sz)
@@ -29,6 +29,7 @@ int SyscallEventCollector::handle_rb_event(void* ctx, void* data, size_t data_sz
 
 bool SyscallEventCollector::init()
 {
+    if (syscalls_collector) return false; // 避免重复初始化泄漏已有资源
     int err;
     syscalls_collector = syscalls_collector__open_and_load();
     if (!syscalls_collector) {
@@ -51,6 +52,10 @@ void SyscallEventCollector::collect()
 {
     while (true) {
         int err = ring_buffer__poll(rb, 300);
-        // TODO: 错误处理与退出处理
+        if (err < 0) break;
     }
+}
+int SyscallEventCollector::role_filter_map_fd() const noexcept
+{
+    return syscalls_collector ? bpf_map__fd(syscalls_collector->maps.hng_role_filter) : -1;
 }

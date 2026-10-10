@@ -21,8 +21,8 @@ FileEventCollector::FileEventCollector(
 
 FileEventCollector::~FileEventCollector()
 {
-    files_collector__destroy(files_collector);
     ring_buffer__free(rb);
+    files_collector__destroy(files_collector);
 }
 
 /**
@@ -48,6 +48,7 @@ int FileEventCollector::handle_rb_event(void* ctx, void* data, size_t data_sz)
  */
 bool FileEventCollector::init()
 {
+    if (files_collector) return false; // 避免重复初始化泄漏已有资源
     int err;
     files_collector = files_collector__open_and_load();
     if (!files_collector) {
@@ -82,4 +83,8 @@ void FileEventCollector::collect()
             break;
         }
     }
+}
+int FileEventCollector::role_filter_map_fd() const noexcept
+{
+    return files_collector ? bpf_map__fd(files_collector->maps.hng_role_filter) : -1;
 }
