@@ -7,6 +7,7 @@
  */
 
 #include "kernel/include/vmlinux.h"
+#include "kernel/include/role_filter.bpf.h"
 #include "kernel/include/files_type.h"
 #include "kernel/include/uapi_const.h"
 
@@ -58,6 +59,7 @@ static __always_inline __u8 current_is_innamespace(void)
  */
 static __always_inline struct file_access_data *init_file_access_data(void)
 {
+    if (!hng_should_collect()) return NULL;
     struct file_access_data *data = bpf_ringbuf_reserve(&file_access_events, sizeof(struct file_access_data), 0);
     if (!data) {
         return NULL;
