@@ -56,6 +56,31 @@ add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
 add_test(NAME test_notification_queue COMMAND test_notification_queue)
 
+# 运行时信息过滤器（公共件，header-only；经 event_data 头传递需要 proto 生成物）
+add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
+target_link_libraries(test_runtime_info_filter PRIVATE hng_event_data)
+add_test(NAME test_runtime_info_filter COMMAND test_runtime_info_filter)
+
+# 运行时引擎的包装器：纯转换，无 IO / 无特权
+add_executable(test_runtime_packaging test_runtime_packaging.cc)
+target_link_libraries(test_runtime_packaging PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_packaging COMMAND test_runtime_packaging)
+
+# 运行时引擎的流水线：控制平面的注入点走替身，语义队列为真实 SPSC，无特权
+add_executable(test_runtime_pipeline test_runtime_pipeline.cc)
+target_link_libraries(test_runtime_pipeline PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_pipeline COMMAND test_runtime_pipeline)
+
+# 运行时引擎的分发器：订阅者走替身，无 IO / 无特权
+add_executable(test_runtime_event_dispatcher test_runtime_event_dispatcher.cc)
+target_link_libraries(test_runtime_event_dispatcher PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_event_dispatcher COMMAND test_runtime_event_dispatcher)
+
+# 运行时引擎的主循环：控制平面走替身，引擎独占一条测试线程，无特权
+add_executable(test_runtime_engine test_runtime_engine.cc)
+target_link_libraries(test_runtime_engine PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_engine COMMAND test_runtime_engine)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)

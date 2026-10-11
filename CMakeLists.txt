@@ -219,6 +219,27 @@ target_include_directories(hng_context_manager PUBLIC
 )
 
 # ============================================================
+# 运行时引擎（语义事件流的分发中枢）
+#
+# 依赖 event_data 的事件契约（含 proto 生成物）、context_maintainer 的派生决策
+# 与控制平面的两个服务接口（header-only）。本模块对外接口在 include/，实现细节
+# 在 src/。
+# ============================================================
+add_library(hng_runtime_engine STATIC
+    agent/runtime_engine/src/runtime_engine.cc
+    agent/runtime_engine/src/runtime_event_dispatcher.cc
+    agent/runtime_engine/src/runtime_packaging.cc
+    agent/runtime_engine/src/runtime_pipeline.cc
+)
+target_include_directories(hng_runtime_engine PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_runtime_engine PUBLIC
+    hng_context_maintainer
+    hng_event_data
+)
+
+# ============================================================
 # 单元测试（表驱动，独立子目录；-DBUILD_TESTING=OFF 可跳过）
 # ============================================================
 include(CTest)
