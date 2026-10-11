@@ -76,6 +76,11 @@ add_executable(test_runtime_event_dispatcher test_runtime_event_dispatcher.cc)
 target_link_libraries(test_runtime_event_dispatcher PRIVATE hng_runtime_engine)
 add_test(NAME test_runtime_event_dispatcher COMMAND test_runtime_event_dispatcher)
 
+# 运行时引擎的主循环：控制平面走替身，引擎独占一条测试线程，无特权
+add_executable(test_runtime_engine test_runtime_engine.cc)
+target_link_libraries(test_runtime_engine PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_engine COMMAND test_runtime_engine)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
