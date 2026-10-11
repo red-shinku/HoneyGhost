@@ -226,6 +226,7 @@ target_include_directories(hng_context_manager PUBLIC
 # 在 src/。
 # ============================================================
 add_library(hng_runtime_engine STATIC
+    agent/runtime_engine/src/runtime_event_dispatcher.cc
     agent/runtime_engine/src/runtime_packaging.cc
     agent/runtime_engine/src/runtime_pipeline.cc
 )

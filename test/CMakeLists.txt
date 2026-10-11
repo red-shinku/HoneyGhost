@@ -71,6 +71,11 @@ add_executable(test_runtime_pipeline test_runtime_pipeline.cc)
 target_link_libraries(test_runtime_pipeline PRIVATE hng_runtime_engine)
 add_test(NAME test_runtime_pipeline COMMAND test_runtime_pipeline)
 
+# 运行时引擎的分发器：订阅者走替身，无 IO / 无特权
+add_executable(test_runtime_event_dispatcher test_runtime_event_dispatcher.cc)
+target_link_libraries(test_runtime_event_dispatcher PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_event_dispatcher COMMAND test_runtime_event_dispatcher)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
