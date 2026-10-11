@@ -66,6 +66,11 @@ add_executable(test_runtime_packaging test_runtime_packaging.cc)
 target_link_libraries(test_runtime_packaging PRIVATE hng_runtime_engine)
 add_test(NAME test_runtime_packaging COMMAND test_runtime_packaging)
 
+# 运行时引擎的流水线：控制平面的注入点走替身，语义队列为真实 SPSC，无特权
+add_executable(test_runtime_pipeline test_runtime_pipeline.cc)
+target_link_libraries(test_runtime_pipeline PRIVATE hng_runtime_engine)
+add_test(NAME test_runtime_pipeline COMMAND test_runtime_pipeline)
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
