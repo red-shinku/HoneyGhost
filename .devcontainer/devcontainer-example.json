@@ -1,0 +1,46 @@
+{
+  // 装配取值的完整理由见同目录 README.md 的「装配取值」；不申请特权的理由见「用途与边界」。
+  "name": "HoneyGhost Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  // 写死挂载点，使容器内路径不随本地克隆出的目录名变化
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/HoneyGhost,type=bind",
+  "workspaceFolder": "/workspaces/HoneyGhost",
+  // 须与 Dockerfile 的 ARG USERNAME 一致，改其一须同步改另一处
+  "remoteUser": "dev",
+  // 宿主 uid 非 1000 时由 VS Code 把容器内 dev 重映射过去，关掉会让工作区归属错乱
+  "updateRemoteUserUID": true,
+  "mounts": [
+    // 跨 Rebuild Container 保留 Go 模块与构建缓存，否则每次都要重下 containerd v2 等依赖
+    "source=hng-go-mod,target=/home/dev/go/pkg/mod,type=volume",
+    "source=hng-go-build,target=/home/dev/.cache/go-build,type=volume"
+  ],
+  // 只 configure 不 build：clangd 要的是 compile_commands.json，configure 即产出
+  "postCreateCommand": "cmake -S . -B build-agent",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // 刻意不推荐 ms-vscode.cpptools：与 clangd 同时启用会互相覆盖诊断结果
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "golang.go"
+      ],
+      // 这里是 clangd 与 CMake 集成的唯一来源
+      "settings": {
+        "clangd.path": "/usr/bin/clangd-19",
+        "clangd.arguments": [
+          "--compile-commands-dir=${workspaceFolder}/build-agent",
+          "--background-index"
+        ],
+        // 对齐 make 落下的 build-agent/ 与 Unix Makefiles，否则会分叉出第二份缓存
+        "cmake.buildDirectory": "${workspaceFolder}/build-agent",
+        "cmake.generator": "Unix Makefiles",
+        "cmake.configureOnOpen": true,
+        "C_Cpp.intelliSenseEngine": "disabled"
+      }
+    }
+  }
+}

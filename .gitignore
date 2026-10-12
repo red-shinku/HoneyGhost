@@ -9,3 +9,4 @@ bin/
 vmlinux.h
 go.work
 go.work.sum
+.devcontainer/devcontainer.json

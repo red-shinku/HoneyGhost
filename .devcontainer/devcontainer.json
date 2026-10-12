@@ -1,15 +1,12 @@
 {
   // 装配取值的完整理由见同目录 README.md 的「装配取值」；不申请特权的理由见「用途与边界」。
   "name": "HoneyGhost Dev",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
-  },
+  "image": "honeyghost-dev:offline",
   // 写死挂载点，使容器内路径不随本地克隆出的目录名变化
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/HoneyGhost,type=bind",
   "workspaceFolder": "/workspaces/HoneyGhost",
   // 须与 Dockerfile 的 ARG USERNAME 一致，改其一须同步改另一处
-  "remoteUser": "dev",
+  "remoteUser": "root",
   // 宿主 uid 非 1000 时由 VS Code 把容器内 dev 重映射过去，关掉会让工作区归属错乱
   "updateRemoteUserUID": true,
   "mounts": [
