@@ -5,6 +5,17 @@ package hng.clisv;
 import "file_event.proto"
 import "syscall_event.proto"
 
+message role
+{
+    uint32 roleID    = 1;
+    string roleLabel = 2;
+}
+
+message pidList
+{
+    repeated uint32 pid = 1;
+}
+
 // =============================================
 // RoleManagerService
 // =============================================
@@ -20,12 +31,6 @@ message RM_GetRolesRequest
     }
 }
 
-message role
-{
-    uint32 roleID    = 1;
-    string roleLabel = 2;
-}
-
 message RM_GetRolesResponse
 {
     repeated role r = 1;
@@ -38,7 +43,8 @@ message RM_GetProcessSetRequest
 
 message RM_GetProcessSetResponse
 {
-    repeated uint32 pid = 1;
+    uint32 root_pid       = 1;
+    optional pidList pids = 2;
 }
 
 message RM_GetContextSetRequest
@@ -54,13 +60,17 @@ message RM_GetContextSetResponse
 message RM_GetStatsResponse
 {
     // 累计：来自RoleDiscovery的通知被拒收
-    optional uint64 rejected         = 1;
+    optional uint64 rejected          = 1;
     // 累计：收到 LEAVE 或锚点更换通知时，管理器内不存在相应实例键
-    optional uint64 unknown_instance = 2;
+    optional uint64 unknown_instance  = 2;
     // 累计：进程成员写入时已归属另一个角色
-    optional uint64 owner_conflict   = 3;
+    optional uint64 owner_conflict    = 3;
     // 角色锚点已删除而角色未退出（快照值）
-    optional uint64 anchors_removed  = 4;
+    optional uint64 anchors_removed   = 4;
+    // 累计：cgroup 读失败 / 或返回空
+    optional uint64 cgroup_read_empty = 5;
+    // 累计：对管理器的写通知被拒
+    optional uint64 queue_rejected    = 6;
 }
 
 message RM_WhichRoleRequest
@@ -107,15 +117,10 @@ message CM_GetProcessSetRequest
     uint32 contextID = 1;
 }
 
-message pidList
-{
-    repeated uint32 pid = 2;
-}
-
 message CM_GetProcessSetResponse
 {
-    uint32 root_pid = 1;
-    optional pidList
+    uint32 root_pid  = 1;
+    optional pidList = 2;
 }
 
 message CM_GetStatsResponse
