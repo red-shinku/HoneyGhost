@@ -244,9 +244,6 @@ target_link_libraries(hng_runtime_engine PUBLIC
 # ============================================================
 option(HNG_ENABLE_CLI_SERVER "构建 CLI 服务端模块（需 userver）" ON)
 if(HNG_ENABLE_CLI_SERVER)
-    set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
-    get_property(HNG_COMPILE_OPTIONS_SAVED DIRECTORY PROPERTY COMPILE_OPTIONS)
-
     # 临时抬 c++ 标准
     set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
     set(CMAKE_CXX_STANDARD 20)
