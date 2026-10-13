@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package hng.clisv;
 
-import "file_event.proto"
-import "syscall_event.proto"
+import "file_event.proto";
+import "syscall_event.proto";
 
 message role
 {
@@ -20,15 +20,17 @@ message pidList
 // RoleManagerService
 // =============================================
 
+enum RM_ShowOption
+{
+    // 获取节点上出现的全部角色
+    RM_SHOW_ALL         = 0;
+    // 只获取系统监管的角色
+    RM_SHOW_SUPERVISION = 1;
+}
+
 message RM_GetRolesRequest
 {
-    oneof showoption
-    {
-        // 获取节点上出现的全部角色
-        bool all         = 1;
-        // 只获取系统监管的角色
-        bool supervision = 2;
-    }
+    RM_ShowOption showoption = 1;
 }
 
 message RM_GetRolesResponse
@@ -57,6 +59,10 @@ message RM_GetContextSetResponse
     repeated uint32 contextID = 1;
 }
 
+message RM_GetStatsRequest
+{
+}
+
 message RM_GetStatsResponse
 {
     // 累计：来自RoleDiscovery的通知被拒收
@@ -80,7 +86,7 @@ message RM_WhichRoleRequest
 
 message RM_WhichRoleResponse
 {
-    uint32 roleID = 1;
+    optional uint32 roleID = 1;
 }
 
 // 查询服务：角色相关信息和系统状态
@@ -93,7 +99,7 @@ service RoleManagerService
     // 获取某角色上下文集合
     rpc GetContextSet(RM_GetContextSetRequest) returns (RM_GetContextSetResponse);
     // 查询角色管理器状态
-    rpc GetStats() returns (GetStatsResponse);
+    rpc GetStats(RM_GetStatsRequest) returns (RM_GetStatsResponse);
     // 查询进程所属角色
     rpc WhichRole(RM_WhichRoleRequest) returns (RM_WhichRoleResponse);
 }
@@ -102,9 +108,17 @@ service RoleManagerService
 // ContextManagerService
 // =============================================
 
+message CM_GetExcepCtxRequest
+{
+}
+
 message CM_GetExcepCtxResponse
 {
     repeated uint32 contextID = 1;
+}
+
+message CM_GetExtraCtxRequest
+{
 }
 
 message CM_GetExtraCtxResponse
@@ -120,7 +134,11 @@ message CM_GetProcessSetRequest
 message CM_GetProcessSetResponse
 {
     uint32 root_pid  = 1;
-    optional pidList = 2;
+    optional pidList pids = 2;
+}
+
+message CM_GetStatsRequest
+{
 }
 
 message CM_GetStatsResponse
@@ -138,20 +156,20 @@ message CM_WhichContextRequest
 
 message CM_WhichContextResponse
 {
-    uint32 contextID = 1;
+    optional uint32 contextID = 1;
 }
 
 // 查询服务：Context 相关信息和系统状态
 service ContextManagerService
 {
     // 查询系统中的异常 Context
-    rpc GetExcepCtx() returns (CM_GetExcepCtxResponse);
+    rpc GetExcepCtx(CM_GetExcepCtxRequest) returns (CM_GetExcepCtxResponse);
     // 查询系统中的附属 Context
-    rpc GetExtraCtx() returns (CM_GetExtraCtxResponse);
+    rpc GetExtraCtx(CM_GetExtraCtxRequest) returns (CM_GetExtraCtxResponse);
     // 获取某context进程集合
     rpc GetProcessSet(CM_GetProcessSetRequest) returns (CM_GetProcessSetResponse);
     // 查询Context管理器状态
-    rpc GetStats() returns (CM_GetStatsResponse);
+    rpc GetStats(CM_GetStatsRequest) returns (CM_GetStatsResponse);
     // 查询进程所属context
     rpc WhichContext(CM_WhichContextRequest) returns (CM_WhichContextResponse);
 }
