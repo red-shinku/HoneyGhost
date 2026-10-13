@@ -7,7 +7,8 @@
  *  - 内部游标与外置游标两个重载在空 / 满边界上行为一致；
  *  - 外置游标取空后生产者仍能写满容量（游标写回内部水位）；
  *  - 外置游标随消费者迁移到另一条线程后继续推进，不重不漏；
- *  - 单生产者单消费者并发下「入队数 == 取出数」且顺序不乱（供 TSAN 构建复验）。
+ *  - 单生产者单消费者并发下「入队数 == 取出数」且顺序不乱（供 TSAN 构建复验）；
+ *  - 误用检出：两个 pop 混用（两个方向）在子进程中报错并 abort，单用一种不误报。
  * @author red_shinku
  * @date 2026.10.13
  */
@@ -15,9 +16,13 @@
 #include "agent/util/include/spsc_queue.hpp"
 
 #include <atomic>
+#include <csignal>
 #include <cstddef>
 #include <cstdio>
+#include <string>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 
@@ -197,6 +202,119 @@ void run_concurrent_push_pop()
           "游标与队列应同步推进到取空");
 }
 
+// ============================================================
+// 误用检出：同一队列混用 pop(T&) 与 pop(T&, size_t&)
+//
+// 检查只在非 NDEBUG 构建存在，故整块同样只在该构建下编译。子进程以 fork 产生
+// （不 exec），只做 pop，不做堆分配；诊断经 stderr 管道收集，终止形态由 waitpid
+// 观察。这些用例依赖「子进程的写入不影响父进程」，故每例都从同一份队列状态出发。
+// ============================================================
+#ifndef NDEBUG
+
+hng::SPSC_Queue<int> g_misuse_queue(4);
+
+void child_bare_pop_only()
+{
+    int item = 0;
+    g_misuse_queue.pop(item);
+}
+
+void child_cursor_pop_only()
+{
+    size_t cursor = 0;
+    int item      = 0;
+    g_misuse_queue.pop(item, cursor);
+}
+
+void child_bare_after_cursor()
+{
+    // 先游标版后裸版：裸版命中「本队列已被游标消费」标志
+    size_t cursor = 0;
+    int item      = 0;
+    g_misuse_queue.pop(item, cursor);
+    g_misuse_queue.pop(item);
+}
+
+void child_cursor_after_bare()
+{
+    // 先裸版后游标版：水位已前进而游标停在原处，游标与水位不一致
+    int item = 0;
+    g_misuse_queue.pop(item);
+    size_t cursor = 0;
+    g_misuse_queue.pop(item, cursor);
+}
+
+struct ChildOutcome {
+    bool aborted = false;
+    std::string stderr_text;
+};
+
+/// @param body 在子进程中执行的用例
+/// @return 子进程是否因 SIGABRT 终止，以及它写到 stderr 的文本
+ChildOutcome run_in_child(void (*body)())
+{
+    ChildOutcome outcome;
+    int pipe_fds[2] = {-1, -1};
+    CHECK(::pipe(pipe_fds) == 0, "创建管道应成功");
+    if (pipe_fds[0] < 0) {
+        return outcome;
+    }
+
+    std::fflush(nullptr);  // 免得父进程缓冲的内容被 abort 的子进程重复刷出
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        ::close(pipe_fds[0]);
+        ::dup2(pipe_fds[1], STDERR_FILENO);
+        ::close(pipe_fds[1]);
+        body();
+        ::_exit(0);  // 走到这里说明没有 abort
+    }
+
+    ::close(pipe_fds[1]);
+    char buf[256];
+    ssize_t n = 0;
+    while ((n = ::read(pipe_fds[0], buf, sizeof(buf))) > 0) {
+        outcome.stderr_text.append(buf, static_cast<std::size_t>(n));
+    }
+    ::close(pipe_fds[0]);
+
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    outcome.aborted = WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+    return outcome;
+}
+
+#endif  // NDEBUG
+
+void run_pop_misuse_detection()
+{
+#ifndef NDEBUG
+    for (int i = 0; i < static_cast<int>(kCapacity); ++i) {
+        CHECK(g_misuse_queue.push(i), "误用检出用例：准备元素应入队成功");
+    }
+
+    // 只用一种入口不得误报
+    const ChildOutcome bare_only = run_in_child(child_bare_pop_only);
+    CHECK(!bare_only.aborted && bare_only.stderr_text.empty(),
+          "只用 pop(T&) 消费不应报错");
+
+    const ChildOutcome cursor_only = run_in_child(child_cursor_pop_only);
+    CHECK(!cursor_only.aborted && cursor_only.stderr_text.empty(),
+          "只用 pop(T&, size_t&) 消费不应报错");
+
+    // 两个方向的混用都应报错并终止进程
+    const ChildOutcome cursor_then_bare = run_in_child(child_bare_after_cursor);
+    CHECK(cursor_then_bare.aborted, "先游标版后裸版的混用应终止进程");
+    CHECK(cursor_then_bare.stderr_text.find("[SPSC_Queue misuse]") != std::string::npos,
+          "混用应打印误用诊断");
+
+    const ChildOutcome bare_then_cursor = run_in_child(child_cursor_after_bare);
+    CHECK(bare_then_cursor.aborted, "先裸版后游标版的混用应终止进程");
+    CHECK(bare_then_cursor.stderr_text.find("[SPSC_Queue misuse]") != std::string::npos,
+          "混用应打印误用诊断");
+#endif
+}
+
 }  // namespace
 
 int main()
@@ -206,6 +324,7 @@ int main()
     run_cursor_publish_frees_slots();
     run_cursor_survives_thread_migration();
     run_concurrent_push_pop();
+    run_pop_misuse_detection();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
