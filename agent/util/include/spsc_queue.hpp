@@ -1,5 +1,5 @@
 /**
- * @file raw_event_queue_ss.hpp
+ * @file spsc_queue.hpp
  * @brief 单生产者单消费者（SPSC）无锁环形队列
  * @details
  *
@@ -50,7 +50,20 @@ class alignas(kCacheLineSize) SPSC_Queue {
     bool push(const T& item);
     bool push(T&& item);
 
+    /// @brief 取一个元素
+    /// @param[out] item 取到的元素
+    /// @warning 调用者可能跨线程时，不应该使用这个 pop
     bool pop(T& item);
+
+    /// @brief 取一个元素，消费游标的权威由调用方持有。
+    /// 调用者可能跨线程时使用该版本的 pop。
+    /// @param[out] item 取到的元素
+    /// @param[in,out] cursor 消费游标：已取出的元素数，调用方持有，初值 0；
+    ///                       取到元素时自增
+    /// @return 取到为 true；空为 false
+    ///
+    /// @note 这时consumer_.tail 仅作为对生产者的已发布水位。
+    bool pop(T& item, size_t& cursor);
 
     // 以下方法跨线程调用时不保证一致性
     size_t size() const noexcept;
@@ -144,6 +157,28 @@ bool SPSC_Queue<T>::pop(T& item)
 }
 
 template <class T>
+bool SPSC_Queue<T>::pop(T& item, size_t& cursor)
+{
+    // 游标：调用方持有、单消费者独占，直接读取即可
+    const size_t tail = cursor;
+    // 对端写索引：acquire 屏障，保证读到生产者 release 发布 head
+    // 之前写入的完整数据
+    const size_t head = producer_.head.load(std::memory_order_acquire);
+
+    // 空：head == tail
+    if (head == tail) {
+        return false;
+    }
+
+    item   = buffer_[tail & mask_];
+
+    // 推进游标，并以 release 发布 tail，使内部水位与游标同步
+    cursor = tail + 1;
+    consumer_.tail.store(cursor, std::memory_order_release);
+    return true;
+}
+
+template <class T>
 size_t SPSC_Queue<T>::size() const noexcept
 {
     const size_t head = producer_.head.load(std::memory_order_relaxed);
@@ -159,4 +194,4 @@ bool SPSC_Queue<T>::empty() const noexcept
 
 }  // namespace hng
 
-#endif // SPSC_QUEUE_HPP_
+#endif  // SPSC_QUEUE_HPP_

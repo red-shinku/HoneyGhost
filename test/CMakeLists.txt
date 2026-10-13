@@ -56,6 +56,11 @@ add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
 add_test(NAME test_notification_queue COMMAND test_notification_queue)
 
+# SPSC 无锁队列（公共件，header-only）：单生产者单消费者，无 IO / 无特权
+add_executable(test_spsc_queue test_spsc_queue.cc)
+target_include_directories(test_spsc_queue PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_spsc_queue COMMAND test_spsc_queue)
+
 # 运行时信息过滤器（公共件，header-only；经 event_data 头传递需要 proto 生成物）
 add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
 target_link_libraries(test_runtime_info_filter PRIVATE hng_event_data)
