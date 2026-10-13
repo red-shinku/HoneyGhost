@@ -6,6 +6,7 @@ build-agent/
 bin/
 *.pb.h
 *.pb.cc
+*.pb.go
 vmlinux.h
 go.work
 go.work.sum

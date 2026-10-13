@@ -1,0 +1,223 @@
+syntax = "proto3";
+
+package hng.clisv;
+
+import "file_event.proto";
+import "syscall_event.proto";
+
+message role
+{
+    uint32 roleID    = 1;
+    string roleLabel = 2;
+}
+
+message pidList
+{
+    repeated uint32 pid = 1;
+}
+
+// =============================================
+// RoleManagerService
+// =============================================
+
+enum RM_ShowOption {
+    // 获取节点上出现的全部角色
+    RM_SHOW_ALL         = 0;
+    // 只获取系统监管的角色
+    RM_SHOW_SUPERVISION = 1;
+}
+
+message RM_GetRolesRequest
+{
+    RM_ShowOption showoption = 1;
+}
+
+message RM_GetRolesResponse
+{
+    repeated role r = 1;
+}
+
+message RM_GetProcessSetRequest
+{
+    uint32 roleID = 1;
+}
+
+message RM_GetProcessSetResponse
+{
+    uint32 root_pid       = 1;
+    optional pidList pids = 2;
+}
+
+message RM_GetContextSetRequest
+{
+    uint32 roleID = 1;
+}
+
+message RM_GetContextSetResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message RM_GetStatsRequest {}
+
+message RM_GetStatsResponse
+{
+    // 累计：来自RoleDiscovery的通知被拒收
+    optional uint64 rejected          = 1;
+    // 累计：收到 LEAVE 或锚点更换通知时，管理器内不存在相应实例键
+    optional uint64 unknown_instance  = 2;
+    // 累计：进程成员写入时已归属另一个角色
+    optional uint64 owner_conflict    = 3;
+    // 角色锚点已删除而角色未退出（快照值）
+    optional uint64 anchors_removed   = 4;
+    // 累计：cgroup 读失败 / 或返回空
+    optional uint64 cgroup_read_empty = 5;
+    // 累计：对管理器的写通知被拒
+    optional uint64 queue_rejected    = 6;
+}
+
+message RM_WhichRoleRequest
+{
+    uint32 pid = 1;
+}
+
+message RM_WhichRoleResponse
+{
+    optional uint32 roleID = 1;
+}
+
+// 查询服务：角色相关信息和系统状态
+service RoleManagerService
+{
+    // 获取系统中角色的快照
+    rpc GetRoles(RM_GetRolesRequest) returns (RM_GetRolesResponse);
+    // 获取某角色的进程集合
+    rpc GetProcessSet(RM_GetProcessSetRequest) returns (RM_GetProcessSetResponse);
+    // 获取某角色上下文集合
+    rpc GetContextSet(RM_GetContextSetRequest) returns (RM_GetContextSetResponse);
+    // 查询角色管理器状态
+    rpc GetStats(RM_GetStatsRequest) returns (RM_GetStatsResponse);
+    // 查询进程所属角色
+    rpc WhichRole(RM_WhichRoleRequest) returns (RM_WhichRoleResponse);
+}
+
+// =============================================
+// ContextManagerService
+// =============================================
+
+message CM_GetExcepCtxRequest {}
+
+message CM_GetExcepCtxResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message CM_GetExtraCtxRequest {}
+
+message CM_GetExtraCtxResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message CM_GetProcessSetRequest
+{
+    uint32 contextID = 1;
+}
+
+message CM_GetProcessSetResponse
+{
+    uint32 root_pid       = 1;
+    optional pidList pids = 2;
+}
+
+message CM_GetStatsRequest {}
+
+message CM_GetStatsResponse
+{
+    // 累计：ctx 绑定父 ctx 时，父 ctx 尚未落定
+    uint64 ctxroot_parent_unsettled = 1;
+    // 累计：注销了不存在的context
+    uint64 unknown_unregister       = 2;
+}
+
+message CM_WhichContextRequest
+{
+    uint32 pid = 1;
+}
+
+message CM_WhichContextResponse
+{
+    optional uint32 contextID = 1;
+}
+
+// 查询服务：Context 相关信息和系统状态
+service ContextManagerService
+{
+    // 查询系统中的异常 Context
+    rpc GetExcepCtx(CM_GetExcepCtxRequest) returns (CM_GetExcepCtxResponse);
+    // 查询系统中的附属 Context
+    rpc GetExtraCtx(CM_GetExtraCtxRequest) returns (CM_GetExtraCtxResponse);
+    // 获取某context进程集合
+    rpc GetProcessSet(CM_GetProcessSetRequest) returns (CM_GetProcessSetResponse);
+    // 查询Context管理器状态
+    rpc GetStats(CM_GetStatsRequest) returns (CM_GetStatsResponse);
+    // 查询进程所属context
+    rpc WhichContext(CM_WhichContextRequest) returns (CM_WhichContextResponse);
+}
+
+// =============================================
+// RuntimeService
+// =============================================
+
+message careinfo
+{
+    repeated string infotype = 1;
+}
+
+message ReceiveEventRequest
+{
+    optional careinfo params = 1;
+}
+
+message syscall_event_data
+{
+    oneof s_data
+    {
+        process_semantic_data process_data       = 1;
+        exec_semantic_data exec_data             = 2;
+        credential_semantic_data credential_data = 3;
+        namespace_semantic_data namespace_data   = 4;
+        file_syscall_semantic_data file_data     = 5;
+        memory_semantic_data memory_data         = 6;
+        network_syscall_semantic_data net_data   = 7;
+        kernel_semantic_data kernel_data         = 8;
+    }
+}
+
+// CLI订阅流事件的头
+message eventhead
+{
+    string roleLabel = 1;
+
+    // 未落定时值为 0
+    uint32 roleID    = 2;
+    uint32 contextID = 3;
+    uint32 pid       = 4;
+}
+
+message ReceiveEventResponse
+{
+    eventhead head = 1;
+    oneof event
+    {
+        syscall_event_data syscall_ev = 2;
+        file_event_data file_ev       = 3;
+    }
+}
+
+// 查询服务：运行时的信息
+service RuntimeService
+{
+    // 流式获取事件
+    rpc ReceiveEvent(ReceiveEventRequest) returns (stream ReceiveEventResponse);
+}
