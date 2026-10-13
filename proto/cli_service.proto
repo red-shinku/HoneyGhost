@@ -20,8 +20,7 @@ message pidList
 // RoleManagerService
 // =============================================
 
-enum RM_ShowOption
-{
+enum RM_ShowOption {
     // 获取节点上出现的全部角色
     RM_SHOW_ALL         = 0;
     // 只获取系统监管的角色
@@ -59,9 +58,7 @@ message RM_GetContextSetResponse
     repeated uint32 contextID = 1;
 }
 
-message RM_GetStatsRequest
-{
-}
+message RM_GetStatsRequest {}
 
 message RM_GetStatsResponse
 {
@@ -108,18 +105,14 @@ service RoleManagerService
 // ContextManagerService
 // =============================================
 
-message CM_GetExcepCtxRequest
-{
-}
+message CM_GetExcepCtxRequest {}
 
 message CM_GetExcepCtxResponse
 {
     repeated uint32 contextID = 1;
 }
 
-message CM_GetExtraCtxRequest
-{
-}
+message CM_GetExtraCtxRequest {}
 
 message CM_GetExtraCtxResponse
 {
@@ -133,13 +126,11 @@ message CM_GetProcessSetRequest
 
 message CM_GetProcessSetResponse
 {
-    uint32 root_pid  = 1;
+    uint32 root_pid       = 1;
     optional pidList pids = 2;
 }
 
-message CM_GetStatsRequest
-{
-}
+message CM_GetStatsRequest {}
 
 message CM_GetStatsResponse
 {
@@ -203,12 +194,24 @@ message syscall_event_data
     }
 }
 
+// CLI订阅流事件的头
+message eventhead
+{
+    string roleLabel = 1;
+
+    // 未落定时值为 0
+    uint32 roleID    = 2;
+    uint32 contextID = 3;
+    uint32 pid       = 4;
+}
+
 message ReceiveEventResponse
 {
+    eventhead head = 1;
     oneof event
     {
-        syscall_event_data syscall_ev = 1;
-        file_event_data file_ev       = 2;
+        syscall_event_data syscall_ev = 2;
+        file_event_data file_ev       = 3;
     }
 }
 
