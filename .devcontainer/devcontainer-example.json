@@ -23,7 +23,7 @@
         "golang.go"
       ],
       "settings": {
-        "clangd.path": "/usr/bin/clangd-19",
+        "clangd.path": "/usr/bin/clangd-22",
         "clangd.arguments": [
           "--compile-commands-dir=${workspaceFolder}/build-agent",
           "--background-index"

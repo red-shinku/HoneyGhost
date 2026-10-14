@@ -4,7 +4,7 @@
 
 ## 1. 用途与边界
 
-容器内支持 `make agent` / `make ebpf` / `make go` / `make test`、并提供 clangd 语言分析。
+容器内支持 `make agent` / `make ebpf` / `make go` / `make test`、并提供 clangd 语言分析（Doxygen 注释渲染）。
 
 | 目标 | 位置 |
 | --- | --- |
@@ -92,10 +92,15 @@ JetBrains IDE 跑在 Windows 下用不了开发容器（经 WSL 连接不识别 
 | `updateRemoteUserUID: true` | 关掉会让绑定挂载的工作区在宿主侧归属错乱 |
 | `postCreateCommand` 只 configure 不 build、失败不报错 | 产出 `compile_commands.json` 供 clangd 用；`hng-userver` 卷尚空时不中断容器创建 |
 | clangd 与 CMake Tools 指向 `build-agent/` + Unix Makefiles | 与 `make` 共用同一份缓存 |
+| clangd 的 Doxygen 注释渲染 | 开关是 `Documentation.CommentFormat: Doxygen`，写在镜像内的 clangd 用户配置 `/home/dev/.config/clangd/config.yaml`。只对使用镜像内 clangd 的客户端生效 |
 
 `remoteUser` 与 Dockerfile 的 `ARG USERNAME` 是同一个值的两处，改其一须同步改另一处（注意uid）。
 
-依赖版本对齐 Debian 13 (trixie)，故 Dockerfile 中的 apt 包不写版本号；构建期会打印一次全部版本。其中两处不可放宽：
+依赖版本对齐 Debian 13 (trixie)，故 Dockerfile 中的 apt 包不写版本号；构建期会打印一次全部版本。
+
+clangd 取 trixie main 里的 `clangd-22`，而不是不带版本号的 `clangd` 元包——后者在 trixie 仍指向 19，而 Doxygen 注释渲染需要 ≥ 22。
+
+其中两处不可放宽：
 
 - **`g++` 而非 libc++**：项目实际链的是 libstdc++。
 - **`protoc` 留在 3.21.x**：proto 生成代码与运行时版本强绑定。
