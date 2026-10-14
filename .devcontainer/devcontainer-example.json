@@ -18,6 +18,7 @@
     "vscode": {
       "extensions": [
         "llvm-vs-code-extensions.vscode-clangd",
+        "xaver.clang-format",
         "ms-vscode.cmake-tools",
         "twxs.cmake",
         "golang.go"
