@@ -84,7 +84,7 @@ JetBrains IDE 跑在 Windows 下用不了开发容器（经 WSL 连接不识别 
 
 ## 4. 装配取值
 
-`Dockerfile` 定工具链与依赖版本，`devcontainer.json` 定挂载、语言服务器与 CMake 集成。其中需要注意的取值：
+`Dockerfile` 定工具链与依赖版本，`devcontainer.json` 定挂载、语言服务器、格式化与 CMake 集成。其中需要注意的取值：
 
 | 取值 | 说明 |
 | --- | --- |
@@ -93,6 +93,7 @@ JetBrains IDE 跑在 Windows 下用不了开发容器（经 WSL 连接不识别 
 | `postCreateCommand` 只 configure 不 build、失败不报错 | 产出 `compile_commands.json` 供 clangd 用；`hng-userver` 卷尚空时不中断容器创建 |
 | clangd 与 CMake Tools 指向 `build-agent/` + Unix Makefiles | 与 `make` 共用同一份缓存 |
 | clangd 的 Doxygen 注释渲染 | 开关是 `Documentation.CommentFormat: Doxygen`，写在镜像内的 clangd 用户配置 `/home/dev/.config/clangd/config.yaml`。只对使用镜像内 clangd 的客户端生效 |
+| C/C++ 的保存格式化 | 扩展 `xaver.clang-format` 调 PATH 上的 `clang-format`（容器内 `/usr/local/bin/clang-format` → `clang-format-19`），排版取仓库的 `.clang-format`。VS Code 侧还需把 `editor.defaultFormatter` 指向它，否则保存时选不到格式化器 |
 
 `remoteUser` 与 Dockerfile 的 `ARG USERNAME` 是同一个值的两处，改其一须同步改另一处（注意uid）。
 
