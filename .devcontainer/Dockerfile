@@ -50,7 +50,7 @@ RUN set -eux; \
         clang \
         clang-format-19 \
         clang-tidy-19 \
-        clangd-19 \
+        clangd-22 \
         bpftool \
         libbpf-dev \
         libsystemd-dev \
@@ -161,6 +161,13 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && mkdir -p /opt/userver \
     && chown ${USER_UID}:${USER_GID} /opt/userver
 
+# clangd 的 Doxygen 注释渲染只能经配置文件打开，clangd 没有对应的命令行参数。
+# 落在用户级配置：仓库内不新增 .clangd，同时保证镜像内每个客户端都拿到同一份设置。
+RUN mkdir -p /home/${USERNAME}/.config/clangd \
+    && printf '# Doxygen 注释渲染\nDocumentation:\n  CommentFormat: Doxygen\n' \
+         > /home/${USERNAME}/.config/clangd/config.yaml \
+    && chown -R ${USER_UID}:${USER_GID} /home/${USERNAME}/.config
+
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PATH=/usr/local/go/bin:/home/${USERNAME}/go/bin:$PATH
@@ -186,6 +193,7 @@ RUN set -x \
     && clang --version | head -1 \
     && clang-format-19 --version | head -1 \
     && clang-format --version | head -1 \
+    && clangd-22 --version | head -1 \
     && cmake --version | head -1 \
     && bpftool version \
     && protoc --version \
