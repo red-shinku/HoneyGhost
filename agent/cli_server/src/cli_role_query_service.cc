@@ -48,6 +48,12 @@ CLIRoleQueryService::GetProcessSetResult CLIRoleQueryService::GetProcessSet(
                     grpc::StatusCode::INVALID_ARGUMENT,
                     "GetProcessSet: roleID must be non-zero");
             }
+            // 依赖为空说明装配方漏填，不是客户端错误
+            if (deps_.role == nullptr) {
+                throw userver::ugrpc::server::ErrorWithStatus(
+                    grpc::StatusCode::FAILED_PRECONDITION,
+                    "GetProcessSet: role lookup service is not installed");
+            }
             // cgroup 实时重读是同步阻塞调用，故交给 blocking TP，避免占住主 TP
             // 的工作线程；调用方的取消与 deadline 不传给该子任务
             const std::vector<hng::Process> members =
