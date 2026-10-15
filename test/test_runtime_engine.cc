@@ -292,7 +292,7 @@ void run_live_delivery()
     CHECK(env.engine.subscribe(&all_cli, RuntimeInfoFilter{}),
           "全选流入队被接受");
     CHECK(env.engine.subscribe(&file_cli, RuntimeInfoFilter{}.set_etype(
-                                              hng::EventType::FILE_EVENT)),
+                                              {hng::EventType::FILE_EVENT})),
           "文件流入队被接受");
 
     for (int i = 0; i < 300 && all_cli.calls.load() == 0; ++i) {

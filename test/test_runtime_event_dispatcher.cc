@@ -143,10 +143,10 @@ void run_cli_filters()
 
     RuntimeEventDispatcher d;
     d.add_cli_sink(&all, RuntimeInfoFilter{});
-    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role(7));
-    d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process(mk(1001, 10010)));
+    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}));
+    d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process({1001}));
     d.add_cli_sink(&by_etype,
-                   RuntimeInfoFilter{}.set_etype(hng::EventType::FILE_EVENT));
+                   RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}));
 
     d.dispatch(mk_event(1001, 7, 33, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(all.calls == 1, "空过滤器全选");
@@ -177,8 +177,8 @@ void run_duplicate_cli_sink()
     EventSinkStub sink(log, 1);
 
     RuntimeEventDispatcher d;
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role(7));
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role(8));
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({7}));
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({8}));
 
     CHECK(d.cli_sink_count() == 1, "同一 sink 不占两个表项");
     CHECK(sink.calls == 0, "登记不回调");

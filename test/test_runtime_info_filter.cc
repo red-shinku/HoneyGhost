@@ -4,10 +4,11 @@
  * @details
  * 覆盖过滤器的维度语义（纯值对象，无 IO / 无特权）：
  *  - 默认构造为全选，且可拷贝；
- *  - 进程维度按 (pid, pid_start_time) 判等，同 pid 不同 start_time 不命中；
- *  - 角色 / 上下文 / 事件类型维度按字面量相等判定；
- *  - 多维度之间是「与」，任一不命中则整体不命中；
- *  - set_role(0) / set_context(0) 只命中未落定的信息，而非不限。
+ *  - 进程维度只比 pid，同 pid 不同 start_time 仍命中；
+ *  - 角色 / 上下文 / 事件类型维度按集合成员判定；
+ *  - 维度之内取并集（命中任一成员即可），维度之间取交集；
+ *  - 空集合与未设置的维度一样表示不限；
+ *  - set_role({0}) / set_context({0}) 只命中未落定的信息，而非不限。
  * @author red-shinku
  * @date 2026.10.10
  */
@@ -47,71 +48,90 @@ void run_take_all()
           "全选过滤器应命中任意信息");
 }
 
+void run_empty_dimension_is_unlimited()
+{
+    // 显式设成空集合与不设置等价：该维度不限
+    const RuntimeInfoFilter filter = RuntimeInfoFilter{}
+                                         .set_process({})
+                                         .set_role({})
+                                         .set_context({})
+                                         .set_etype({});
+    CHECK(filter.should_take(make_info(1, 10, hng::EventType::IPC_EVENT, 7, 8)),
+          "空集合维度不应参与判定");
+}
+
 void run_process_dimension()
 {
     RuntimeInfoFilter filter;
-    filter.set_process(hng::Process{100, 500});
+    filter.set_process({100, 200});
     CHECK(
         filter.should_take(make_info(100, 500, hng::EventType::FILE_EVENT, 1, 2)),
-        "进程两个字段均相等才命中");
-    CHECK(!filter.should_take(
-              make_info(100, 501, hng::EventType::FILE_EVENT, 1, 2)),
-          "同 pid 而 start_time 不同是另一个进程实体，不应命中");
+        "pid 在集合中应命中");
+    CHECK(
+        filter.should_take(make_info(200, 999, hng::EventType::FILE_EVENT, 1, 2)),
+        "集合内任一 pid 都应命中（并集）");
+    CHECK(
+        filter.should_take(make_info(100, 501, hng::EventType::FILE_EVENT, 1, 2)),
+        "进程维度只比 pid，start_time 不同仍应命中");
     CHECK(!filter.should_take(
               make_info(101, 500, hng::EventType::FILE_EVENT, 1, 2)),
-          "pid 不同不应命中");
+          "pid 不在集合中不应命中");
 }
 
 void run_role_dimension()
 {
     RuntimeInfoFilter filter;
-    filter.set_role(42);
+    filter.set_role({42, 43});
     CHECK(filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 42, 0)),
-          "角色相等应命中");
-    CHECK(!filter.should_take(
+          "角色在集合中应命中");
+    CHECK(filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 43, 0)),
-          "角色不等不应命中");
+          "集合内任一角色都应命中（并集）");
+    CHECK(!filter.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 44, 0)),
+          "角色不在集合中不应命中");
 }
 
 void run_context_dimension()
 {
     RuntimeInfoFilter filter;
-    filter.set_context(9);
+    filter.set_context({9});
     CHECK(
         filter.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 9)),
-        "上下文相等应命中");
+        "上下文在集合中应命中");
     CHECK(!filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
-          "上下文不等不应命中");
+          "上下文不在集合中不应命中");
 }
 
 void run_etype_dimension()
 {
     RuntimeInfoFilter filter;
-    filter.set_etype(hng::EventType::FILE_EVENT);
+    filter.set_etype({hng::EventType::FILE_EVENT, hng::EventType::SYSCALL_EVENT});
     CHECK(filter.should_take(make_info(1, 10, hng::EventType::FILE_EVENT, 0, 0)),
-          "事件类型相等应命中");
-    CHECK(!filter.should_take(
-              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
-          "事件类型不等不应命中");
+          "事件类型在集合中应命中");
+    CHECK(
+        filter.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 0)),
+        "集合内任一事件类型都应命中（并集）");
+    CHECK(!filter.should_take(make_info(1, 10, hng::EventType::IPC_EVENT, 0, 0)),
+          "事件类型不在集合中不应命中");
 }
 
-void run_and_composition()
+void run_dimensions_are_intersected()
 {
-    const hng::Process proc{7, 70};
     RuntimeInfoFilter filter;
-    filter.set_process(proc).set_role(3).set_context(5).set_etype(
-        hng::EventType::FILE_EVENT);
+    filter.set_process({7}).set_role({3}).set_context({5}).set_etype(
+        {hng::EventType::FILE_EVENT});
 
     CHECK(filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 5)),
           "四个维度全中应命中");
-    CHECK(!filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 6)),
-          "仅上下文不符即不命中");
+    CHECK(!filter.should_take(make_info(8, 70, hng::EventType::FILE_EVENT, 3, 5)),
+          "仅进程不符即不命中");
     CHECK(!filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 4, 5)),
           "仅角色不符即不命中");
-    CHECK(!filter.should_take(make_info(7, 71, hng::EventType::FILE_EVENT, 3, 5)),
-          "仅进程不符即不命中");
+    CHECK(!filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 6)),
+          "仅上下文不符即不命中");
     CHECK(!filter.should_take(
               make_info(7, 70, hng::EventType::SYSCALL_EVENT, 3, 5)),
           "仅事件类型不符即不命中");
@@ -119,21 +139,21 @@ void run_and_composition()
 
 void run_zero_is_literal()
 {
-    // roleID / contextID 的 0 是「未落定」哨兵，按字面量比较而非「不限」
+    // roleID / contextID 的 0 是「未落定」哨兵，按键值比较而非「不限」
     RuntimeInfoFilter filter;
-    filter.set_role(0);
+    filter.set_role({0});
     CHECK(filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 77)),
-          "set_role(0) 应命中未落定的角色");
+          "set_role({0}) 应命中未落定的角色");
     CHECK(!filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 3, 77)),
-          "set_role(0) 不应命中已落定的角色");
+          "set_role({0}) 不应命中已落定的角色");
 }
 
 void run_copyable()
 {
     RuntimeInfoFilter filter;
-    filter.set_role(3).set_etype(hng::EventType::SYSCALL_EVENT);
+    filter.set_role({3}).set_etype({hng::EventType::SYSCALL_EVENT});
 
     const RuntimeInfoFilter copy = filter;
     CHECK(copy.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 3, 0)),
@@ -147,11 +167,12 @@ void run_copyable()
 int main()
 {
     run_take_all();
+    run_empty_dimension_is_unlimited();
     run_process_dimension();
     run_role_dimension();
     run_context_dimension();
     run_etype_dimension();
-    run_and_composition();
+    run_dimensions_are_intersected();
     run_zero_is_literal();
     run_copyable();
 

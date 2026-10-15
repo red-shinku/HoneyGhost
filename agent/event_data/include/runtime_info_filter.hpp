@@ -7,82 +7,98 @@
 #ifndef HNG_RUNTIME_INFO_FILTER_HPP_
 #define HNG_RUNTIME_INFO_FILTER_HPP_
 
+#include <algorithm>
 #include <cstdint>
-#include <optional>
+#include <utility>
+#include <vector>
 
 #include "agent/event_data/include/runtime_event.hpp"
 
 /**
  * @brief 订阅流关心的运行时信息组合
- * @details 值对象，可拷贝。
- * 未设置的维度不参与判定，故默认构造即全选；
- * @note set_* 仅在构造期调用，成员变量构造完成后不变。
+ * @details 值对象，可拷贝。四个维度各持一个取值集合，空集合表示该维度不限，
+ * 故默认构造即全选。
+ * @note 匹配语义：维度之间取交集，维度之内取并集——已设置的维度要求事件至少
+ * 命中该集合中的一个成员。
+ * @note 各 set_* 只在构造期调用，构造完成后成员不变。
  */
 class RuntimeInfoFilter {
    public:
     /// @brief 全选：四个维度都不限
     RuntimeInfoFilter() = default;
 
-    /// @brief 设置进程维度，按 (pid, pid_start_time) 判等
-    RuntimeInfoFilter& set_process(hng::Process p);
+    /// @brief 设置进程维度
+    /// @note 只比 pid，不比 pid_start_time：进程身份本是二者的组合，此处为
+    /// 单键是订阅方只给得出 pid 所致，故 pid 复用后可能误命中
+    RuntimeInfoFilter& set_process(std::vector<uint32_t> pids);
 
     /// @brief 设置角色维度
-    RuntimeInfoFilter& set_role(uint32_t roleID);
+    /// @note 0 是「未落定」哨兵，按键值比较而非当作不限
+    RuntimeInfoFilter& set_role(std::vector<uint32_t> roleIDs);
 
     /// @brief 设置上下文维度
-    RuntimeInfoFilter& set_context(uint32_t contextID);
+    /// @note 0 是「未落定」哨兵，按键值比较而非当作不限
+    RuntimeInfoFilter& set_context(std::vector<uint32_t> contextIDs);
 
     /// @brief 设置事件类型维度
-    RuntimeInfoFilter& set_etype(hng::EventType etype);
+    RuntimeInfoFilter& set_etype(std::vector<hng::EventType> etypes);
 
     /// @brief 判定一条运行时信息是否命中本过滤器
     /// @return 所有已设置维度均命中为 true；无已设置维度时为 true
     bool should_take(const hng::RuntimeInformation& info) const;
 
    private:
-    std::optional<hng::Process> process_;
-    std::optional<uint32_t> roleID_;
-    std::optional<uint32_t> contextID_;
-    std::optional<hng::EventType> etype_;
+    std::vector<uint32_t> pids_;
+    std::vector<uint32_t> roleIDs_;
+    std::vector<uint32_t> contextIDs_;
+    std::vector<hng::EventType> etypes_;
 };
 
-inline RuntimeInfoFilter& RuntimeInfoFilter::set_process(hng::Process p)
+inline RuntimeInfoFilter& RuntimeInfoFilter::set_process(
+    std::vector<uint32_t> pids)
 {
-    process_ = p;
+    pids_ = std::move(pids);
     return *this;
 }
 
-inline RuntimeInfoFilter& RuntimeInfoFilter::set_role(uint32_t roleID)
+inline RuntimeInfoFilter& RuntimeInfoFilter::set_role(
+    std::vector<uint32_t> roleIDs)
 {
-    roleID_ = roleID;
+    roleIDs_ = std::move(roleIDs);
     return *this;
 }
 
-inline RuntimeInfoFilter& RuntimeInfoFilter::set_context(uint32_t contextID)
+inline RuntimeInfoFilter& RuntimeInfoFilter::set_context(
+    std::vector<uint32_t> contextIDs)
 {
-    contextID_ = contextID;
+    contextIDs_ = std::move(contextIDs);
     return *this;
 }
 
-inline RuntimeInfoFilter& RuntimeInfoFilter::set_etype(hng::EventType etype)
+inline RuntimeInfoFilter& RuntimeInfoFilter::set_etype(
+    std::vector<hng::EventType> etypes)
 {
-    etype_ = etype;
+    etypes_ = std::move(etypes);
     return *this;
 }
 
 inline bool RuntimeInfoFilter::should_take(
     const hng::RuntimeInformation& info) const
 {
-    if (process_ && !(info.process == *process_)) {
+    if (!pids_.empty() &&
+        std::find(pids_.begin(), pids_.end(), info.process.pid) == pids_.end()) {
         return false;
     }
-    if (roleID_ && info.roleID != *roleID_) {
+    if (!roleIDs_.empty() && std::find(roleIDs_.begin(), roleIDs_.end(),
+                                       info.roleID) == roleIDs_.end()) {
         return false;
     }
-    if (contextID_ && info.contextID != *contextID_) {
+    if (!contextIDs_.empty() && std::find(contextIDs_.begin(), contextIDs_.end(),
+                                          info.contextID) == contextIDs_.end()) {
         return false;
     }
-    if (etype_ && info.etype != *etype_) {
+    if (!etypes_.empty() &&
+        std::find(etypes_.begin(), etypes_.end(), info.etype) == etypes_.end()) {
         return false;
     }
     return true;
