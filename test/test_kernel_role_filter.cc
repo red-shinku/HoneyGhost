@@ -1,4 +1,8 @@
-// 主机语义测试：包含真实过滤头，用替身模拟 helpers/CO-RE，非 verifier 测试。
+/**
+ * @file test_kernel_role_filter.cc
+ * @brief 包含真实过滤头，验证进程身份白名单及默认拒绝语义。
+ * @note 使用 helpers/CO-RE 替身执行主机测试，不验证 eBPF verifier 或真实加载。
+ */
 #include <linux/types.h>
 #include <linux/bpf.h>
 #include <cstdio>
@@ -39,7 +43,7 @@ int main()
 {
     try {
         require(!hng_should_collect());
-        found = true; require(hng_should_collect()); // 使用 leader 的时间而非 thread 时间
+        found = true; require(hng_should_collect()); /** @note 使用 leader 的时间而非 thread 时间。 */
         allowed = 0; require(!hng_should_collect());
         allowed = 2; require(!hng_should_collect());
         allowed = 1; ++saved.start_time; require(!hng_should_collect());
