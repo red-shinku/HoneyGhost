@@ -13,8 +13,8 @@ namespace hng::cli {
 
 grpc::Status Unimplemented(std::string_view rpc_name, std::string_view gap)
 {
-    LOG_WARNING() << rpc_name << " is not implemented yet: " << gap
-                  << " is not provided by the control plane";
+    LOG_DEBUG() << rpc_name << " is not implemented yet: " << gap
+                << " is not provided by the control plane";
     return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
                         std::string{rpc_name} + " is not implemented yet: " +
                             "missing " + std::string{gap});
