@@ -1,3 +1,8 @@
+/**
+ * @file bpf_core_read.h
+ * @brief 内核过滤主机测试使用的 CO-RE 读取宏替身。
+ * @note 仅直接访问测试结构体，不验证真实内核的 CO-RE 重定位或读取失败行为。
+ */
 #ifndef HNG_TEST_BPF_CORE_READ_H_
 #define HNG_TEST_BPF_CORE_READ_H_
 #define HNG_TEST_CORE1(src, a) ((src)->a)
