@@ -169,14 +169,30 @@ service ContextManagerService
 // RuntimeService
 // =============================================
 
-message careinfo
+// 顶层事件大类，取值与 hng::EventType 一一对应
+enum EventType {
+    EVENT_TYPE_SYSCALL = 0;
+    EVENT_TYPE_FILE    = 1;
+    EVENT_TYPE_NETWORK = 2;
+    EVENT_TYPE_IPC     = 3;
+}
+
+// 命令行 -i 选项的取值；未设置的维度表示该维度不限
+message runtimeinfo
 {
-    repeated string infotype = 1;
+    repeated uint32 roleID    = 1;
+    // 与 roleID 同属「角色」维度，两者取并集
+    repeated string roleLabel = 2;
+    repeated uint32 contextID = 3;
+    repeated uint32 pid       = 4;
 }
 
 message ReceiveEventRequest
 {
-    optional careinfo params = 1;
+    // 命令行选项 -t
+    repeated EventType etype  = 1;
+    // 命令行选项 -i
+    optional runtimeinfo info = 2;
 }
 
 message syscall_event_data
@@ -197,12 +213,24 @@ message syscall_event_data
 // CLI订阅流事件的头
 message eventhead
 {
-    string roleLabel = 1;
+    // 归属未落定时为空
+    string roleLabel       = 1;
 
     // 未落定时值为 0
-    uint32 roleID    = 2;
-    uint32 contextID = 3;
-    uint32 pid       = 4;
+    uint32 roleID          = 2;
+    uint32 contextID       = 3;
+    uint32 pid             = 4;
+
+    uint64 pid_start_time  = 5;
+    uint32 ppid            = 6;
+    uint64 ppid_start_time = 7;
+    EventType type         = 8;
+}
+
+// 本流丢弃事件的累计计数，可多次上报
+message streamstats
+{
+    uint64 dropped_events = 1;
 }
 
 message ReceiveEventResponse
@@ -212,6 +240,7 @@ message ReceiveEventResponse
     {
         syscall_event_data syscall_ev = 2;
         file_event_data file_ev       = 3;
+        streamstats stats             = 4;
     }
 }
 
