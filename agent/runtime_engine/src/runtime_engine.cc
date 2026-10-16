@@ -45,7 +45,7 @@ void RuntimeEngine::run()
         }
     }
 
-    // 停机：已入队的命令仍会落地（含注销回执），此后不再投递事件
+    // 停机：已入队的命令仍会落地；随后清表，表内每条流都会收到销号回执
     land_commands();
     dispatcher_.clear();
 }
@@ -57,12 +57,14 @@ void RuntimeEngine::stop()
     stopped_.store(true, std::memory_order_release);
 }
 
-bool RuntimeEngine::subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter)
+bool RuntimeEngine::subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter,
+                              UnsubscribeAck* ack)
 {
     Command cmd;
     cmd.kind   = Command::Kind::SUBSCRIBE;
     cmd.sink   = sink;
     cmd.filter = std::move(filter);
+    cmd.ack    = ack;
 
     if (!commands_.push(std::move(cmd))) {
         queue_rejected_.fetch_add(1, std::memory_order_relaxed);
@@ -71,18 +73,15 @@ bool RuntimeEngine::subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter)
     return true;
 }
 
-bool RuntimeEngine::unsubscribe(RuntimeEventSink* sink, UnsubscribeAck* ack)
+void RuntimeEngine::unsubscribe(RuntimeEventSink* sink)
 {
     Command cmd;
     cmd.kind = Command::Kind::UNSUBSCRIBE;
     cmd.sink = sink;
-    cmd.ack  = ack;
 
     if (!commands_.push(std::move(cmd))) {
         queue_rejected_.fetch_add(1, std::memory_order_relaxed);
-        return false;
     }
-    return true;
 }
 
 RuntimeEngineStats RuntimeEngine::stats() const
@@ -106,7 +105,7 @@ void RuntimeEngine::land(Command& cmd)
 {
     switch (cmd.kind) {
         case Command::Kind::SUBSCRIBE: {
-            dispatcher_.add_cli_sink(cmd.sink, std::move(cmd.filter));
+            dispatcher_.add_cli_sink(cmd.sink, std::move(cmd.filter), cmd.ack);
 
             const std::size_t current = dispatcher_.cli_sink_count();
             if (current > peak_cli_streams_.load(std::memory_order_relaxed)) {
@@ -115,8 +114,8 @@ void RuntimeEngine::land(Command& cmd)
             break;
         }
         case Command::Kind::UNSUBSCRIBE:
+            // 销号回执由分发器在实际摘表时回调
             dispatcher_.remove_cli_sink(cmd.sink);
-            cmd.ack->on_unsubscribed();
             break;
     }
 }

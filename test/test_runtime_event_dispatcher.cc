@@ -6,8 +6,9 @@
  *  - 两张表的分发顺序：先系统订阅表、后 CLI 订阅表；
  *  - 系统订阅表全量投递并附带决策，CLI 订阅表只投递过滤器命中者；
  *  - 每个 CLI 订阅流的过滤器互相独立；
- *  - 同一 sink 重复登记不占两个表项，过滤器以最后一次为准；
+ *  - 同一 sink 重复登记不占两个表项，过滤器与回执以最后一次为准；
  *  - 摘除：命中为 true、缺席为空操作且返回 false，不影响其他流与系统表；
+ *  - 摘除与清空各自回调该流的销号回执，且回执至多一次；
  *  - 清空：不再投递，且不触碰订阅者对象。
  * @author red-shinku
  * @date 2026.10.11
@@ -81,6 +82,14 @@ class EventSinkStub final : public RuntimeEventSink {
     int id_;
 };
 
+/// 销号回执替身：只记回调次数
+class AckStub final : public UnsubscribeAck {
+   public:
+    int calls = 0;
+
+    void on_unsubscribed() override { ++calls; }
+};
+
 hng::RuntimeEvent mk_event(uint32_t pid, uint32_t roleID, uint32_t contextID,
                            hng::EventType etype)
 {
@@ -116,7 +125,7 @@ void run_order_and_payload()
     RuntimeEventDispatcher d;
     d.add_system_sink(&sys_a);
     d.add_system_sink(&sys_b);
-    d.add_cli_sink(&cli, RuntimeInfoFilter{});
+    d.add_cli_sink(&cli, RuntimeInfoFilter{}, nullptr);
 
     d.dispatch(mk_event(1001, 7, 33, hng::EventType::SYSCALL_EVENT), kDerived);
 
@@ -142,11 +151,12 @@ void run_cli_filters()
     EventSinkStub by_etype(log, 4);
 
     RuntimeEventDispatcher d;
-    d.add_cli_sink(&all, RuntimeInfoFilter{});
-    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}));
-    d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process({1001}));
+    d.add_cli_sink(&all, RuntimeInfoFilter{}, nullptr);
+    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}), nullptr);
+    d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process({1001}), nullptr);
     d.add_cli_sink(&by_etype,
-                   RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}));
+                   RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}),
+                   nullptr);
 
     d.dispatch(mk_event(1001, 7, 33, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(all.calls == 1, "空过滤器全选");
@@ -175,13 +185,16 @@ void run_duplicate_cli_sink()
 {
     CallLog log;
     EventSinkStub sink(log, 1);
+    AckStub old_ack;
+    AckStub new_ack;
 
     RuntimeEventDispatcher d;
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({7}));
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({8}));
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({7}), &old_ack);
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({8}), &new_ack);
 
     CHECK(d.cli_sink_count() == 1, "同一 sink 不占两个表项");
     CHECK(sink.calls == 0, "登记不回调");
+    CHECK(old_ack.calls == 0, "重新登记不回调旧回执：它没有被摘表");
 
     d.dispatch(mk_event(1001, 7, 0, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(sink.calls == 0, "旧过滤器不再生效");
@@ -197,16 +210,21 @@ void run_remove()
     DecisionSinkStub sys(log, 1);
     EventSinkStub a(log, 2);
     EventSinkStub b(log, 3);
+    AckStub ack_a;
+    AckStub ack_b;
 
     RuntimeEventDispatcher d;
     d.add_system_sink(&sys);
-    d.add_cli_sink(&a, RuntimeInfoFilter{});
-    d.add_cli_sink(&b, RuntimeInfoFilter{});
+    d.add_cli_sink(&a, RuntimeInfoFilter{}, &ack_a);
+    d.add_cli_sink(&b, RuntimeInfoFilter{}, &ack_b);
 
     CHECK(d.remove_cli_sink(&a), "表中存在则摘除成功");
+    CHECK(ack_a.calls == 1, "摘除回调该流的销号回执");
     CHECK(d.cli_sink_count() == 1, "摘除后表项数减一");
     CHECK(!d.remove_cli_sink(&a), "重复摘除为空操作");
+    CHECK(ack_a.calls == 1, "重复摘除不重复回调");
     CHECK(!d.remove_cli_sink(nullptr), "未登记的 sink 摘除为空操作");
+    CHECK(ack_b.calls == 0, "摘除一个流不回调其他流的回执");
 
     d.dispatch(mk_event(1001, 0, 0, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(a.calls == 0, "摘除后不再投递");
@@ -214,7 +232,12 @@ void run_remove()
     CHECK(sys.calls == 1, "摘除 CLI 流不影响系统订阅表");
 
     d.remove_cli_sink(&b);
+    CHECK(ack_b.calls == 1, "摘除 B 回调其销号回执");
     CHECK(d.cli_sink_count() == 0, "全部摘除");
+
+    d.clear();
+    CHECK(ack_a.calls == 1 && ack_b.calls == 1,
+          "已摘除的流不再被清空回调：回执至多一次");
 }
 
 // ---- 清空 ----
@@ -224,22 +247,25 @@ void run_clear()
     CallLog log;
     DecisionSinkStub sys(log, 1);
     EventSinkStub cli(log, 2);
+    AckStub ack;
 
     RuntimeEventDispatcher d;
     d.add_system_sink(&sys);
-    d.add_cli_sink(&cli, RuntimeInfoFilter{});
+    d.add_cli_sink(&cli, RuntimeInfoFilter{}, &ack);
 
     d.clear();
     CHECK(d.cli_sink_count() == 0, "清空后无 CLI 订阅流");
+    CHECK(ack.calls == 1, "清空给表内每条流回调销号回执");
 
     d.dispatch(mk_event(1001, 0, 0, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(sys.calls == 0 && cli.calls == 0, "清空后不再投递");
 
     // 清空不触碰订阅者：仍可重新登记并投递
     d.add_system_sink(&sys);
-    d.add_cli_sink(&cli, RuntimeInfoFilter{});
+    d.add_cli_sink(&cli, RuntimeInfoFilter{}, &ack);
     d.dispatch(mk_event(1001, 0, 0, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(sys.calls == 1 && cli.calls == 1, "重新登记后订阅者仍可用");
+    CHECK(ack.calls == 1, "重新登记不回调回执");
 }
 
 }  // namespace

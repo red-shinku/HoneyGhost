@@ -5,8 +5,9 @@
  * 控制平面注入点全部走替身，语义队列为真实 SPSC 队列，引擎独占一条测试线程，
  * 无 IO / 无特权。覆盖：
  *  - 订阅命令的落地：登记后事件送达，过滤器未命中则不投递；
- *  - 注销协议：引擎线程摘除表项后回调回执；
- *  - 停机排空：已入队的命令（含注销回执）仍会落地，且 run() 随即返回；
+ *  - 销号回执：摘表时回调，回执后不再有该流的投递；
+ *  - 停机排空：已入队的命令仍会落地，其后的清表给表内每条流回调回执，
+ *    故注销入队被拒不影响回执的送达；
  *  - 停机后入队被拒并计数；
  *  - 统计口径：归属未落定按事件计数（一条事件最多一次）、订阅流峰值只增不减。
  * @author red-shinku
@@ -243,9 +244,9 @@ void run_drain_on_stop()
     AckStub ack;
 
     // 命令在 run() 之前入队，停机后 run() 才被调用
-    CHECK(env.engine.subscribe(&cli, RuntimeInfoFilter{}),
+    CHECK(env.engine.subscribe(&cli, RuntimeInfoFilter{}, &ack),
           "停机前订阅入队被接受");
-    CHECK(env.engine.unsubscribe(&cli, &ack), "停机前注销入队被接受");
+    env.engine.unsubscribe(&cli);
 
     env.engine.stop();
     env.engine.run();  // 已停机：不取事件，但把已入队的命令落地
@@ -255,19 +256,41 @@ void run_drain_on_stop()
           "已入队的订阅在排空时落地（峰值可见）");
 }
 
-void run_reject_after_stop()
+/// 注销入队被拒时回执仍会送达——这正是把回执挂在订阅表状态上、而不是挂在
+/// 注销命令投递上的意义
+void run_ack_from_clear_on_rejected_unsubscribe()
+{
+    Env env;
+    EventSinkStub cli;
+    AckStub ack;
+
+    CHECK(env.engine.subscribe(&cli, RuntimeInfoFilter{}, &ack),
+          "停机前订阅入队被接受");
+    env.engine.stop();
+    env.engine.unsubscribe(&cli);  // 已停机：入队被拒，只记账
+
+    env.engine.run();  // 排空已入队的订阅，随后清表
+
+    CHECK(ack.called.load(), "注销被拒不改变回执保证");
+    CHECK(env.engine.stats().queue_rejected == 1, "被拒的注销计入统计");
+}
+
+void run_reject_subscribe_after_stop()
 {
     Env env;
     EventSinkStub cli;
     AckStub ack;
 
     env.engine.stop();
-    CHECK(!env.engine.subscribe(&cli, RuntimeInfoFilter{}), "停机后订阅被拒");
-    CHECK(!env.engine.unsubscribe(&cli, &ack), "停机后注销被拒");
-    CHECK(!ack.called.load(), "被拒的注销不产生回执");
+    CHECK(!env.engine.subscribe(&cli, RuntimeInfoFilter{}, &ack),
+          "停机后订阅被拒");
+
+    env.engine.run();
+
+    CHECK(!ack.called.load(), "订阅从未成立，不会有回执");
 
     const RuntimeEngineStats s = env.engine.stats();
-    CHECK(s.queue_rejected == 2, "被拒的命令计数");
+    CHECK(s.queue_rejected == 1, "被拒的命令计数");
     CHECK(s.peak_cli_streams == 0, "被拒的命令不改变订阅表");
 }
 
@@ -289,10 +312,14 @@ void run_live_delivery()
     env.ctx_svc.seed(settled, 55);
 
     // 订阅命令是通知写，落地时间不定，故反复投递直至观察到送达
-    CHECK(env.engine.subscribe(&all_cli, RuntimeInfoFilter{}),
+    AckStub all_ack;
+    AckStub file_ack;
+    CHECK(env.engine.subscribe(&all_cli, RuntimeInfoFilter{}, &all_ack),
           "全选流入队被接受");
-    CHECK(env.engine.subscribe(&file_cli, RuntimeInfoFilter{}.set_etype(
-                                              {hng::EventType::FILE_EVENT})),
+    CHECK(env.engine.subscribe(
+              &file_cli,
+              RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}),
+              &file_ack),
           "文件流入队被接受");
 
     for (int i = 0; i < 300 && all_cli.calls.load() == 0; ++i) {
@@ -312,9 +339,9 @@ void run_live_delivery()
     CHECK(file_cli.last_pid.load() == 3003, "CLI 订阅流收到事件主体");
 
     // 注销：以回执为准，回执后不再有该流的回调
-    AckStub ack;
-    CHECK(env.engine.unsubscribe(&all_cli, &ack), "注销入队被接受");
-    CHECK(wait_until([&ack] { return ack.called.load(); }), "注销回执应送达");
+    env.engine.unsubscribe(&all_cli);
+    CHECK(wait_until([&all_ack] { return all_ack.called.load(); }),
+          "注销回执应送达");
     const int calls_after_ack = all_cli.calls.load();
 
     const int sys_before      = sys.calls.load();
@@ -326,6 +353,8 @@ void run_live_delivery()
 
     env.engine.stop();
     engine_thread.join();
+
+    CHECK(file_ack.called.load(), "停机清表时未注销的流也收到回执");
 
     // 峰值只增不减：注销后表内只剩一条，峰值仍是两条
     CHECK(env.engine.stats().peak_cli_streams == 2, "订阅流峰值只增不减");
@@ -406,7 +435,8 @@ void run_lifecycle_dispatch()
 int main()
 {
     run_drain_on_stop();
-    run_reject_after_stop();
+    run_ack_from_clear_on_rejected_unsubscribe();
+    run_reject_subscribe_after_stop();
     run_live_delivery();
     run_stats_unsettled();
     run_lifecycle_dispatch();
