@@ -26,7 +26,7 @@ struct RuntimeEngineStats {
     uint64_t unsettled_events = 0;
     /// 峰值：CLI 订阅表同时存在的订阅流数
     uint64_t peak_cli_streams = 0;
-    /// 累计：stop() 之后的订阅命令入队被拒绝
+    /// 累计：stop() 之后的订阅 / 注销命令入队被拒绝
     uint64_t queue_rejected   = 0;
 };
 
@@ -61,17 +61,18 @@ class RuntimeEngine final : public SubscriberRegService {
     void run();
 
     /// @brief 停止：此后不再取事件，命令入队一律被拒
-    /// @note 幂等，可从任意线程调用；已入队的命令仍会落地（含注销回执），
-    ///       run() 排空后返回，此后不再投递事件
+    /// @note 幂等，可从任意线程调用；已入队的命令仍会落地，run() 在排空命令、
+    ///       清空订阅表（表内每条流都会收到销号回执）之后返回
     void stop();
 
     /// @brief 登记一路订阅流：入队即返回，落地在引擎线程上
-    /// @note 落地前产生的事件不补发；重复登记以最后一次的过滤器为准
-    bool subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter) override;
+    /// @note 落地前产生的事件不补发；重复登记以最后一次的过滤器与回执为准
+    bool subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter,
+                   UnsubscribeAck* ack) override;
 
     /// @brief 注销一路订阅流：入队即返回，落地在引擎线程上
-    /// @note 对未登记的 sink 注销是空操作，仍会收到回执
-    bool unsubscribe(RuntimeEventSink* sink, UnsubscribeAck* ack) override;
+    /// @note 入队被拒只记账，不改变回执保证：停机清表时该流仍会收到回执
+    void unsubscribe(RuntimeEventSink* sink) override;
 
     /// @brief 异常态观测快照；可从任意线程调用
     RuntimeEngineStats stats() const;
@@ -87,7 +88,7 @@ class RuntimeEngine final : public SubscriberRegService {
         Kind kind              = Kind::SUBSCRIBE;
         RuntimeEventSink* sink = nullptr;
         RuntimeInfoFilter filter;       ///< kind 为 SUBSCRIBE 时有效
-        UnsubscribeAck* ack = nullptr;  ///< kind 为 UNSUBSCRIBE 时有效
+        UnsubscribeAck* ack = nullptr;  ///< kind 为 SUBSCRIBE 时有效，可为空
     };
 
     /// @brief 取空命令队列并落地
