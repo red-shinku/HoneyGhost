@@ -1,56 +1,65 @@
+/**
+ * @file
+ * @brief 原始事件采集、探针资源管理与过滤 map fd 接口。
+ */
 #include "agent/collector/include/collector.hpp"
-#include "kernel/include/syscalls_type.h"
+#include <cerrno>
 
-SyscallEventCollector::SyscallEventCollector(
-    hng::SPSC_Queue<struct syscall_event>& queue)
-    : syscall_rawevent_queue(queue), syscalls_collector(NULL), rb(NULL)
-{
-}
+SyscallEventCollector::SyscallEventCollector(hng::SPSC_Queue<struct syscall_event>& queue)
+    : syscall_rawevent_queue(queue), syscalls_collector(nullptr), rb(nullptr) {}
 
 SyscallEventCollector::~SyscallEventCollector()
 {
-    syscalls_collector__destroy(syscalls_collector);
-    ring_buffer__free(rb);
+    if (rb) ring_buffer__free(rb);
+    if (syscalls_collector) syscalls_collector__destroy(syscalls_collector);
 }
 
+/**
+ * @brief 将借用的 ringbuf 载荷复制到原始事件队列。
+ * @param[in] ctx 注册回调的采集器指针。
+ * @param[in] data ringbuf 提供的事件载荷。
+ * @param[in] data_sz 载荷字节数。
+ * @return 参数非法或载荷不足时返回 -EINVAL，否则返回 0。
+ * @note 队列满时沿用原有丢弃行为，不将 ringbuf 借用指针保存到队列。
+ */
 int SyscallEventCollector::handle_rb_event(void* ctx, void* data, size_t data_sz)
 {
-    if (data_sz < sizeof(struct syscall_event)) {
-        return -1;
-    }
-    // void* -> syscall_event*
-    struct syscall_event* ev    = (struct syscall_event*)data;
-    // 从 ctx 解析 this 指针
-    SyscallEventCollector* self = static_cast<SyscallEventCollector*>(ctx);
-
-    self->syscall_rawevent_queue.push(*ev);
+    if (!ctx || !data || data_sz < sizeof(struct syscall_event)) return -EINVAL;
+    auto* self = static_cast<SyscallEventCollector*>(ctx);
+    self->syscall_rawevent_queue.push(*static_cast<const struct syscall_event*>(data));
     return 0;
 }
 
 bool SyscallEventCollector::init()
 {
-    int err;
-    syscalls_collector = syscalls_collector__open_and_load();
-    if (!syscalls_collector) {
+    if (syscalls_collector) return false;
+    auto* candidate = syscalls_collector__open_and_load();
+    if (!candidate) return false;
+    if (syscalls_collector__attach(candidate)) {
+        syscalls_collector__destroy(candidate);
         return false;
     }
-    err = syscalls_collector__attach(syscalls_collector);
-    if (err) {
+    auto* buffer = ring_buffer__new(bpf_map__fd(candidate->maps.syscall_events),
+                                   handle_rb_event, this, nullptr);
+    if (!buffer) {
+        syscalls_collector__destroy(candidate);
         return false;
     }
-    // 将 this 指针作为 ctx 注册到回调函数中，调用回调函数时解析 ctx 获取 this
-    rb = ring_buffer__new(bpf_map__fd(syscalls_collector->maps.syscall_events),
-                          handle_rb_event, this, NULL);
-    if (!rb) {
-        return false;
-    }
+    syscalls_collector = candidate;
+    rb = buffer;
     return true;
 }
 
 void SyscallEventCollector::collect()
 {
+    if (!rb) return;
     while (true) {
-        int err = ring_buffer__poll(rb, 300);
-        // TODO: 错误处理与退出处理
+        int error = ring_buffer__poll(rb, 300);
+        if (error < 0) break;
     }
+}
+
+int SyscallEventCollector::role_filter_map_fd() const noexcept
+{
+    return syscalls_collector ? bpf_map__fd(syscalls_collector->maps.hng_role_filter) : -1;
 }
