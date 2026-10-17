@@ -7,7 +7,6 @@
 
 #include "agent/cli_server/src/cli_stream_manager.hpp"
 
-#include <algorithm>
 #include <utility>
 
 #include <userver/utils/assert.hpp>
