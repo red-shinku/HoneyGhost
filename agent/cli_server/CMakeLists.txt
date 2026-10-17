@@ -15,6 +15,11 @@ add_library(hng_cli_server STATIC
     src/cli_server.cc
     src/cli_context_query_service.cc
     src/cli_role_query_service.cc
+    src/cli_runtime_service.cc
+    src/cli_event_queue.cc
+    src/cli_stream.cc
+    src/cli_stream_manager.cc
+    src/event_converter.cc
     src/query_handlers.cc
 )
 target_include_directories(hng_cli_server PUBLIC
