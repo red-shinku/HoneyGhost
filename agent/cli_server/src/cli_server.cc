@@ -12,6 +12,8 @@
 #include <thread>
 
 #include <userver/components/component_list.hpp>
+#include <userver/engine/sleep.hpp>
+#include <userver/engine/task/current_task.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/yaml_config/schema.hpp>
 
@@ -100,6 +102,14 @@ void CLIServer::OnAllComponentsAreStopping()
                         << drain_timeout_.count() << " ms; continuing shutdown";
             return;
         }
-        std::this_thread::sleep_for(kDrainPollPeriod);
+        // 该钩子的正常路径跑在协程任务里（组件管理器经 CriticalAsyncNoTracing
+        // 调用），此时必须让出工作线程；组件加载失败路径在主线程上调用，
+        // 那里不能用协程原语
+        if (userver::engine::current_task::IsTaskProcessorThread()) {
+            userver::engine::SleepFor(kDrainPollPeriod);
+        }
+        else {
+            std::this_thread::sleep_for(kDrainPollPeriod);
+        }
     }
 }
