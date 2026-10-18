@@ -77,6 +77,9 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
      */
     std::optional<hng::ProcessMessage> lookup(hng::Process p) const override;
 
+    /// @brief 按 pid 反查进程实体；存活进程优先，其次虚拟根
+    std::optional<hng::Process> resolve(uint32_t pid) const override;
+
     /// @brief 通知注册新 PID：入队即返回
     /// @note 可被任意采集线程调用
     void register_pid(hng::event_head ehead) override;

@@ -188,6 +188,17 @@ class ProcessStub final : public ProcessLookupService {
     {
         return std::nullopt;
     }
+
+    std::optional<hng::Process> resolve(uint32_t pid) const override
+    {
+        if (pid == kPidSyscall) {
+            return hng::Process{kPidSyscall, kPidSyscall * 10};
+        }
+        if (pid == kPidFile) {
+            return hng::Process{kPidFile, kPidFile * 10};
+        }
+        return std::nullopt;
+    }
 };
 
 /// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件
