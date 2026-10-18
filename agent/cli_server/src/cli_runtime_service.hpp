@@ -8,6 +8,8 @@
 #ifndef HNG_CLI_RUNTIME_SERVICE_HPP
 #define HNG_CLI_RUNTIME_SERVICE_HPP
 
+#include <cstddef>
+
 #include <proto/cli_service_service.usrv.pb.hpp>
 
 #include "agent/cli_server/include/cli_server.hpp"
@@ -49,6 +51,8 @@ class CLIRuntimeService final : public hng::clisv::RuntimeServiceBase::Component
     const CLIServerDeps& deps_;
     /// 配额与流表
     CLIStreamManager& manager_;
+    /// 每流事件队列的目标容量，取自 CLIServer 的静态配置
+    const std::size_t queue_capacity_;
 };
 
 #endif  // HNG_CLI_RUNTIME_SERVICE_HPP

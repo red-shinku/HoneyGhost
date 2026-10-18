@@ -112,6 +112,37 @@ class EngineStub final : public SubscriberRegService {
     RuntimeInfoFilter filter;
 };
 
+// ---- 并发配额（不需要协程）----
+
+void run_quota()
+{
+    CLIStreamManager manager{2};
+    CHECK(manager.active_streams() == 0, "初始无配额占用");
+
+    auto first  = manager.acquire();
+    auto second = manager.acquire();
+    CHECK(first.has_value() && second.has_value(), "上限内可获取配额");
+    CHECK(manager.active_streams() == 2, "占用数与获取次数一致");
+    CHECK(!manager.acquire().has_value(), "达到上限后获取为空");
+    CHECK(manager.active_streams() == 2, "被拒的获取不占配额");
+
+    // 槽位可移动：移动后原槽析构不应重复释放
+    {
+        CLIStreamManager::StreamSlot moved = std::move(*first);
+        first.reset();
+        CHECK(manager.active_streams() == 2, "移动后仍只占一个名额");
+    }
+    CHECK(manager.active_streams() == 1, "移动出来的槽位析构同样释放名额");
+
+    auto third = manager.acquire();
+    CHECK(third.has_value(), "释放后可以再获取");
+    CHECK(manager.active_streams() == 2, "重新占满");
+
+    second.reset();
+    third.reset();
+    CHECK(manager.active_streams() == 0, "全部释放");
+}
+
 // ---- 投递、丢弃与拆除 ----
 
 void run_delivery_and_teardown()
@@ -240,6 +271,7 @@ void run_shutdown_wakes_consumer()
 
 int main()
 {
+    run_quota();  // 配额只涉及原子与互斥量，不需要协程上下文
     run_in_engine(run_delivery_and_teardown);
     run_in_engine(run_teardown_waits_for_ack);
     run_in_engine(run_subscribe_rejected);

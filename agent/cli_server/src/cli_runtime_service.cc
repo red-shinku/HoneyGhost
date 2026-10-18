@@ -23,10 +23,6 @@
 
 namespace {
 
-/// 每流事件队列容量；SPSC_Queue 会向上取整为 2 的幂
-/// TODO: 阶段三抽成 cli-server 组件的静态配置项
-constexpr std::size_t kStreamQueueCapacity = 1024;
-
 /// @brief 作用域退出即拆除流：任何退出路径都不会漏掉注销与摘表
 class StreamGuard final {
    public:
@@ -105,7 +101,8 @@ CLIRuntimeService::CLIRuntimeService(
     const userver::components::ComponentContext& context)
     : hng::clisv::RuntimeServiceBase::Component(config, context),
       deps_(context.FindComponent<CLIServer>().server_deps()),
-      manager_(context.FindComponent<CLIServer>().stream_manager())
+      manager_(context.FindComponent<CLIServer>().stream_manager()),
+      queue_capacity_(context.FindComponent<CLIServer>().queue_capacity())
 {
 }
 
@@ -128,8 +125,7 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
         }
 
         CLIStream stream{manager_, *deps_.subs,
-                         hng::cli::ToRuntimeInfoFilter(request),
-                         kStreamQueueCapacity};
+                         hng::cli::ToRuntimeInfoFilter(request), queue_capacity_};
         StreamGuard guard{stream};  // 确保任何退出路径都走 teardown()
         if (!stream.subscribe()) {
             return grpc::Status(grpc::StatusCode::UNAVAILABLE,
