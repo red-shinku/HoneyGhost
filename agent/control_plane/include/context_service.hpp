@@ -11,6 +11,7 @@
 
 #include <optional>
 #include <cstdint>
+#include <vector>
 
 #include "agent/event_data/include/context.hpp"
 #include "agent/event_data/include/process.hpp"
@@ -20,6 +21,7 @@
  * @brief 查询 Context 的接口
  * 1) 查询 contextID
  * 2) 查询 extra_contextID
+ * 3) 按属性枚举 contextID
  */
 class ContextLookupService {
    protected:
@@ -35,6 +37,11 @@ class ContextLookupService {
     /// @param p 任意进程；归属的根进程存在附属 context 时返回其 ID
     /// @return 命中的 extraContextID
     virtual std::optional<uint32_t> lookup_extra(hng::Process p) const = 0;
+
+    /// @brief 指定属性的 contextID 集合，按 ID 升序
+    /// @details 同时覆盖主 context 与附属 context
+    virtual std::vector<uint32_t> contexts_by_attr(
+        hng::contextattr attr) const = 0;
 };
 
 /**

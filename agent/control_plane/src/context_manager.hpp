@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 #include "agent/util/include/notification_queue.hpp"
@@ -60,6 +61,8 @@ struct ContextTable {
     // mutable，在 const 函数中锁变量允许修改
     mutable std::shared_mutex smtx;
     std::unordered_map<ContextKey, ContextMessage, KeyHash> map;
+    /// 属性 → contextID 集合；与 map 同锁维护
+    std::unordered_map<hng::contextattr, std::unordered_set<uint32_t>> by_attr;
 };
 
 /**
@@ -114,9 +117,6 @@ struct ContextManagerStats {
  *
  * 五个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
  * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
- *
- * 负责：
- * 1) 回答任意进程属于哪个 context
  */
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
@@ -135,6 +135,9 @@ class ContextManager : public ContextLookupService,
     /// 会先查询该进程所属 context 的根进程，其结果作为
     /// ContextKey 查 extras 表
     std::optional<uint32_t> lookup_extra(hng::Process p) const override;
+
+    /// @brief 指定属性的 contextID 集合，按 ID 升序
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override;
 
     /// @brief 注册新的 contextID（通知写）
     /// 生成并将实际写操作 加入任务队列

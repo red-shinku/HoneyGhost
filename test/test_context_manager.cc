@@ -11,14 +11,14 @@
  *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
  *  - 多线程并发写入后状态自洽（供 TSAN 构建复验）。
  *
- * @note set_attr 只覆盖「不崩、不动其他状态」：属性没有任何查询入口可观测，
- *       其 UNKNOWN → 其他 的守卫与 ATTACK/EXTRA_ATTACK 钩子都无从断言。
+ * @note set_attr 覆盖属性索引的同步；ATTACK/EXTRA_ATTACK 的预留钩子仍无从断言。
  * @author red_shinku
  * @date 2026.9.19
  */
 
 #include "agent/control_plane/src/context_manager.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -49,6 +49,11 @@ hng::Process proc(uint32_t pid, uint64_t start)
 ContextDeriveDecision decision(uint32_t context_id, contextattr attr)
 {
     return ContextDeriveDecision{true, context_id, attr};
+}
+
+bool has_id(const std::vector<uint32_t>& ids, uint32_t id)
+{
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
 /// 轮询等待断言成立：落地在消费线程上，断言点只能等
@@ -248,6 +253,56 @@ void run_set_attr()
           "set_attr 不得影响归属视图");
     CHECK(!manager.lookup(proc(999, 9990)).has_value(),
           "对未注册进程 set_attr 不应产生条目");
+
+    CHECK(has_id(manager.contexts_by_attr(contextattr::NORMAL), 7),
+          "UNKNOWN → NORMAL 应更新属性索引");
+    CHECK(!has_id(manager.contexts_by_attr(contextattr::ATTACK), 7),
+          "非 UNKNOWN 起不再变更");
+    CHECK(!has_id(manager.contexts_by_attr(contextattr::NORMAL), 8),
+          "contextID 不匹配不得改动");
+}
+
+void run_contexts_by_attr()
+{
+    ContextManager manager;
+    Runner runner(manager);
+
+    register_root(manager, proc(100, 1000), 7, "根进程应注册成功");
+    CHECK(has_id(manager.contexts_by_attr(contextattr::UNKNOWN), 7),
+          "新 context 应进入 UNKNOWN 索引");
+
+    manager.set_attr(proc(100, 1000), 7, contextattr::ATTACK);
+    CHECK(wait_until([&] {
+              return has_id(manager.contexts_by_attr(contextattr::ATTACK), 7);
+          }),
+          "属性变更后应进入新索引");
+    CHECK(!has_id(manager.contexts_by_attr(contextattr::UNKNOWN), 7),
+          "属性变更后应退出旧索引");
+
+    // 同键的附属 context 按其属性单独入索引
+    manager.register_contextID(proc(100, 1000),
+                               decision(8, contextattr::EXTRA_ATTACK), 7);
+    CHECK(wait_until([&] {
+              return has_id(manager.contexts_by_attr(contextattr::EXTRA_ATTACK),
+                            8);
+          }),
+          "附属 context 应按其属性入索引");
+
+    manager.unregister_contextID(proc(100, 1000));
+    CHECK(wait_until([&] {
+              return manager.contexts_by_attr(contextattr::ATTACK).empty() &&
+                     manager.contexts_by_attr(contextattr::EXTRA_ATTACK)
+                         .empty();
+          }),
+          "注销后两个索引都不应残留");
+
+    // 多个 context 时按 ID 升序
+    register_root(manager, proc(200, 2000), 30, "第二个根应注册成功");
+    register_root(manager, proc(300, 3000), 10, "第三个根应注册成功");
+    const std::vector<uint32_t> ids =
+        manager.contexts_by_attr(contextattr::UNKNOWN);
+    CHECK(ids.size() == 2 && ids[0] == 10 && ids[1] == 30,
+          "应按 contextID 升序返回");
 }
 
 void run_stop_semantics()
@@ -345,6 +400,7 @@ int main()
     run_bind_to_ctxroot();
     run_cleanup();
     run_set_attr();
+    run_contexts_by_attr();
     run_stop_semantics();
     run_concurrent_writers();
 

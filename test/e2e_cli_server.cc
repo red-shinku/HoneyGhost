@@ -158,6 +158,11 @@ class ContextStub final : public ContextLookupService {
     {
         return std::nullopt;
     }
+
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr) const override
+    {
+        return {};
+    }
 };
 
 class ProcessStub final : public ProcessLookupService {
