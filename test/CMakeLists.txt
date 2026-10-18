@@ -86,6 +86,46 @@ add_executable(test_runtime_engine test_runtime_engine.cc)
 target_link_libraries(test_runtime_engine PRIVATE hng_runtime_engine)
 add_test(NAME test_runtime_engine COMMAND test_runtime_engine)
 
+# ============================================================
+# CLI 服务端模块
+#
+# 订阅队列与订阅流的挂起要用协程引擎，故链接 hng_cli_server（传递 userver::core）
+# 与 hng_cli_proto；-DHNG_ENABLE_CLI_SERVER=OFF 时该目标不存在，整段跳过
+# ============================================================
+if(TARGET hng_cli_server)
+    # 订阅流的事件队列：生产者普通线程、消费者 userver 任务
+    add_executable(test_cli_event_queue test_cli_event_queue.cc)
+    target_link_libraries(test_cli_event_queue PRIVATE hng_cli_server)
+    add_test(NAME test_cli_event_queue COMMAND test_cli_event_queue)
+
+    # 订阅流与流表：引擎走替身，无特权
+    add_executable(test_cli_stream test_cli_stream.cc)
+    target_link_libraries(test_cli_stream PRIVATE hng_cli_server)
+    add_test(NAME test_cli_stream COMMAND test_cli_stream)
+
+    # 订阅参数 → 过滤器：表驱动，纯值对象
+    add_executable(test_cli_subscription_params test_cli_subscription_params.cc)
+    target_link_libraries(test_cli_subscription_params PRIVATE hng_cli_server)
+    add_test(NAME test_cli_subscription_params COMMAND test_cli_subscription_params)
+
+    # 事件 → 响应报文：纯转换，无 IO
+    add_executable(test_cli_event_converter test_cli_event_converter.cc)
+    target_link_libraries(test_cli_event_converter PRIVATE hng_cli_server)
+    add_test(NAME test_cli_event_converter COMMAND test_cli_event_converter)
+
+    # 静态配置 schema：解析 YAML 文本并核对配置项
+    add_executable(test_cli_server_config test_cli_server_config.cc)
+    target_link_libraries(test_cli_server_config PRIVATE hng_cli_server)
+    add_test(NAME test_cli_server_config COMMAND test_cli_server_config)
+
+    # 端到端：子进程跑粗糙装配的 userver 应用，父进程用标准 gRPC 客户端断言
+    # 依赖 Unix socket 与 fork，故仅在类 Unix 平台注册
+    add_executable(e2e_cli_server e2e_cli_server.cc)
+    target_link_libraries(e2e_cli_server PRIVATE hng_cli_server userver::grpc)
+    add_test(NAME e2e_cli_server COMMAND e2e_cli_server)
+    set_tests_properties(e2e_cli_server PROPERTIES TIMEOUT 120)
+endif()
+
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
 add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)

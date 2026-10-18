@@ -12,7 +12,15 @@ userver_add_grpc_library(hng_cli_proto
 target_link_libraries(hng_cli_proto PUBLIC hng_event_data)
 
 add_library(hng_cli_server STATIC
-    src/CLIServer.cc
+    src/cli_server.cc
+    src/cli_context_query_service.cc
+    src/cli_role_query_service.cc
+    src/cli_runtime_service.cc
+    src/cli_event_queue.cc
+    src/cli_stream.cc
+    src/cli_stream_manager.cc
+    src/event_converter.cc
+    src/query_handlers.cc
 )
 target_include_directories(hng_cli_server PUBLIC
     ${HNG_SOURCE_DIR}
@@ -24,5 +32,6 @@ target_link_libraries(hng_cli_server
             hng_cli_proto
             hng_event_data
             hng_control_plane
+            hng_runtime_engine
 )
 target_compile_features(hng_cli_server PUBLIC cxx_std_20)
