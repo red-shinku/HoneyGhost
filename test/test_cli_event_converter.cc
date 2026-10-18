@@ -5,7 +5,8 @@
  * 纯转换，无 IO / 无协程。覆盖：
  *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
  *  - 文件事件落到 file_ev；
- *  - eventhead 的字段来源：pid 与归属取自 RuntimeInformation，其余取自事件头；
+ *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
+ *    其余取自事件头；
  *  - 归属未落定时 roleLabel 留空；
  *  - 事件类型的双边映射可往返。
  * @author red-shinku
@@ -40,6 +41,7 @@ constexpr uint32_t kPpid      = 42;
 constexpr uint64_t kPpidStart = 84;
 constexpr uint32_t kRoleID    = 7;
 constexpr uint32_t kContextID = 9;
+constexpr char kRoleLabel[]   = "nginx:1.25";
 
 /// 一条归属已落定的 syscall 事件，事件头填齐
 hng::RuntimeEvent make_syscall(hng::EventType type)
@@ -48,6 +50,7 @@ hng::RuntimeEvent make_syscall(hng::EventType type)
     event.runtimeInfo.process   = hng::Process{kPid, kPidStart};
     event.runtimeInfo.etype     = type;
     event.runtimeInfo.roleID    = kRoleID;
+    event.runtimeInfo.roleLabel = kRoleLabel;
     event.runtimeInfo.contextID = kContextID;
     event.data.emplace<hng::syscall_semantic_data>();
 
@@ -171,7 +174,7 @@ void run_head_fields()
     CHECK(msg.head().ppid_start_time() == kPpidStart,
           "ppid 的 start_time 取自事件头");
     CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_FILE, "事件类型取自事件头");
-    CHECK(msg.head().rolelabel().empty(), "归属已落定但暂无标签来源，应留空");
+    CHECK(msg.head().rolelabel() == kRoleLabel, "roleLabel 直传");
 }
 
 void run_file_event()

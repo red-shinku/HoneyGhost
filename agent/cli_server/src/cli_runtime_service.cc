@@ -86,12 +86,13 @@ RuntimeInfoFilter hng::cli::ToRuntimeInfoFilter(
     if (request.has_info()) {
         const hng::clisv::runtimeinfo& info = request.info();
         filter.set_role(
-            std::vector<uint32_t>(info.roleid().begin(), info.roleid().end()));
+            std::vector<uint32_t>(info.roleid().begin(), info.roleid().end()),
+            std::vector<hng::role_label_t>(info.rolelabel().begin(),
+                                           info.rolelabel().end()));
         filter.set_context(std::vector<uint32_t>(info.contextid().begin(),
                                                  info.contextid().end()));
         filter.set_process(
             std::vector<uint32_t>(info.pid().begin(), info.pid().end()));
-        // TODO(缺-4): info.roleLabel() 暂无处匹配，见函数注释
     }
     return filter;
 }

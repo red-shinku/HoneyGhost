@@ -6,8 +6,8 @@
  * 假事件源），父进程用标准 gRPC 客户端经 Unix socket 断言：
  *  - 查询面：可查的 RPC 返回数据，缺口 RPC 返回 UNIMPLEMENTED，非法参数返回
  *    INVALID_ARGUMENT；
- *  - 订阅流：能收到事件；并发配额满时返回 RESOURCE_EXHAUSTED；客户端断开后
- *    名额被服务端回收；
+ *  - 订阅流：能收到事件；按事件类型与角色标签过滤生效；并发配额满时返回
+ *    RESOURCE_EXHAUSTED；客户端断开后名额被服务端回收；
  *  - 停机：SIGTERM 后子进程在 drain-timeout 内退出。
  * @note 装配工厂与 Go 客户端尚未落地，故依赖与事件源都用替身；本程序不依赖
  * 任何测试框架。
@@ -62,6 +62,7 @@ int g_fail = 0;
     } while (0)
 
 constexpr uint32_t kRoleID     = 7;
+constexpr char kRoleLabel[]    = "e2e";
 constexpr uint32_t kPidSyscall = 1001;
 constexpr uint32_t kPidFile    = 2002;
 
@@ -118,7 +119,7 @@ class RoleStub final : public RoleLookupService {
 
     std::optional<hng::Role> role(uint32_t roleID) const override
     {
-        return hng::Role{roleID, "e2e"};
+        return hng::Role{roleID, kRoleLabel};
     }
 
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
@@ -168,6 +169,7 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     event.runtimeInfo.etype =
         is_file ? hng::EventType::FILE_EVENT : hng::EventType::SYSCALL_EVENT;
     event.runtimeInfo.roleID    = kRoleID;
+    event.runtimeInfo.roleLabel = kRoleLabel;
     event.runtimeInfo.contextID = 1;
 
     if (is_file) {
@@ -479,6 +481,23 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     CHECK(!saw_other, "按事件类型过滤后不应收到其他类型");
 }
 
+void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
+{
+    // -i role=e2e：标签匹配；事件头的 roleLabel 也应被填上
+    grpc::ClientContext context;
+    SetDeadline(context, std::chrono::seconds(10));
+    hng::clisv::ReceiveEventRequest request;
+    request.mutable_info()->add_rolelabel(kRoleLabel);
+    auto reader = runtime.ReceiveEvent(&context, request);
+
+    hng::clisv::ReceiveEventResponse message;
+    CHECK(reader->Read(&message), "按角色标签过滤应收到事件");
+    CHECK(message.head().rolelabel() == kRoleLabel, "事件头应带角色标签");
+
+    context.TryCancel();
+    (void)reader->Finish();
+}
+
 /// @brief 等子进程退出；超时返回 false
 bool WaitForExit(pid_t child, std::chrono::milliseconds timeout, int* code)
 {
@@ -525,6 +544,7 @@ int main()
         run_query_face(*role, *context_svc);
         run_stream_quota(*runtime);
         run_filter(*runtime);
+        run_role_label_filter(*runtime);
 
         hng::clisv::ReceiveEventRequest held_request;
         held = runtime->ReceiveEvent(&held_context, held_request);

@@ -99,10 +99,10 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::ReceiveEventResponse& out)
     const hng::RuntimeInformation& info = event.runtimeInfo;
 
     hng::clisv::eventhead* head         = out.mutable_head();
+    head->set_rolelabel(info.roleLabel);
     head->set_roleid(info.roleID);
     head->set_contextid(info.contextID);
     head->set_pid(info.process.pid);
-    // TODO(缺-4): RuntimeInformation 尚无角色标签，eventhead.roleLabel 暂留空
 
     if (hng::syscall_semantic_data* syscall =
             std::get_if<hng::syscall_semantic_data>(&event.data)) {

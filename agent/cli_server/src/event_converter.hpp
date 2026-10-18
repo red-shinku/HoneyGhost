@@ -25,7 +25,6 @@ hng::EventType FromProtoEventType(hng::clisv::EventType etype);
 /// @param event 源事件；其载荷被移动，返回后 event.data 处于已移出状态
 /// @param out 目标响应；head 与 event oneof 被覆盖
 /// @note 载荷用 set_allocated_* 移动，不逐字段拷贝
-/// @note eventhead.roleLabel 暂不填：RuntimeInformation 尚未提供角色标签
 void ToProto(hng::RuntimeEvent& event, hng::clisv::ReceiveEventResponse& out);
 
 }  // namespace hng::cli

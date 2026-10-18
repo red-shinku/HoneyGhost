@@ -21,7 +21,7 @@ namespace hng::cli {
 /// @brief 把订阅请求的 -t / -i 转成过滤器
 /// @param request 订阅请求；未设置的维度表示该维度不限
 /// @return 取值集合原样落进过滤器；服务端不做解析，故不存在解析失败
-/// @note info.roleLabel 暂不参与：RuntimeInformation 尚未提供角色标签
+/// @note roleID 与 roleLabel 同属角色维度，过滤时取并集
 RuntimeInfoFilter ToRuntimeInfoFilter(
     const hng::clisv::ReceiveEventRequest& request);
 

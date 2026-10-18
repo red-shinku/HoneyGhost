@@ -6,6 +6,7 @@
  *  - 空请求为全选；
  *  - -t 单值与多值：维度之内取并集；
  *  - -i 的各维度：角色 / 上下文 / 进程同样是并集；
+ *  - 角色维度含 roleID 与 roleLabel 两组，两组之间取并集；
  *  - 维度之间取交集；
  *  - roleID 的 0 只命中未落定的归属。
  * @author red-shinku
@@ -38,10 +39,11 @@ int g_fail = 0;
 using hng::clisv::ReceiveEventRequest;
 
 hng::RuntimeInformation make_info(uint32_t pid, hng::EventType etype,
-                                  uint32_t roleID, uint32_t contextID)
+                                  uint32_t roleID, uint32_t contextID,
+                                  hng::role_label_t roleLabel = {})
 {
     return hng::RuntimeInformation{hng::Process{pid, pid * 10}, etype, roleID,
-                                   contextID};
+                                   roleLabel, contextID};
 }
 
 struct Case {
@@ -60,11 +62,20 @@ void add_types(ReceiveEventRequest& request,
     }
 }
 
-/// -i 的角色维度
+/// -i 的角色维度（按 roleID）
 void add_roles(ReceiveEventRequest& request, std::initializer_list<uint32_t> ids)
 {
     for (const uint32_t id : ids) {
         request.mutable_info()->add_roleid(id);
+    }
+}
+
+/// -i 的角色维度（按标签）
+void add_role_labels(ReceiveEventRequest& request,
+                     std::initializer_list<const char*> labels)
+{
+    for (const char* label : labels) {
+        request.mutable_info()->add_rolelabel(label);
     }
 }
 
@@ -109,6 +120,22 @@ const std::vector<Case>& cases()
         {"-i roleID=0 不命中已落定的归属",
          [](ReceiveEventRequest& r) { add_roles(r, {0}); },
          make_info(1, hng::EventType::SYSCALL_EVENT, 3, 0), false},
+
+        {"-i roleLabel 命中集合成员",
+         [](ReceiveEventRequest& r) { add_role_labels(r, {"nginx:1.25"}); },
+         make_info(1, hng::EventType::SYSCALL_EVENT, 9, 0, "nginx:1.25"), true},
+        {"-i roleLabel 不命中集合之外",
+         [](ReceiveEventRequest& r) { add_role_labels(r, {"nginx:1.25"}); },
+         make_info(1, hng::EventType::SYSCALL_EVENT, 9, 0, "redis:7"), false},
+        {"-i roleLabel 不命中未落定的归属",
+         [](ReceiveEventRequest& r) { add_role_labels(r, {"nginx:1.25"}); },
+         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0), false},
+        {"-i roleID 与 roleLabel 取并集",
+         [](ReceiveEventRequest& r) {
+             add_roles(r, {7});
+             add_role_labels(r, {"nginx:1.25"});
+         },
+         make_info(1, hng::EventType::SYSCALL_EVENT, 8, 0, "nginx:1.25"), true},
 
         {"-i contextID 命中集合成员",
          [](ReceiveEventRequest& r) { r.mutable_info()->add_contextid(3); },
