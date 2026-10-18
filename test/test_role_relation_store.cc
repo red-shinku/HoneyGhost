@@ -96,6 +96,74 @@ void run_join()
           "身份应原样保留");
 }
 
+void run_roles_snapshot()
+{
+    RoleRelationStore store;
+
+    CHECK(store.roles().empty(), "空表应返回空快照");
+
+    const uint32_t role_a = join_new(store, "a", 100, 1000, {});
+    const uint32_t role_b = join_new(store, "b", 200, 2000, {});
+    const uint32_t role_c = join_new(store, "c", 300, 3000, {});
+
+    std::vector<hng::Role> all = store.roles();
+    CHECK(all.size() == 3, "应枚举全部角色");
+    CHECK(all[0].roleID == role_a && all[1].roleID == role_b &&
+              all[2].roleID == role_c,
+          "应按 roleID 升序");
+    CHECK(all[0].roleLabel == "a" && all[1].roleLabel == "b" &&
+              all[2].roleLabel == "c",
+          "应携带 roleLabel");
+
+    CHECK(store.leave("b").kind == Kind::LEFT, "存活角色应能退出");
+    all = store.roles();
+    CHECK(all.size() == 2 && all[0].roleID == role_a && all[1].roleID == role_c,
+          "退出后快照不应含该角色");
+}
+
+void run_supervision()
+{
+    RoleRelationStore store;
+    const uint32_t role_a = join_new(store, "a", 100, 1000, {});
+    const uint32_t role_b = join_new(store, "b", 200, 2000, {});
+
+    CHECK(store.supervised_roles().empty(), "未登记时应为空");
+
+    store.set_supervised(role_a + 100, true);
+    CHECK(store.supervised_roles().empty(), "未知 roleID 应忽略");
+
+    store.set_supervised(role_a, true);
+    std::vector<hng::Role> supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_a &&
+              supervised[0].roleLabel == "a",
+          "应返回已登记角色及其标签");
+
+    store.set_supervised(role_b, true);
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 2 && supervised[0].roleID == role_a &&
+              supervised[1].roleID == role_b,
+          "多个角色应按 roleID 升序");
+
+    store.set_supervised(role_a, false);
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_b,
+          "移除后不应含该角色");
+
+    // 快照读取当前角色记录：锚点更换重算后的标签应反映出来
+    RolePayload changed     = mk_payload("b", 201, 2001);
+    changed.identity.source = RoleSource::CONTAINERD;
+    changed.identity.attributes["image"] = "hng/nginx:v2";
+    CHECK(store.main_process_change(changed, {proc(201, 2001)}).kind ==
+              Kind::MAIN_PROCESS_CHANGED,
+          "锚点更换应成功");
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleLabel == "hng/nginx:v2",
+          "监管快照应读取当前角色记录");
+
+    CHECK(store.leave("b").kind == Kind::LEFT, "存活角色应能退出");
+    CHECK(store.supervised_roles().empty(), "角色退出后应自动移除登记");
+}
+
 void run_idempotent()
 {
     RoleRelationStore store;
@@ -256,6 +324,39 @@ void run_anchor_gauge()
     CHECK(store.stats().anchors_removed == 0, "锚点未被删的角色不计入");
 }
 
+void run_main_process()
+{
+    RoleRelationStore store;
+
+    CHECK(!store.main_process(1).has_value(), "未知 roleID 应返回空");
+
+    const uint32_t role = join_new(store, "a", 100, 1000, {proc(101, 1001)});
+    std::optional<hng::Process> main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(100, 1000), "应返回锚点");
+
+    CHECK(store.main_process_change(mk_payload("a", 200, 2000),
+                                    {proc(200, 2000)})
+                  .kind == Kind::MAIN_PROCESS_CHANGED,
+          "锚点更换应成功");
+    main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(200, 2000), "应返回新锚点");
+
+    store.on_process_removed(proc(200, 2000));
+    CHECK(!store.main_process(role).has_value(), "锚点被完全删除后应为空");
+    CHECK(store.role(role).has_value(), "锚点被删不改变角色存在性");
+
+    CHECK(store.main_process_change(mk_payload("a", 300, 3000),
+                                    {proc(300, 3000)})
+                  .kind == Kind::MAIN_PROCESS_CHANGED,
+          "锚点已删的角色仍可更换锚点");
+    main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(300, 3000),
+          "更换后应返回新锚点");
+
+    CHECK(store.leave("a").kind == Kind::LEFT, "存活角色应能退出");
+    CHECK(!store.main_process(role).has_value(), "角色退出后应为空");
+}
+
 void run_reject_and_ids()
 {
     RoleRelationStore store;
@@ -322,6 +423,8 @@ void run_label_rules()
 int main()
 {
     run_join();
+    run_roles_snapshot();
+    run_supervision();
     run_idempotent();
     run_join_normalize();
     run_main_process_change();
@@ -329,6 +432,7 @@ int main()
     run_bind_to_role();
     run_process_removed();
     run_anchor_gauge();
+    run_main_process();
     run_reject_and_ids();
     run_label_rules();
 

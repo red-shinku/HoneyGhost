@@ -1,5 +1,6 @@
 #include "agent/control_plane/src/context_manager.hpp"
 
+#include <algorithm>
 #include <mutex>
 
 // 上下文关系管理
@@ -25,6 +26,53 @@ static std::optional<ContextKey> root_of(const ToContextRootTable& table,
         return std::nullopt;
     }
     return it->second;
+}
+
+using AttrIndex =
+    std::unordered_map<hng::contextattr, std::unordered_set<uint32_t>>;
+
+/// 从属性索引中移除一个 contextID；调用方须已持该表的锁
+static void erase_from_attr_index(AttrIndex& index, hng::contextattr attr,
+                                  uint32_t context_id)
+{
+    auto it = index.find(attr);
+    if (it == index.end()) {
+        return;
+    }
+    it->second.erase(context_id);
+    if (it->second.empty()) {
+        index.erase(it);
+    }
+}
+
+/// @brief 按根键组装成员集；取 roots 的共享锁
+static ContextProcessSet process_set_of(const ContextKey& key,
+                                        const ToContextRootTable& roots)
+{
+    ContextProcessSet result;
+    result.root = hng::Process{key.pid, key.start_time};
+
+    {
+        std::shared_lock lock(roots.smtx);
+        auto it = roots.processes_by_root.find(key);
+        if (it != roots.processes_by_root.end()) {
+            result.members.assign(it->second.begin(), it->second.end());
+        }
+    }
+
+    // 根进程自指；索引缺失时兜底
+    if (std::find(result.members.begin(), result.members.end(), result.root) ==
+        result.members.end()) {
+        result.members.push_back(result.root);
+    }
+    std::sort(result.members.begin(), result.members.end(),
+              [](const hng::Process& lhs, const hng::Process& rhs) {
+                  if (lhs.pid != rhs.pid) {
+                      return lhs.pid < rhs.pid;
+                  }
+                  return lhs.pid_start_time < rhs.pid_start_time;
+              });
+    return result;
 }
 
 std::optional<uint32_t> ContextManager::lookup(hng::Process p) const
@@ -54,6 +102,48 @@ std::optional<uint32_t> ContextManager::lookup_extra(hng::Process p) const
         return std::nullopt;  // 该 context 无附属 context
     }
     return it->second.contextID;
+}
+
+std::vector<uint32_t> ContextManager::contexts_by_attr(
+    hng::contextattr attr) const
+{
+    std::vector<uint32_t> result;
+    {
+        std::shared_lock lock(contexts.smtx);
+        auto it = contexts.by_attr.find(attr);
+        if (it != contexts.by_attr.end()) {
+            result.assign(it->second.begin(), it->second.end());
+        }
+    }
+    {
+        std::shared_lock lock(extras.smtx);
+        auto it = extras.by_attr.find(attr);
+        if (it != extras.by_attr.end()) {
+            result.insert(result.end(), it->second.begin(), it->second.end());
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+std::optional<ContextProcessSet> ContextManager::members(
+    uint32_t contextID) const
+{
+    {
+        std::shared_lock lock(contexts.smtx);
+        auto it = contexts.id_to_key.find(contextID);
+        if (it != contexts.id_to_key.end()) {
+            return process_set_of(it->second, to_context_root);
+        }
+    }
+    {
+        std::shared_lock lock(extras.smtx);
+        auto it = extras.id_to_key.find(contextID);
+        if (it != extras.id_to_key.end()) {
+            return process_set_of(it->second, to_context_root);
+        }
+    }
+    return std::nullopt;
 }
 
 void ContextManager::register_contextID(hng::Process p,
@@ -127,9 +217,12 @@ void ContextManager::addContextID(hng::Process p, uint32_t contextID,
         auto it = contexts.map.find(key);
         if (it == contexts.map.end()) {
             contexts.map.emplace(key, ContextMessage{contextID, attr, false});
+            contexts.by_attr[attr].insert(contextID);
+            contexts.id_to_key[contextID] = key;
             // 根进程也是其 context 的一员：登记 进程→自身根，使 lookup/挂靠可用
             std::unique_lock tlock(to_context_root.smtx);
             to_context_root.map[p] = key;
+            to_context_root.processes_by_root[key].insert(p);
         }
         else if (it->second.contextID == contextID) {
             // 幂等:主 context 已注册过同一 contextID,不再重复插入
@@ -143,6 +236,8 @@ void ContextManager::addContextID(hng::Process p, uint32_t contextID,
                 return;
             }
             extras.map.emplace(key, ContextMessage{contextID, attr, false});
+            extras.by_attr[attr].insert(contextID);
+            extras.id_to_key[contextID] = key;
             it->second.has_extra = true;
         }
     }  // 释放 contexts/extras 锁后再记录 parent 关系
@@ -169,7 +264,10 @@ void ContextManager::delContextID(hng::Process p)
             ++unknown_unregister_;
             return;
         }
-        primaryID = it->second.contextID;
+        const uint32_t primary_id = it->second.contextID;
+        primaryID                 = primary_id;
+        erase_from_attr_index(contexts.by_attr, it->second.attr, primary_id);
+        contexts.id_to_key.erase(primary_id);
         contexts.map.erase(it);
     }  // 释放 contexts 锁后再更新 extras,避免持锁顺序问题
 
@@ -178,7 +276,11 @@ void ContextManager::delContextID(hng::Process p)
 
         auto eit = extras.map.find(key);
         if (eit != extras.map.end()) {
-            attachedID = eit->second.contextID;
+            const uint32_t attached_id = eit->second.contextID;
+            attachedID                 = attached_id;
+            erase_from_attr_index(extras.by_attr, eit->second.attr,
+                                  attached_id);
+            extras.id_to_key.erase(attached_id);
             extras.map.erase(eit);
         }
     }
@@ -209,7 +311,10 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
         if (it->second.contextID == contextID) {
             // 目标在主 context
             if (it->second.attr == hng::contextattr::UNKNOWN) {
+                erase_from_attr_index(contexts.by_attr, it->second.attr,
+                                      contextID);
                 it->second.attr = attr;
+                contexts.by_attr[attr].insert(contextID);
                 changed         = true;
             }
         }
@@ -220,7 +325,10 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
             auto eit = extras.map.find(ContextKey{p.pid, p.pid_start_time});
             if (eit != extras.map.end() && eit->second.contextID == contextID) {
                 if (eit->second.attr == hng::contextattr::UNKNOWN) {
+                    erase_from_attr_index(extras.by_attr, eit->second.attr,
+                                          contextID);
                     eit->second.attr = attr;
+                    extras.by_attr[attr].insert(contextID);
                     changed          = true;
                 }
             }
@@ -248,15 +356,31 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
 void ContextManager::bind_to_ctxroot_(hng::Process p, hng::Process parent)
 {
     std::unique_lock lock(to_context_root.smtx);
-    auto it = to_context_root.map.find(parent);
-    if (it == to_context_root.map.end()) {
+    auto parent_it = to_context_root.map.find(parent);
+    if (parent_it == to_context_root.map.end()) {
         // 父进程尚未落定归属：登记竞态，该次挂靠为空操作，待工作平面补调
         // （见 ContextManagerStats::ctxroot_parent_unsettled）
         ++ctxroot_parent_unsettled_;
         return;
     }
-    // 归属不可变：同一进程重复挂靠时写入相同值，幂等
-    to_context_root.map[p] = it->second;
+    const ContextKey key = parent_it->second;
+
+    auto it = to_context_root.map.find(p);
+    if (it == to_context_root.map.end()) {
+        to_context_root.map.emplace(p, key);
+    }
+    else if (!(it->second == key)) {
+        // 归属不可变；防御性清理旧键的反向索引
+        auto old = to_context_root.processes_by_root.find(it->second);
+        if (old != to_context_root.processes_by_root.end()) {
+            old->second.erase(p);
+            if (old->second.empty()) {
+                to_context_root.processes_by_root.erase(old);
+            }
+        }
+        it->second = key;
+    }
+    to_context_root.processes_by_root[key].insert(p);
 }
 
 ContextManagerStats ContextManager::stats() const
@@ -280,7 +404,17 @@ void ContextManager::on_process_removed_(hng::Process p)
     }
     {
         std::unique_lock lock(to_context_root.smtx);
-        to_context_root.map.erase(p);
+        auto it = to_context_root.map.find(p);
+        if (it != to_context_root.map.end()) {
+            auto members = to_context_root.processes_by_root.find(it->second);
+            if (members != to_context_root.processes_by_root.end()) {
+                members->second.erase(p);
+                if (members->second.empty()) {
+                    to_context_root.processes_by_root.erase(members);
+                }
+            }
+            to_context_root.map.erase(it);
+        }
     }
     if (is_root) {
         delContextID(p);

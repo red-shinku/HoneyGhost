@@ -294,6 +294,57 @@ void run_pid_reuse()
     CHECK(manager.stats().pid_reused == 3, "三次 pid 复用都应计数");
 }
 
+void run_resolve()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    CHECK(!manager.resolve(0).has_value(), "pid 0 应返回空");
+    CHECK(!manager.resolve(777).has_value(), "未注册的 pid 应返回空");
+
+    manager.register_pid(head(100, 1000, 1, 10));
+    CHECK(wait_until([&] {
+              auto p = manager.resolve(100);
+              return p.has_value() && *p == proc(100, 1000);
+          }),
+          "注册后应能按 pid 解析");
+
+    // pid 复用：返回当前实例
+    manager.register_pid(head(100, 2000, 1, 10));
+    CHECK(wait_until([&] {
+              auto p = manager.resolve(100);
+              return p.has_value() && *p == proc(100, 2000);
+          }),
+          "pid 复用后应返回新实例");
+
+    // 虚拟根：父进程退出后仍可追溯
+    manager.register_pid(head(300, 3000, 1, 10));
+    manager.register_pid(head(301, 3001, 300, 3000));
+    CHECK(wait_until([&] {
+              return manager.lookup(proc(301, 3001)).has_value();
+          }),
+          "子进程应落地");
+    manager.unregister_pid(proc(300, 3000));
+    manager.register_pid(head(500, 5000, 1, 10));  // 屏障
+    CHECK(wait_until([&] {
+              return manager.lookup(proc(500, 5000)).has_value();
+          }),
+          "屏障应落地");
+    CHECK(manager.lookup(proc(300, 3000)).has_value(), "父进程应在虚拟根中");
+    std::optional<hng::Process> p = manager.resolve(300);
+    CHECK(p.has_value() && *p == proc(300, 3000),
+          "虚拟根应能按 pid 解析出 start_time");
+
+    // 子进程退出后虚拟根被驱逐
+    manager.unregister_pid(proc(301, 3001));
+    manager.register_pid(head(501, 5001, 1, 10));  // 屏障
+    CHECK(wait_until([&] {
+              return manager.lookup(proc(501, 5001)).has_value();
+          }),
+          "第二个屏障应落地");
+    CHECK(!manager.resolve(300).has_value(), "虚拟根驱逐后应返回空");
+}
+
 void run_fully_removed_paths()
 {
     Recorder rec;
@@ -483,6 +534,7 @@ int main()
     run_register_and_lookup();
     run_bind_transfer();
     run_pid_reuse();
+    run_resolve();
     run_fully_removed_paths();
     run_unknown_and_duplicate();
     run_stop_semantics();

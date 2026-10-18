@@ -11,15 +11,25 @@
 
 #include <optional>
 #include <cstdint>
+#include <vector>
 
+#include "agent/control_plane/include/context_stats.hpp"
 #include "agent/event_data/include/context.hpp"
 #include "agent/event_data/include/process.hpp"
 #include "agent/context_maintainer/include/context_maintainer_decision.hpp"
+
+/// @brief 一个 context 的根进程与成员集
+struct ContextProcessSet {
+    hng::Process root;                  ///< context 根进程
+    std::vector<hng::Process> members;  ///< 成员进程，含根进程
+};
 
 /**
  * @brief 查询 Context 的接口
  * 1) 查询 contextID
  * 2) 查询 extra_contextID
+ * 3) 按属性枚举 contextID
+ * 4) 按 contextID 取成员集
  */
 class ContextLookupService {
    protected:
@@ -35,6 +45,19 @@ class ContextLookupService {
     /// @param p 任意进程；归属的根进程存在附属 context 时返回其 ID
     /// @return 命中的 extraContextID
     virtual std::optional<uint32_t> lookup_extra(hng::Process p) const = 0;
+
+    /// @brief 指定属性的 contextID 集合，按 ID 升序
+    /// @details 同时覆盖主 context 与附属 context
+    virtual std::vector<uint32_t> contexts_by_attr(
+        hng::contextattr attr) const = 0;
+
+    /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
+    /// @return 根进程与成员进程（含根进程，按 pid 升序）
+    virtual std::optional<ContextProcessSet> members(
+        uint32_t contextID) const = 0;
+
+    /// @brief 异常态观测快照
+    virtual ContextManagerStats stats() const = 0;
 };
 
 /**

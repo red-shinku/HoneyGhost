@@ -12,9 +12,11 @@
 #include <cstdint>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 #include "agent/util/include/notification_queue.hpp"
+#include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 
 /**
@@ -60,6 +62,10 @@ struct ContextTable {
     // mutable，在 const 函数中锁变量允许修改
     mutable std::shared_mutex smtx;
     std::unordered_map<ContextKey, ContextMessage, KeyHash> map;
+    /// 属性 → contextID 集合；与 map 同锁维护
+    std::unordered_map<hng::contextattr, std::unordered_set<uint32_t>> by_attr;
+    /// contextID → 根键；与 map 同锁维护
+    std::unordered_map<uint32_t, ContextKey> id_to_key;
 };
 
 /**
@@ -77,30 +83,22 @@ struct ParentTable {
  * @details
  * 内部 map 为 hng::Process -> ContextKey。
  * 其中 context 根进程自指。任意进程可直接 O(1) 得到其所属 context 的根进程
- * 该表也隐含地表示了不同 context 的进程集
+ * processes_by_root 是其反向索引，供按 context 枚举成员。
  *
- * 写点只有两类事件：
+ * 写点只有三类事件：
  *   1) 某进程的 context 归属落定 —— bind_to_ctxroot()
  *   2) 进程被完全删除 —— on_process_removed() 清理该进程条目。
+ *   3) context 根注册 —— addContextID() 写入根进程自指。
  * 进程的归属在落定后不再改写（不可变），故本表也无需修改
  */
 struct ToContextRootTable {
     mutable std::shared_mutex smtx;
     std::unordered_map<hng::Process, ContextKey>
         map;  ///< 进程(hng::Process) -> 所属主context根进程(ContextKey)
-};
-
-/// @brief 上下文管理器的异常态观测快照
-struct ContextManagerStats {
-    /// 累计：挂靠时父进程的归属尚未落定
-    /// @details 登记竞态（见 docs/red_shinku_logs/控制平面context归属重构.md
-    /// §4）， 该次挂靠为空操作、由工作平面补调。持续增长说明补调未生效，
-    /// 这些进程会一直无归属
-    uint64_t ctxroot_parent_unsettled = 0;
-    /// 累计：注销了未注册的 context 根
-    /// @details 注销先于注册到达，该次注销被丢弃，随后的注册会留下一个
-    /// 永不删除的 context
-    uint64_t unknown_unregister       = 0;
+    /// 根键 → 成员进程；map 的反向索引，与 map 同锁维护
+    std::unordered_map<ContextKey, std::unordered_set<hng::Process>,
+                       ContextTable::KeyHash>
+        processes_by_root;
 };
 
 /**
@@ -114,9 +112,6 @@ struct ContextManagerStats {
  *
  * 五个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
  * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
- *
- * 负责：
- * 1) 回答任意进程属于哪个 context
  */
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
@@ -135,6 +130,13 @@ class ContextManager : public ContextLookupService,
     /// 会先查询该进程所属 context 的根进程，其结果作为
     /// ContextKey 查 extras 表
     std::optional<uint32_t> lookup_extra(hng::Process p) const override;
+
+    /// @brief 指定属性的 contextID 集合，按 ID 升序
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override;
+
+    /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
+    std::optional<ContextProcessSet> members(
+        uint32_t contextID) const override;
 
     /// @brief 注册新的 contextID（通知写）
     /// 生成并将实际写操作 加入任务队列
@@ -168,7 +170,7 @@ class ContextManager : public ContextLookupService,
     void stop();
 
     /// @brief 异常态观测快照
-    ContextManagerStats stats() const;
+    ContextManagerStats stats() const override;
 
    private:
     /// @brief 入队任务：注册一个 context

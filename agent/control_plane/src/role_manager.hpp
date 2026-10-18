@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
+#include "agent/control_plane/include/role_stats.hpp"
 #include "agent/control_plane/src/role_relation_store.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
@@ -37,20 +38,11 @@ struct RoleManagerProbe {
         read_members;
 };
 
-/// @brief 角色管理器的异常态观测快照
-struct RoleManagerStats {
-    RoleStoreStats store;  ///< 关系表侧的异常态
-    /// 累计：重读未返回任何进程
-    /// @note 不等于读失败：RoleCgroupReader::read 的契约不区分失败与空
-    uint64_t cgroup_read_empty = 0;
-    /// 累计：stop() 之后的入队被拒绝
-    uint64_t queue_rejected    = 0;
-};
-
 class RoleManager : public hng::role::RoleEventSink,
                     public RoleLookupService,
                     public RoleJoinService,
-                    public RoleClearService {
+                    public RoleClearService,
+                    public RoleSupervisionService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
     explicit RoleManager(RoleManagerProbe probe = {});
@@ -92,6 +84,15 @@ class RoleManager : public hng::role::RoleEventSink,
     std::optional<hng::Role> role(uint32_t roleID) const override;
 
     /// \ingroup Rolemanager_lookup_service
+    std::optional<hng::Process> main_process(uint32_t roleID) const override;
+
+    /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Role> roles() const override;
+
+    /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Role> supervised_roles() const override;
+
+    /// \ingroup Rolemanager_lookup_service
     std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const override;
 
@@ -102,8 +103,11 @@ class RoleManager : public hng::role::RoleEventSink,
      * @} endgroup Rolemanager_lookup_service
      */
 
+    /// @brief 登记或移除系统监管角色；roleID 不存在时忽略
+    void set_supervised(uint32_t roleID, bool supervised) override;
+
     /// @brief 异常态观测快照
-    RoleManagerStats stats() const;
+    RoleManagerStats stats() const override;
 
    private:
     /// @brief 入队消息：进程被完全删除

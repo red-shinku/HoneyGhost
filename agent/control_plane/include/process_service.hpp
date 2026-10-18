@@ -20,6 +20,10 @@ class ProcessLookupService {
    public:
     /// @brief 查询进程信息
     virtual std::optional<hng::ProcessMessage> lookup(hng::Process p) const = 0;
+
+    /// @brief 按 pid 反查进程实体；不存在时为空
+    /// @note 存活进程优先；未命中时取虚拟根中该 pid 的最新实例
+    virtual std::optional<hng::Process> resolve(uint32_t pid) const = 0;
 };
 
 class ProcessJoinService {

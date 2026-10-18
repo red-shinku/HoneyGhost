@@ -13,7 +13,6 @@
 #define HNG_ROLE_RELATION_STORE_HPP_
 
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -21,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "agent/control_plane/include/role_stats.hpp"
 #include "agent/role_discovery/include/role_event.hpp"
 #include "agent/event_data/include/process.hpp"
 #include "agent/event_data/include/role.hpp"
@@ -39,20 +39,6 @@ struct RoleTransition {
 
     Kind kind = Kind::NONE;
     hng::Role role;  ///< 跃迁后的对外视图，含重算过的 roleLabel；NONE 时无意义
-};
-
-/// @brief 异常态观测快照
-/// @details 前三项为累计计数：单次读数说明不了问题，只在看增量时才有意义；
-///          末项是当前值，两者读法不同，见各自说明。
-struct RoleStoreStats {
-    uint64_t rejected         = 0;  ///< 累计：入口拒收，缺实例键或锚点
-    uint64_t unknown_instance = 0;  ///< 累计：LEAVE 或锚点更换遇未知实例键
-    uint64_t owner_conflict   = 0;  ///< 累计：成员写入时已归属另一个角色
-    /// 当前值非累计：锚点已被完全删除而角色未退出的角色数
-    /// @note 锚点退出到 LEAVE 到达之间必然经过该状态，故它不为零不是错态；
-    ///       持续为正、或增量长期不收敛才是。只按 on_process_removed 的到达
-    ///       记账，锚点在角色建立前就已被删的情形无从得知
-    uint64_t anchors_removed  = 0;
 };
 
 /// @brief 一个存活角色的全部记录
@@ -112,6 +98,18 @@ class RoleRelationStore {
     /// @brief 角色的对外视图
     std::optional<hng::Role> role(uint32_t role_id) const;
 
+    /// @brief 角色的当前锚点；角色不存在或锚点已被完全删除时为空
+    std::optional<hng::Process> main_process(uint32_t role_id) const;
+
+    /// @brief 全部角色的对外视图，按 roleID 升序
+    std::vector<hng::Role> roles() const;
+
+    /// @brief 登记或移除监管角色；roleID 不存在时忽略
+    void set_supervised(uint32_t role_id, bool supervised);
+
+    /// @brief 当前被监管角色的对外视图，按 roleID 升序
+    std::vector<hng::Role> supervised_roles() const;
+
     /// @brief 角色的身份：实例键、类型键、属性字典
     std::optional<hng::role::RoleIdentity> identity(uint32_t role_id) const;
 
@@ -144,6 +142,8 @@ class RoleRelationStore {
     std::unordered_map<uint32_t, RoleRecord> role_table_;
     /// LEAVE 与锚点更换的入口
     std::unordered_map<std::string, uint32_t> instance_to_role_;
+    /// 监管名单；LEAVE 时随角色记录一并删除
+    std::unordered_set<uint32_t> supervised_;
 
     /// roleID 从 1 起单调递增、永不复用；uint32_t 用尽不可达，不处理绕回
     uint32_t next_role_id_ = 1;

@@ -43,6 +43,39 @@ std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
     return vit->second;
 }
 
+std::optional<hng::Process> ProcessManager::resolve(uint32_t pid) const
+{
+    if (pid == 0) {
+        return std::nullopt;
+    }
+
+    // 存活进程优先：同一 pid 在实进程树中至多一个当前实例
+    {
+        auto& shard_ref = ptree_shard[shard_index(pid)];
+        std::shared_lock lock(shard_ref.smtx);
+        auto it = shard_ref.process.find(pid);
+        if (it != shard_ref.process.end()) {
+            return hng::Process{pid, it->second.pid_start_time};
+        }
+    }
+
+    // 未命中则查虚拟根；同一 pid 可能有多个已退出实例，取最新的
+    auto& vshard_ref = vptree_root[shard_index(pid)];
+    std::shared_lock vlock(vshard_ref.smtx);
+    std::optional<hng::Process> latest;
+    for (const auto& entry : vshard_ref.vprocess) {
+        if (entry.first.pid != pid) {
+            continue;
+        }
+        if (!latest ||
+            entry.first.pid_start_time > latest->pid_start_time) {
+            latest =
+                hng::Process{entry.first.pid, entry.first.pid_start_time};
+        }
+    }
+    return latest;
+}
+
 void ProcessManager::register_pid(hng::event_head ehead)
 {
     task.push(Task{Task::Kind::ADD, hng::ProcessMessage(ehead), {}});

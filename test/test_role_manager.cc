@@ -194,6 +194,79 @@ void run_join()
           "身份应原样保留");
 }
 
+void run_roles()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    CHECK(manager.roles().empty(), "无角色时应为空");
+
+    manager.on_role_event(mk_join("a", 100, 1000));
+    manager.on_role_event(mk_join("b", 200, 2000));
+    CHECK(sink.wait_calls(2), "两个加入都应通知");
+
+    std::vector<hng::Role> all = manager.roles();
+    CHECK(all.size() == 2 && all[0].roleID == 1 && all[0].roleLabel == "a" &&
+              all[1].roleID == 2 && all[1].roleLabel == "b",
+          "roles 应按 roleID 升序转发全部角色");
+
+    manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
+    CHECK(sink.wait_calls(3), "退出应通知");
+    all = manager.roles();
+    CHECK(all.size() == 1 && all[0].roleID == 2, "退出后不应含该角色");
+}
+
+void run_supervision()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    CHECK(manager.supervised_roles().empty(), "未登记时应为空");
+
+    manager.on_role_event(mk_join("a", 100, 1000));
+    CHECK(sink.wait_calls(1), "加入应通知");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    manager.set_supervised(role + 100, true);
+    CHECK(manager.supervised_roles().empty(), "未知 roleID 应忽略");
+
+    manager.set_supervised(role, true);
+    std::vector<hng::Role> supervised = manager.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role &&
+              supervised[0].roleLabel == "a",
+          "应返回已登记角色");
+
+    manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
+    CHECK(sink.wait_calls(2), "退出应通知");
+    CHECK(manager.supervised_roles().empty(), "退出后应自动移除登记");
+}
+
+void run_main_process()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    CHECK(!manager.main_process(1).has_value(), "未知 roleID 应返回空");
+
+    manager.on_role_event(mk_join("a", 100, 1000));
+    CHECK(sink.wait_calls(1), "加入应通知");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    std::optional<hng::Process> main = manager.main_process(role);
+    CHECK(main.has_value() && *main == proc(100, 1000), "应转发锚点");
+
+    manager.on_process_removed(proc(100, 1000));
+    manager.on_role_event(mk_join("barrier", 900, 9000));
+    CHECK(sink.wait_calls(2), "屏障事件应通知");
+    CHECK(!manager.main_process(role).has_value(), "锚点删除后应返回空");
+}
+
 void run_leave()
 {
     RecordingSink sink;
@@ -534,6 +607,9 @@ void run_concurrent_producers()
 int main()
 {
     run_join();
+    run_roles();
+    run_supervision();
+    run_main_process();
     run_leave();
     run_join_reread();
     run_anchor_transitions();

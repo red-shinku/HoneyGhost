@@ -68,6 +68,15 @@ class FakeContextService final : public ContextLookupService,
         (void)p;
         return std::nullopt;
     }
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr) const override
+    {
+        return {};
+    }
+    std::optional<ContextProcessSet> members(uint32_t) const override
+    {
+        return std::nullopt;
+    }
+    ContextManagerStats stats() const override { return {}; }
     void register_contextID(hng::Process p, ContextDeriveDecision nd,
                             uint32_t) override
     {

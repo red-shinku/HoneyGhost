@@ -122,6 +122,26 @@ class RoleStub final : public RoleLookupService {
         return hng::Role{roleID, kRoleLabel};
     }
 
+    std::optional<hng::Process> main_process(uint32_t roleID) const override
+    {
+        if (roleID != kRoleID) {
+            return std::nullopt;
+        }
+        return hng::Process{kPidSyscall, kPidSyscall * 10};
+    }
+
+    std::vector<hng::Role> roles() const override
+    {
+        return {hng::Role{kRoleID, kRoleLabel}};
+    }
+
+    std::vector<hng::Role> supervised_roles() const override
+    {
+        return {hng::Role{kRoleID, kRoleLabel}};
+    }
+
+    RoleManagerStats stats() const override { return {}; }
+
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;
@@ -148,12 +168,35 @@ class ContextStub final : public ContextLookupService {
     {
         return std::nullopt;
     }
+
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr) const override
+    {
+        return {};
+    }
+
+    std::optional<ContextProcessSet> members(uint32_t) const override
+    {
+        return std::nullopt;
+    }
+
+    ContextManagerStats stats() const override { return {}; }
 };
 
 class ProcessStub final : public ProcessLookupService {
    public:
     std::optional<hng::ProcessMessage> lookup(hng::Process) const override
     {
+        return std::nullopt;
+    }
+
+    std::optional<hng::Process> resolve(uint32_t pid) const override
+    {
+        if (pid == kPidSyscall) {
+            return hng::Process{kPidSyscall, kPidSyscall * 10};
+        }
+        if (pid == kPidFile) {
+            return hng::Process{kPidFile, kPidFile * 10};
+        }
         return std::nullopt;
     }
 };
