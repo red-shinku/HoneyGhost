@@ -6,9 +6,11 @@
  *  - 默认构造为全选，且可拷贝；
  *  - 进程维度只比 pid，同 pid 不同 start_time 仍命中；
  *  - 角色 / 上下文 / 事件类型维度按集合成员判定；
+ *  - 角色维度含 roleID 与 roleLabel 两组，两组之间取并集；
  *  - 维度之内取并集（命中任一成员即可），维度之间取交集；
  *  - 空集合与未设置的维度一样表示不限；
- *  - set_role({0}) / set_context({0}) 只命中未落定的信息，而非不限。
+ *  - set_role({0}, {}) / set_context({0}) 只命中未落定的信息，而非不限；
+ *  - 未落定的事件不带标签，不会被非空的标签集合命中。
  * @author red-shinku
  * @date 2026.10.10
  */
@@ -31,10 +33,11 @@ int g_fail = 0;
 
 hng::RuntimeInformation make_info(uint32_t pid, uint64_t start_time,
                                   hng::EventType etype, uint32_t roleID,
-                                  uint32_t contextID)
+                                  uint32_t contextID,
+                                  hng::role_label_t roleLabel = {})
 {
     return hng::RuntimeInformation{hng::Process{pid, start_time}, etype, roleID,
-                                   contextID};
+                                   roleLabel, contextID};
 }
 
 void run_take_all()
@@ -53,7 +56,7 @@ void run_empty_dimension_is_unlimited()
     // 显式设成空集合与不设置等价：该维度不限
     const RuntimeInfoFilter filter = RuntimeInfoFilter{}
                                          .set_process({})
-                                         .set_role({})
+                                         .set_role({}, {})
                                          .set_context({})
                                          .set_etype({});
     CHECK(filter.should_take(make_info(1, 10, hng::EventType::IPC_EVENT, 7, 8)),
@@ -81,7 +84,7 @@ void run_process_dimension()
 void run_role_dimension()
 {
     RuntimeInfoFilter filter;
-    filter.set_role({42, 43});
+    filter.set_role({42, 43}, {});
     CHECK(filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 42, 0)),
           "角色在集合中应命中");
@@ -91,6 +94,40 @@ void run_role_dimension()
     CHECK(!filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 44, 0)),
           "角色不在集合中不应命中");
+}
+
+void run_role_label_dimension()
+{
+    // roleID 与 roleLabel 同属角色维度：两组取并集
+    RuntimeInfoFilter filter;
+    filter.set_role({42}, {"nginx:1.25"});
+
+    CHECK(filter.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 42, 0, "")),
+          "roleID 命中应通过");
+    CHECK(filter.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 43,
+                                       0, "nginx:1.25")),
+          "roleLabel 命中应通过：两组是并集");
+    CHECK(!filter.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 43, 0, "redis:7")),
+          "两组都不命中则不应通过");
+    CHECK(!filter.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 43, 0, "")),
+          "未落定的事件不带标签，不应被标签集合命中");
+}
+
+void run_role_label_only()
+{
+    // 只设标签：按 roleID 不限，但未落定的事件仍不命中
+    RuntimeInfoFilter filter;
+    filter.set_role({}, {"nginx:1.25"});
+
+    CHECK(filter.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 999,
+                                       0, "nginx:1.25")),
+          "只设标签时按标签命中");
+    CHECK(!filter.should_take(
+              make_info(1, 10, hng::EventType::SYSCALL_EVENT, 999, 0, "")),
+          "只设标签时不命中未落定");
 }
 
 void run_context_dimension()
@@ -121,7 +158,7 @@ void run_etype_dimension()
 void run_dimensions_are_intersected()
 {
     RuntimeInfoFilter filter;
-    filter.set_process({7}).set_role({3}).set_context({5}).set_etype(
+    filter.set_process({7}).set_role({3}, {}).set_context({5}).set_etype(
         {hng::EventType::FILE_EVENT});
 
     CHECK(filter.should_take(make_info(7, 70, hng::EventType::FILE_EVENT, 3, 5)),
@@ -141,7 +178,7 @@ void run_zero_is_literal()
 {
     // roleID / contextID 的 0 是「未落定」哨兵，按键值比较而非「不限」
     RuntimeInfoFilter filter;
-    filter.set_role({0});
+    filter.set_role({0}, {});
     CHECK(filter.should_take(
               make_info(1, 10, hng::EventType::SYSCALL_EVENT, 0, 77)),
           "set_role({0}) 应命中未落定的角色");
@@ -153,7 +190,7 @@ void run_zero_is_literal()
 void run_copyable()
 {
     RuntimeInfoFilter filter;
-    filter.set_role({3}).set_etype({hng::EventType::SYSCALL_EVENT});
+    filter.set_role({3}, {}).set_etype({hng::EventType::SYSCALL_EVENT});
 
     const RuntimeInfoFilter copy = filter;
     CHECK(copy.should_take(make_info(1, 10, hng::EventType::SYSCALL_EVENT, 3, 0)),
@@ -170,6 +207,8 @@ int main()
     run_empty_dimension_is_unlimited();
     run_process_dimension();
     run_role_dimension();
+    run_role_label_dimension();
+    run_role_label_only();
     run_context_dimension();
     run_etype_dimension();
     run_dimensions_are_intersected();

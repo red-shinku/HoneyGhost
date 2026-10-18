@@ -64,7 +64,8 @@ void run_syscall_identity_and_type()
     hng::syscall_semantic_data src = make_syscall(1001, 555, 900, 111);
     src.data.emplace<hng::process_semantic_data>();
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 7, 33);
+    const hng::RuntimeEvent event =
+        RuntimePackaging::pack(src, 7, "nginx:1.25", 33);
 
     CHECK(event.runtimeInfo.process.pid == 1001, "进程身份应取事件头的 pid");
     CHECK(event.runtimeInfo.process.pid_start_time == 555,
@@ -73,6 +74,7 @@ void run_syscall_identity_and_type()
           "syscall 载荷应推出 SYSCALL_EVENT");
     CHECK(event.runtimeInfo.roleID == 7 && event.runtimeInfo.contextID == 33,
           "归属应按入参透传");
+    CHECK(event.runtimeInfo.roleLabel == "nginx:1.25", "角色标签应按入参透传");
     CHECK(event.data.index() == 0, "syscall 载荷应落在 variant 的第 0 项");
 }
 
@@ -82,7 +84,9 @@ void run_file_identity_and_type()
     src.data.set_semantic_filename("/usr/bin/tool");
     src.data.set_comm("bash");
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 1, 2);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 1, "redis:7", 2);
+
+    CHECK(event.runtimeInfo.roleLabel == "redis:7", "文件事件也应带角色标签");
 
     CHECK(event.runtimeInfo.process.pid == 2002, "文件事件的进程身份应取事件头");
     CHECK(event.runtimeInfo.process.pid_start_time == 888,
@@ -106,7 +110,8 @@ void run_syscall_payload_kinds()
     exec_payload.set_semantic_filename("/bin/sh");
     exec_payload.set_syscall_name("execve");
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(std::move(src), 0, 4);
+    const hng::RuntimeEvent event =
+        RuntimePackaging::pack(std::move(src), 0, "", 4);
 
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "内层 exec 载荷仍应推出 SYSCALL_EVENT");
@@ -123,10 +128,11 @@ void run_unsettled_ids()
     hng::syscall_semantic_data src = make_syscall(5, 50, 1, 10);
     src.data.emplace<hng::process_semantic_data>();
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, 0);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
 
     CHECK(event.runtimeInfo.roleID == 0 && event.runtimeInfo.contextID == 0,
           "未落定（0）应原样透传");
+    CHECK(event.runtimeInfo.roleLabel.empty(), "未落定时角色标签为空");
 }
 
 void run_payload_carried_by_value()
@@ -136,7 +142,8 @@ void run_payload_carried_by_value()
     payload.set_exit_code(-11);
     payload.set_syscall_name("exit_group");
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(std::move(src), 9, 9);
+    const hng::RuntimeEvent event =
+        RuntimePackaging::pack(std::move(src), 9, "tool:1", 9);
 
     const hng::syscall_semantic_data& packed = syscall_of(event);
     CHECK(packed.head.pid == 6 && packed.head.pid_start_time == 60,

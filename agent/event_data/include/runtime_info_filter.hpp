@@ -16,10 +16,10 @@
 
 /**
  * @brief 订阅流关心的运行时信息组合
- * @details 值对象，可拷贝。四个维度各持一个取值集合，空集合表示该维度不限，
- * 故默认构造即全选。
+ * @details 值对象，可拷贝。共四个维度：进程、角色、上下文、事件类型。角色维度
+ * 含 roleID 与 roleLabel 两组取值。取值集合为空表示该维度不限，故默认构造即全选。
  * @note 匹配语义：维度之间取交集，维度之内取并集——已设置的维度要求事件至少
- * 命中该集合中的一个成员。
+ * 命中该维度中某个集合的某个成员。
  * @note 各 set_* 只在构造期调用，构造完成后成员不变。
  */
 class RuntimeInfoFilter {
@@ -33,8 +33,13 @@ class RuntimeInfoFilter {
     RuntimeInfoFilter& set_process(std::vector<uint32_t> pids);
 
     /// @brief 设置角色维度
+    /// @param roleIDs 按角色 ID 匹配的取值集合
+    /// @param roleLabels 按角色标签匹配的取值集合，与 roleIDs 同属角色维度
+    /// @note 两组取并集：事件命中任一组的任一成员即视为该维度命中
     /// @note 0 是「未落定」哨兵，按键值比较而非当作不限
-    RuntimeInfoFilter& set_role(std::vector<uint32_t> roleIDs);
+    /// @note 归属未落定的事件不带标签，故不会被非空的标签集合命中
+    RuntimeInfoFilter& set_role(std::vector<uint32_t> roleIDs,
+                                std::vector<hng::role_label_t> roleLabels);
 
     /// @brief 设置上下文维度
     /// @note 0 是「未落定」哨兵，按键值比较而非当作不限
@@ -50,6 +55,7 @@ class RuntimeInfoFilter {
    private:
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> roleIDs_;
+    std::vector<hng::role_label_t> roleLabels_;
     std::vector<uint32_t> contextIDs_;
     std::vector<hng::EventType> etypes_;
 };
@@ -62,9 +68,10 @@ inline RuntimeInfoFilter& RuntimeInfoFilter::set_process(
 }
 
 inline RuntimeInfoFilter& RuntimeInfoFilter::set_role(
-    std::vector<uint32_t> roleIDs)
+    std::vector<uint32_t> roleIDs, std::vector<hng::role_label_t> roleLabels)
 {
-    roleIDs_ = std::move(roleIDs);
+    roleIDs_    = std::move(roleIDs);
+    roleLabels_ = std::move(roleLabels);
     return *this;
 }
 
@@ -89,9 +96,14 @@ inline bool RuntimeInfoFilter::should_take(
         std::find(pids_.begin(), pids_.end(), info.process.pid) == pids_.end()) {
         return false;
     }
-    if (!roleIDs_.empty() && std::find(roleIDs_.begin(), roleIDs_.end(),
-                                       info.roleID) == roleIDs_.end()) {
-        return false;
+    if (!roleIDs_.empty() || !roleLabels_.empty()) {
+        const bool id_hit    = std::find(roleIDs_.begin(), roleIDs_.end(),
+                                         info.roleID) != roleIDs_.end();
+        const bool label_hit = std::find(roleLabels_.begin(), roleLabels_.end(),
+                                         info.roleLabel) != roleLabels_.end();
+        if (!id_hit && !label_hit) {
+            return false;
+        }
     }
     if (!contextIDs_.empty() && std::find(contextIDs_.begin(), contextIDs_.end(),
                                           info.contextID) == contextIDs_.end()) {

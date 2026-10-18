@@ -20,11 +20,17 @@
 class RuntimePackaging {
    public:
     /// @brief 系统调用语义事件 → RuntimeEvent
+    /// @param roleID 归属角色；未落定为 0
+    /// @param roleLabel 该角色在同一快照下的标签；未落定为空
     static hng::RuntimeEvent pack(hng::syscall_semantic_data src, uint32_t roleID,
+                                  hng::role_label_t roleLabel,
                                   uint32_t contextID);
 
     /// @brief 文件语义事件 → RuntimeEvent
+    /// @copydetails pack(hng::syscall_semantic_data, uint32_t, hng::role_label_t,
+    /// uint32_t)
     static hng::RuntimeEvent pack(hng::file_semantic_data src, uint32_t roleID,
+                                  hng::role_label_t roleLabel,
                                   uint32_t contextID);
 };
 

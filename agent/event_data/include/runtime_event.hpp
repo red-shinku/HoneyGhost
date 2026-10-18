@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "agent/event_data/include/process.hpp"
+#include "agent/event_data/include/role.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
 #include "agent/event_data/include/file_event.hpp"
 
@@ -19,7 +20,10 @@ struct RuntimeInformation {
     hng::Process process;  ///< 事件主体进程
     hng::EventType etype;  ///< 事件维度，由载荷 variant 索引推出
     uint32_t roleID;       ///< 0 表示此刻未落定
-    uint32_t contextID;    ///< 0 表示此刻未落定
+    /// 归属角色在包装时刻的标签快照；未落定时为空
+    /// @note 与 roleID 同属角色维度，取同一个归属快照
+    hng::role_label_t roleLabel;
+    uint32_t contextID;  ///< 0 表示此刻未落定
 };
 
 struct RuntimeEvent {
