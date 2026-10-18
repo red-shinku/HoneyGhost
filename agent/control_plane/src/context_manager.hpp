@@ -16,6 +16,7 @@
 #include <variant>
 
 #include "agent/util/include/notification_queue.hpp"
+#include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 
 /**
@@ -100,19 +101,6 @@ struct ToContextRootTable {
         processes_by_root;
 };
 
-/// @brief 上下文管理器的异常态观测快照
-struct ContextManagerStats {
-    /// 累计：挂靠时父进程的归属尚未落定
-    /// @details 登记竞态（见 docs/red_shinku_logs/控制平面context归属重构.md
-    /// §4）， 该次挂靠为空操作、由工作平面补调。持续增长说明补调未生效，
-    /// 这些进程会一直无归属
-    uint64_t ctxroot_parent_unsettled = 0;
-    /// 累计：注销了未注册的 context 根
-    /// @details 注销先于注册到达，该次注销被丢弃，随后的注册会留下一个
-    /// 永不删除的 context
-    uint64_t unknown_unregister       = 0;
-};
-
 /**
  * @brief 上下文管理器
  * @details
@@ -182,7 +170,7 @@ class ContextManager : public ContextLookupService,
     void stop();
 
     /// @brief 异常态观测快照
-    ContextManagerStats stats() const;
+    ContextManagerStats stats() const override;
 
    private:
     /// @brief 入队任务：注册一个 context

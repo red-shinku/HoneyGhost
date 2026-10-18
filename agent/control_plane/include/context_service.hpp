@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "agent/control_plane/include/context_stats.hpp"
 #include "agent/event_data/include/context.hpp"
 #include "agent/event_data/include/process.hpp"
 #include "agent/context_maintainer/include/context_maintainer_decision.hpp"
@@ -54,6 +55,9 @@ class ContextLookupService {
     /// @return 根进程与成员进程（含根进程，按 pid 升序）
     virtual std::optional<ContextProcessSet> members(
         uint32_t contextID) const = 0;
+
+    /// @brief 异常态观测快照
+    virtual ContextManagerStats stats() const = 0;
 };
 
 /**

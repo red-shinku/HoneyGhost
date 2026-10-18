@@ -14,6 +14,7 @@
 #include <optional>
 #include <vector>
 
+#include "agent/control_plane/include/role_stats.hpp"
 #include "agent/role_discovery/include/role_event.hpp"
 #include "agent/event_data/include/process.hpp"
 #include "agent/event_data/include/role.hpp"
@@ -46,6 +47,9 @@ class RoleLookupService {
     /// @note 不是任何内部缓存；路径不可读时返回已收集结果，调用方不得把空结果
     ///       读成「没有成员」
     virtual std::vector<hng::Process> members(uint32_t roleID) const = 0;
+
+    /// @brief 异常态观测快照
+    virtual RoleManagerStats stats() const = 0;
 };
 
 /// @brief 监管名单的写入侧

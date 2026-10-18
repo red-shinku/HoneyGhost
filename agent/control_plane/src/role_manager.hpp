@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
+#include "agent/control_plane/include/role_stats.hpp"
 #include "agent/control_plane/src/role_relation_store.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
@@ -35,16 +36,6 @@ struct RoleManagerProbe {
     /// 按 cgroup 路径枚举进程的实现，留空时用 RoleCgroupReader::read
     std::function<std::vector<hng::Process>(const std::string& cgroup_path)>
         read_members;
-};
-
-/// @brief 角色管理器的异常态观测快照
-struct RoleManagerStats {
-    RoleStoreStats store;  ///< 关系表侧的异常态
-    /// 累计：重读未返回任何进程
-    /// @note 不等于读失败：RoleCgroupReader::read 的契约不区分失败与空
-    uint64_t cgroup_read_empty = 0;
-    /// 累计：stop() 之后的入队被拒绝
-    uint64_t queue_rejected    = 0;
 };
 
 class RoleManager : public hng::role::RoleEventSink,
@@ -113,7 +104,7 @@ class RoleManager : public hng::role::RoleEventSink,
     void set_supervised(uint32_t roleID, bool supervised) override;
 
     /// @brief 异常态观测快照
-    RoleManagerStats stats() const;
+    RoleManagerStats stats() const override;
 
    private:
     /// @brief 入队消息：进程被完全删除

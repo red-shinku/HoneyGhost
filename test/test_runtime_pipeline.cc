@@ -85,6 +85,7 @@ class FakeContextService final : public ContextLookupService,
     {
         return std::nullopt;
     }
+    ContextManagerStats stats() const override { return {}; }
     void register_contextID(hng::Process p, ContextDeriveDecision nd,
                             uint32_t) override
     {
@@ -139,6 +140,7 @@ class FakeRoleLookup final : public RoleLookupService {
     }
     std::vector<hng::Role> roles() const override { return {}; }
     std::vector<hng::Role> supervised_roles() const override { return {}; }
+    RoleManagerStats stats() const override { return {}; }
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;

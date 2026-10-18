@@ -76,6 +76,7 @@ class FakeContextService final : public ContextLookupService,
     {
         return std::nullopt;
     }
+    ContextManagerStats stats() const override { return {}; }
     void register_contextID(hng::Process p, ContextDeriveDecision nd,
                             uint32_t) override
     {

@@ -132,6 +132,8 @@ class RoleStub final : public RoleLookupService {
         return {hng::Role{kRoleID, kRoleLabel}};
     }
 
+    RoleManagerStats stats() const override { return {}; }
+
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;
@@ -168,6 +170,8 @@ class ContextStub final : public ContextLookupService {
     {
         return std::nullopt;
     }
+
+    ContextManagerStats stats() const override { return {}; }
 };
 
 class ProcessStub final : public ProcessLookupService {
