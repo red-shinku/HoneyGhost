@@ -129,6 +129,11 @@ std::optional<hng::Role> RoleManager::role(uint32_t role_id) const
     return store_.role(role_id);
 }
 
+std::optional<hng::Process> RoleManager::main_process(uint32_t role_id) const
+{
+    return store_.main_process(role_id);
+}
+
 std::vector<hng::Role> RoleManager::roles() const { return store_.roles(); }
 
 std::vector<hng::Role> RoleManager::supervised_roles() const

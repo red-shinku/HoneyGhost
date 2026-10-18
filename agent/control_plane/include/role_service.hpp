@@ -32,6 +32,10 @@ class RoleLookupService {
     /// @brief 角色的对外视图：roleID + roleLabel
     virtual std::optional<hng::Role> role(uint32_t roleID) const = 0;
 
+    /// @brief 角色的当前锚点；角色不存在或锚点已被完全删除时为空
+    virtual std::optional<hng::Process> main_process(
+        uint32_t roleID) const = 0;
+
     /// @brief 全部角色的快照，按 roleID 升序
     virtual std::vector<hng::Role> roles() const = 0;
 
@@ -43,9 +47,9 @@ class RoleLookupService {
     virtual std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const                                       = 0;
 
-    /// @brief 按 cgroup 实时重枚举该角色的当前进程（含主进程）
-    /// @note 不是任何内部缓存；路径不可读时返回已收集结果，调用方不得把空结果
-    ///       读成「没有成员」
+    /// @brief 按 cgroup 实时重枚举该角色的当前进程
+    /// @note 锚点见 main_process()；不是任何内部缓存；路径不可读时返回已收集
+    ///       结果，调用方不得把空结果读成「没有成员」
     virtual std::vector<hng::Process> members(uint32_t roleID) const = 0;
 
     /// @brief 异常态观测快照

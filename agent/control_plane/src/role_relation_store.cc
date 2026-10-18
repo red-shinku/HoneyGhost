@@ -173,6 +173,18 @@ std::optional<hng::Role> RoleRelationStore::role(uint32_t role_id) const
     return record->second.role;
 }
 
+std::optional<hng::Process> RoleRelationStore::main_process(
+    uint32_t role_id) const
+{
+    std::shared_lock lock(mutex_);
+
+    auto record = role_table_.find(role_id);
+    if (record == role_table_.end() || record->second.anchor_removed) {
+        return std::nullopt;
+    }
+    return record->second.main_process;
+}
+
 std::vector<hng::Role> RoleRelationStore::roles() const
 {
     std::shared_lock lock(mutex_);

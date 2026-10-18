@@ -122,6 +122,14 @@ class RoleStub final : public RoleLookupService {
         return hng::Role{roleID, kRoleLabel};
     }
 
+    std::optional<hng::Process> main_process(uint32_t roleID) const override
+    {
+        if (roleID != kRoleID) {
+            return std::nullopt;
+        }
+        return hng::Process{kPidSyscall, kPidSyscall * 10};
+    }
+
     std::vector<hng::Role> roles() const override
     {
         return {hng::Role{kRoleID, kRoleLabel}};

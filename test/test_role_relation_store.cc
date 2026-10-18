@@ -324,6 +324,39 @@ void run_anchor_gauge()
     CHECK(store.stats().anchors_removed == 0, "锚点未被删的角色不计入");
 }
 
+void run_main_process()
+{
+    RoleRelationStore store;
+
+    CHECK(!store.main_process(1).has_value(), "未知 roleID 应返回空");
+
+    const uint32_t role = join_new(store, "a", 100, 1000, {proc(101, 1001)});
+    std::optional<hng::Process> main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(100, 1000), "应返回锚点");
+
+    CHECK(store.main_process_change(mk_payload("a", 200, 2000),
+                                    {proc(200, 2000)})
+                  .kind == Kind::MAIN_PROCESS_CHANGED,
+          "锚点更换应成功");
+    main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(200, 2000), "应返回新锚点");
+
+    store.on_process_removed(proc(200, 2000));
+    CHECK(!store.main_process(role).has_value(), "锚点被完全删除后应为空");
+    CHECK(store.role(role).has_value(), "锚点被删不改变角色存在性");
+
+    CHECK(store.main_process_change(mk_payload("a", 300, 3000),
+                                    {proc(300, 3000)})
+                  .kind == Kind::MAIN_PROCESS_CHANGED,
+          "锚点已删的角色仍可更换锚点");
+    main = store.main_process(role);
+    CHECK(main.has_value() && *main == proc(300, 3000),
+          "更换后应返回新锚点");
+
+    CHECK(store.leave("a").kind == Kind::LEFT, "存活角色应能退出");
+    CHECK(!store.main_process(role).has_value(), "角色退出后应为空");
+}
+
 void run_reject_and_ids()
 {
     RoleRelationStore store;
@@ -399,6 +432,7 @@ int main()
     run_bind_to_role();
     run_process_removed();
     run_anchor_gauge();
+    run_main_process();
     run_reject_and_ids();
     run_label_rules();
 
