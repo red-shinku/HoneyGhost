@@ -129,6 +129,8 @@ std::optional<hng::Role> RoleManager::role(uint32_t role_id) const
     return store_.role(role_id);
 }
 
+std::vector<hng::Role> RoleManager::roles() const { return store_.roles(); }
+
 std::optional<hng::role::RoleIdentity> RoleManager::identity(
     uint32_t role_id) const
 {

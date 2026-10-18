@@ -1,5 +1,6 @@
 #include "agent/control_plane/src/role_relation_store.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <utility>
 
@@ -169,6 +170,22 @@ std::optional<hng::Role> RoleRelationStore::role(uint32_t role_id) const
         return std::nullopt;
     }
     return record->second.role;
+}
+
+std::vector<hng::Role> RoleRelationStore::roles() const
+{
+    std::shared_lock lock(mutex_);
+
+    std::vector<hng::Role> result;
+    result.reserve(role_table_.size());
+    for (const auto& entry : role_table_) {
+        result.push_back(entry.second.role);
+    }
+    std::sort(result.begin(), result.end(),
+              [](const hng::Role& lhs, const hng::Role& rhs) {
+                  return lhs.roleID < rhs.roleID;
+              });
+    return result;
 }
 
 std::optional<hng::role::RoleIdentity> RoleRelationStore::identity(

@@ -96,6 +96,31 @@ void run_join()
           "身份应原样保留");
 }
 
+void run_roles_snapshot()
+{
+    RoleRelationStore store;
+
+    CHECK(store.roles().empty(), "空表应返回空快照");
+
+    const uint32_t role_a = join_new(store, "a", 100, 1000, {});
+    const uint32_t role_b = join_new(store, "b", 200, 2000, {});
+    const uint32_t role_c = join_new(store, "c", 300, 3000, {});
+
+    std::vector<hng::Role> all = store.roles();
+    CHECK(all.size() == 3, "应枚举全部角色");
+    CHECK(all[0].roleID == role_a && all[1].roleID == role_b &&
+              all[2].roleID == role_c,
+          "应按 roleID 升序");
+    CHECK(all[0].roleLabel == "a" && all[1].roleLabel == "b" &&
+              all[2].roleLabel == "c",
+          "应携带 roleLabel");
+
+    CHECK(store.leave("b").kind == Kind::LEFT, "存活角色应能退出");
+    all = store.roles();
+    CHECK(all.size() == 2 && all[0].roleID == role_a && all[1].roleID == role_c,
+          "退出后快照不应含该角色");
+}
+
 void run_idempotent()
 {
     RoleRelationStore store;
@@ -322,6 +347,7 @@ void run_label_rules()
 int main()
 {
     run_join();
+    run_roles_snapshot();
     run_idempotent();
     run_join_normalize();
     run_main_process_change();

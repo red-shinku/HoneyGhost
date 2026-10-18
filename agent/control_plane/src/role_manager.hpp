@@ -92,6 +92,9 @@ class RoleManager : public hng::role::RoleEventSink,
     std::optional<hng::Role> role(uint32_t roleID) const override;
 
     /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Role> roles() const override;
+
+    /// \ingroup Rolemanager_lookup_service
     std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const override;
 

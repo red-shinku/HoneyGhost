@@ -112,6 +112,9 @@ class RoleRelationStore {
     /// @brief 角色的对外视图
     std::optional<hng::Role> role(uint32_t role_id) const;
 
+    /// @brief 全部角色的对外视图，按 roleID 升序
+    std::vector<hng::Role> roles() const;
+
     /// @brief 角色的身份：实例键、类型键、属性字典
     std::optional<hng::role::RoleIdentity> identity(uint32_t role_id) const;
 

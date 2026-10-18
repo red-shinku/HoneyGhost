@@ -194,6 +194,30 @@ void run_join()
           "身份应原样保留");
 }
 
+void run_roles()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    CHECK(manager.roles().empty(), "无角色时应为空");
+
+    manager.on_role_event(mk_join("a", 100, 1000));
+    manager.on_role_event(mk_join("b", 200, 2000));
+    CHECK(sink.wait_calls(2), "两个加入都应通知");
+
+    std::vector<hng::Role> all = manager.roles();
+    CHECK(all.size() == 2 && all[0].roleID == 1 && all[0].roleLabel == "a" &&
+              all[1].roleID == 2 && all[1].roleLabel == "b",
+          "roles 应按 roleID 升序转发全部角色");
+
+    manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
+    CHECK(sink.wait_calls(3), "退出应通知");
+    all = manager.roles();
+    CHECK(all.size() == 1 && all[0].roleID == 2, "退出后不应含该角色");
+}
+
 void run_leave()
 {
     RecordingSink sink;
@@ -534,6 +558,7 @@ void run_concurrent_producers()
 int main()
 {
     run_join();
+    run_roles();
     run_leave();
     run_join_reread();
     run_anchor_transitions();

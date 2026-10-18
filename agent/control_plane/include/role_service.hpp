@@ -31,6 +31,9 @@ class RoleLookupService {
     /// @brief 角色的对外视图：roleID + roleLabel
     virtual std::optional<hng::Role> role(uint32_t roleID) const = 0;
 
+    /// @brief 全部角色的快照，按 roleID 升序
+    virtual std::vector<hng::Role> roles() const = 0;
+
     /// @brief 角色的身份：实例键、类型键、属性字典与来源
     /// @note 供角色标签维护与日志打印 TODO: 也许不该做这个接口
     virtual std::optional<hng::role::RoleIdentity> identity(
