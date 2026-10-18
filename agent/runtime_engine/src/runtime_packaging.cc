@@ -16,12 +16,13 @@ namespace {
 /// @note 事件类型取搬运后载荷的 variant 索引
 template <class SemanticData>
 hng::RuntimeEvent assemble(SemanticData&& src, uint32_t roleID,
-                           uint32_t contextID)
+                           hng::role_label_t roleLabel, uint32_t contextID)
 {
     hng::RuntimeEvent event{};
     event.runtimeInfo.process =
         hng::Process{src.head.pid, src.head.pid_start_time};
     event.runtimeInfo.roleID    = roleID;
+    event.runtimeInfo.roleLabel = std::move(roleLabel);
     event.runtimeInfo.contextID = contextID;
     event.data                  = std::forward<SemanticData>(src);
     event.runtimeInfo.etype     = static_cast<hng::EventType>(event.data.index());
@@ -31,13 +32,17 @@ hng::RuntimeEvent assemble(SemanticData&& src, uint32_t roleID,
 }  // namespace
 
 hng::RuntimeEvent RuntimePackaging::pack(hng::syscall_semantic_data src,
-                                         uint32_t roleID, uint32_t contextID)
+                                         uint32_t roleID,
+                                         hng::role_label_t roleLabel,
+                                         uint32_t contextID)
 {
-    return assemble(std::move(src), roleID, contextID);
+    return assemble(std::move(src), roleID, std::move(roleLabel), contextID);
 }
 
 hng::RuntimeEvent RuntimePackaging::pack(hng::file_semantic_data src,
-                                         uint32_t roleID, uint32_t contextID)
+                                         uint32_t roleID,
+                                         hng::role_label_t roleLabel,
+                                         uint32_t contextID)
 {
-    return assemble(std::move(src), roleID, contextID);
+    return assemble(std::move(src), roleID, std::move(roleLabel), contextID);
 }

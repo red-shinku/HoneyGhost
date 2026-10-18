@@ -58,8 +58,14 @@ class RuntimePipeline {
     /// @brief 分派一条文件语义事件并组装草稿
     void handle_file(hng::file_semantic_data src, RuntimeDraft& out);
 
-    /// @brief 角色归属快照，未归属时为 0
-    uint32_t role_id_of(const hng::Process& p) const;
+    /// @brief 归属角色的快照：id 与标签取自同一条归属链
+    struct RoleSnapshot {
+        uint32_t id = 0;          ///< 未落定时为 0
+        hng::role_label_t label;  ///< 未落定时为空
+    };
+
+    /// @brief 取角色的归属快照
+    RoleSnapshot role_of(const hng::Process& p) const;
 
     /// @brief 上下文归属快照，未落定时为 0
     uint32_t context_id_of(const hng::Process& p) const;

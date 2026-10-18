@@ -152,7 +152,7 @@ void run_cli_filters()
 
     RuntimeEventDispatcher d;
     d.add_cli_sink(&all, RuntimeInfoFilter{}, nullptr);
-    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}), nullptr);
+    d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}, {}), nullptr);
     d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process({1001}), nullptr);
     d.add_cli_sink(&by_etype,
                    RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}),
@@ -189,8 +189,8 @@ void run_duplicate_cli_sink()
     AckStub new_ack;
 
     RuntimeEventDispatcher d;
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({7}), &old_ack);
-    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({8}), &new_ack);
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({7}, {}), &old_ack);
+    d.add_cli_sink(&sink, RuntimeInfoFilter{}.set_role({8}, {}), &new_ack);
 
     CHECK(d.cli_sink_count() == 1, "同一 sink 不占两个表项");
     CHECK(sink.calls == 0, "登记不回调");

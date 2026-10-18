@@ -98,8 +98,9 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
         }
     }
 
-    out.event    = RuntimePackaging::pack(std::move(src), role_id_of(self),
-                                          context_id_of(self));
+    RoleSnapshot role = role_of(self);
+    out.event         = RuntimePackaging::pack(
+        std::move(src), role.id, std::move(role.label), context_id_of(self));
     out.decision = decision;
 }
 
@@ -110,14 +111,26 @@ void RuntimePipeline::handle_file(hng::file_semantic_data src, RuntimeDraft& out
     const ContextDeriveDecision decision =
         ctx_maintainer_->on_event(self).value_or(ContextDeriveDecision{});
 
-    out.event    = RuntimePackaging::pack(std::move(src), role_id_of(self),
-                                          context_id_of(self));
+    RoleSnapshot role = role_of(self);
+    out.event         = RuntimePackaging::pack(
+        std::move(src), role.id, std::move(role.label), context_id_of(self));
     out.decision = decision;
 }
 
-uint32_t RuntimePipeline::role_id_of(const hng::Process& p) const
+RuntimePipeline::RoleSnapshot RuntimePipeline::role_of(
+    const hng::Process& p) const
 {
-    return role_lookup_->lookup(p).value_or(0);
+    const std::optional<uint32_t> role_id = role_lookup_->lookup(p);
+    if (!role_id.has_value()) {
+        return {};
+    }
+
+    RoleSnapshot snapshot;
+    snapshot.id = *role_id;
+    if (const std::optional<hng::Role> role = role_lookup_->role(*role_id)) {
+        snapshot.label = role->roleLabel;
+    }
+    return snapshot;
 }
 
 uint32_t RuntimePipeline::context_id_of(const hng::Process& p) const

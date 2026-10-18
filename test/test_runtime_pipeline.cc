@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -124,9 +125,9 @@ class FakeRoleLookup final : public RoleLookupService {
         }
         return it->second;
     }
-    std::optional<hng::Role> role(uint32_t) const override
+    std::optional<hng::Role> role(uint32_t roleID) const override
     {
-        return std::nullopt;
+        return hng::Role{roleID, "role-" + std::to_string(roleID)};
     }
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
@@ -277,6 +278,7 @@ void run_birth()
     CHECK(d.event.runtimeInfo.process == mk(5000, 500),
           "事件主体应是事件头的新进程");
     CHECK(d.event.runtimeInfo.roleID == 7, "角色归属应取查询结果");
+    CHECK(d.event.runtimeInfo.roleLabel == "role-7", "角色标签应取自同一归属链");
     CHECK(d.event.runtimeInfo.contextID == 100, "窗口期内应归父进程的 context");
 }
 
@@ -446,6 +448,7 @@ void run_role_miss()
     RuntimeDraft drafts[1]{};
     CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
     CHECK(drafts[0].event.runtimeInfo.roleID == 0, "未归属时角色快照为 0");
+    CHECK(drafts[0].event.runtimeInfo.roleLabel.empty(), "未归属时角色标签为空");
     CHECK(drafts[0].event.runtimeInfo.contextID == 0, "未登记时上下文快照为 0");
 }
 
