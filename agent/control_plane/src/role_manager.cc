@@ -131,6 +131,16 @@ std::optional<hng::Role> RoleManager::role(uint32_t role_id) const
 
 std::vector<hng::Role> RoleManager::roles() const { return store_.roles(); }
 
+std::vector<hng::Role> RoleManager::supervised_roles() const
+{
+    return store_.supervised_roles();
+}
+
+void RoleManager::set_supervised(uint32_t role_id, bool supervised)
+{
+    store_.set_supervised(role_id, supervised);
+}
+
 std::optional<hng::role::RoleIdentity> RoleManager::identity(
     uint32_t role_id) const
 {

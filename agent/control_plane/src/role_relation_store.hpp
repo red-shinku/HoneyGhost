@@ -115,6 +115,12 @@ class RoleRelationStore {
     /// @brief 全部角色的对外视图，按 roleID 升序
     std::vector<hng::Role> roles() const;
 
+    /// @brief 登记或移除监管角色；roleID 不存在时忽略
+    void set_supervised(uint32_t role_id, bool supervised);
+
+    /// @brief 当前被监管角色的对外视图，按 roleID 升序
+    std::vector<hng::Role> supervised_roles() const;
+
     /// @brief 角色的身份：实例键、类型键、属性字典
     std::optional<hng::role::RoleIdentity> identity(uint32_t role_id) const;
 
@@ -147,6 +153,8 @@ class RoleRelationStore {
     std::unordered_map<uint32_t, RoleRecord> role_table_;
     /// LEAVE 与锚点更换的入口
     std::unordered_map<std::string, uint32_t> instance_to_role_;
+    /// 监管名单；LEAVE 时随角色记录一并删除
+    std::unordered_set<uint32_t> supervised_;
 
     /// roleID 从 1 起单调递增、永不复用；uint32_t 用尽不可达，不处理绕回
     uint32_t next_role_id_ = 1;

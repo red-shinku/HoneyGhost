@@ -218,6 +218,33 @@ void run_roles()
     CHECK(all.size() == 1 && all[0].roleID == 2, "退出后不应含该角色");
 }
 
+void run_supervision()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    CHECK(manager.supervised_roles().empty(), "未登记时应为空");
+
+    manager.on_role_event(mk_join("a", 100, 1000));
+    CHECK(sink.wait_calls(1), "加入应通知");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    manager.set_supervised(role + 100, true);
+    CHECK(manager.supervised_roles().empty(), "未知 roleID 应忽略");
+
+    manager.set_supervised(role, true);
+    std::vector<hng::Role> supervised = manager.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role &&
+              supervised[0].roleLabel == "a",
+          "应返回已登记角色");
+
+    manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
+    CHECK(sink.wait_calls(2), "退出应通知");
+    CHECK(manager.supervised_roles().empty(), "退出后应自动移除登记");
+}
+
 void run_leave()
 {
     RecordingSink sink;
@@ -559,6 +586,7 @@ int main()
 {
     run_join();
     run_roles();
+    run_supervision();
     run_leave();
     run_join_reread();
     run_anchor_transitions();

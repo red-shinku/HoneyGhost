@@ -50,7 +50,8 @@ struct RoleManagerStats {
 class RoleManager : public hng::role::RoleEventSink,
                     public RoleLookupService,
                     public RoleJoinService,
-                    public RoleClearService {
+                    public RoleClearService,
+                    public RoleSupervisionService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
     explicit RoleManager(RoleManagerProbe probe = {});
@@ -95,6 +96,9 @@ class RoleManager : public hng::role::RoleEventSink,
     std::vector<hng::Role> roles() const override;
 
     /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Role> supervised_roles() const override;
+
+    /// \ingroup Rolemanager_lookup_service
     std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const override;
 
@@ -104,6 +108,9 @@ class RoleManager : public hng::role::RoleEventSink,
     /**
      * @} endgroup Rolemanager_lookup_service
      */
+
+    /// @brief 登记或移除系统监管角色；roleID 不存在时忽略
+    void set_supervised(uint32_t roleID, bool supervised) override;
 
     /// @brief 异常态观测快照
     RoleManagerStats stats() const;

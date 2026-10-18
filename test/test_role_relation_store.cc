@@ -121,6 +121,49 @@ void run_roles_snapshot()
           "退出后快照不应含该角色");
 }
 
+void run_supervision()
+{
+    RoleRelationStore store;
+    const uint32_t role_a = join_new(store, "a", 100, 1000, {});
+    const uint32_t role_b = join_new(store, "b", 200, 2000, {});
+
+    CHECK(store.supervised_roles().empty(), "未登记时应为空");
+
+    store.set_supervised(role_a + 100, true);
+    CHECK(store.supervised_roles().empty(), "未知 roleID 应忽略");
+
+    store.set_supervised(role_a, true);
+    std::vector<hng::Role> supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_a &&
+              supervised[0].roleLabel == "a",
+          "应返回已登记角色及其标签");
+
+    store.set_supervised(role_b, true);
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 2 && supervised[0].roleID == role_a &&
+              supervised[1].roleID == role_b,
+          "多个角色应按 roleID 升序");
+
+    store.set_supervised(role_a, false);
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_b,
+          "移除后不应含该角色");
+
+    // 快照读取当前角色记录：锚点更换重算后的标签应反映出来
+    RolePayload changed     = mk_payload("b", 201, 2001);
+    changed.identity.source = RoleSource::CONTAINERD;
+    changed.identity.attributes["image"] = "hng/nginx:v2";
+    CHECK(store.main_process_change(changed, {proc(201, 2001)}).kind ==
+              Kind::MAIN_PROCESS_CHANGED,
+          "锚点更换应成功");
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleLabel == "hng/nginx:v2",
+          "监管快照应读取当前角色记录");
+
+    CHECK(store.leave("b").kind == Kind::LEFT, "存活角色应能退出");
+    CHECK(store.supervised_roles().empty(), "角色退出后应自动移除登记");
+}
+
 void run_idempotent()
 {
     RoleRelationStore store;
@@ -348,6 +391,7 @@ int main()
 {
     run_join();
     run_roles_snapshot();
+    run_supervision();
     run_idempotent();
     run_join_normalize();
     run_main_process_change();

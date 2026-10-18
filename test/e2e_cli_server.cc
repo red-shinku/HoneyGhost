@@ -127,6 +127,11 @@ class RoleStub final : public RoleLookupService {
         return {hng::Role{kRoleID, kRoleLabel}};
     }
 
+    std::vector<hng::Role> supervised_roles() const override
+    {
+        return {hng::Role{kRoleID, kRoleLabel}};
+    }
+
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;

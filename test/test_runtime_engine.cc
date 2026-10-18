@@ -141,6 +141,7 @@ class FakeRoleLookup final : public RoleLookupService {
         return std::nullopt;
     }
     std::vector<hng::Role> roles() const override { return {}; }
+    std::vector<hng::Role> supervised_roles() const override { return {}; }
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;
