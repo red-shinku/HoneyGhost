@@ -61,10 +61,12 @@ int g_fail = 0;
         }                                                                        \
     } while (0)
 
-constexpr uint32_t kRoleID     = 7;
-constexpr char kRoleLabel[]    = "e2e";
-constexpr uint32_t kPidSyscall = 1001;
-constexpr uint32_t kPidFile    = 2002;
+constexpr uint32_t kRoleID         = 7;
+constexpr char kRoleLabel[]        = "e2e";
+constexpr uint32_t kPidSyscall     = 1001;
+constexpr uint32_t kPidFile        = 2002;
+constexpr uint32_t kContextID      = 3;
+constexpr uint32_t kExtraContextID = 4;
 
 constexpr char kSocketPath[]   = "/tmp/honeyghost-cli-e2e.sock";
 
@@ -112,8 +114,11 @@ components_manager:
 /// 替身角色查询：只认识 kRoleID，其成员固定为两个进程
 class RoleStub final : public RoleLookupService {
    public:
-    std::optional<uint32_t> lookup(hng::Process) const override
+    std::optional<uint32_t> lookup(hng::Process p) const override
     {
+        if (p.pid == kPidSyscall || p.pid == kPidFile) {
+            return kRoleID;
+        }
         return std::nullopt;
     }
 
@@ -140,7 +145,17 @@ class RoleStub final : public RoleLookupService {
         return {hng::Role{kRoleID, kRoleLabel}};
     }
 
-    RoleManagerStats stats() const override { return {}; }
+    RoleManagerStats stats() const override
+    {
+        RoleManagerStats s;
+        s.store.rejected         = 1;
+        s.store.unknown_instance = 2;
+        s.store.owner_conflict   = 3;
+        s.store.anchors_removed  = 4;
+        s.cgroup_read_empty      = 5;
+        s.queue_rejected         = 6;
+        return s;
+    }
 
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
@@ -159,27 +174,52 @@ class RoleStub final : public RoleLookupService {
 
 class ContextStub final : public ContextLookupService {
    public:
-    std::optional<uint32_t> lookup(hng::Process) const override
+    std::optional<uint32_t> lookup(hng::Process p) const override
     {
+        if (p.pid == kPidSyscall || p.pid == kPidFile) {
+            return kContextID;
+        }
         return std::nullopt;
     }
 
-    std::optional<uint32_t> lookup_extra(hng::Process) const override
+    std::optional<uint32_t> lookup_extra(hng::Process p) const override
     {
+        if (p.pid == kPidSyscall || p.pid == kPidFile) {
+            return kExtraContextID;
+        }
         return std::nullopt;
     }
 
-    std::vector<uint32_t> contexts_by_attr(hng::contextattr) const override
+    std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override
     {
+        if (attr == hng::contextattr::ATTACK) {
+            return {kContextID};
+        }
+        if (attr == hng::contextattr::EXTRA_ATTACK) {
+            return {kExtraContextID};
+        }
         return {};
     }
 
-    std::optional<ContextProcessSet> members(uint32_t) const override
+    std::optional<ContextProcessSet> members(uint32_t contextID) const override
     {
-        return std::nullopt;
+        if (contextID != kContextID && contextID != kExtraContextID) {
+            return std::nullopt;
+        }
+        ContextProcessSet set;
+        set.root    = hng::Process{kPidSyscall, kPidSyscall * 10};
+        set.members = {hng::Process{kPidSyscall, kPidSyscall * 10},
+                       hng::Process{kPidFile, kPidFile * 10}};
+        return set;
     }
 
-    ContextManagerStats stats() const override { return {}; }
+    ContextManagerStats stats() const override
+    {
+        ContextManagerStats s;
+        s.ctxroot_parent_unsettled = 11;
+        s.unknown_unregister       = 12;
+        return s;
+    }
 };
 
 class ProcessStub final : public ProcessLookupService {
@@ -213,7 +253,7 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
         is_file ? hng::EventType::FILE_EVENT : hng::EventType::SYSCALL_EVENT;
     event.runtimeInfo.roleID    = kRoleID;
     event.runtimeInfo.roleLabel = kRoleLabel;
-    event.runtimeInfo.contextID = 1;
+    event.runtimeInfo.contextID = kContextID;
 
     if (is_file) {
         hng::file_semantic_data& file =
@@ -397,7 +437,7 @@ bool WaitForServer(hng::clisv::RoleManagerService::Stub& stub)
 void run_query_face(hng::clisv::RoleManagerService::Stub& role,
                     hng::clisv::ContextManagerService::Stub& context_svc)
 {
-    // 可查的 RPC：成员集来自替身
+    // RM_GetProcessSet：成员来自替身，root_pid 来自 main_process
     {
         grpc::ClientContext context;
         SetDeadline(context, std::chrono::seconds(5));
@@ -407,11 +447,13 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         const grpc::Status status =
             role.GetProcessSet(&context, request, &response);
         CHECK(status.ok(), "GetProcessSet 应成功");
+        CHECK(response.root_pid() == kPidSyscall,
+              "root_pid 应来自 main_process");
         CHECK(response.has_pids(), "成员集非空时应设置 pids");
         CHECK(response.pids().pid_size() == 2, "成员集应有两条");
     }
 
-    // 参数非法
+    // RM_GetProcessSet：参数非法
     {
         grpc::ClientContext context;
         SetDeadline(context, std::chrono::seconds(5));
@@ -424,31 +466,206 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
               "roleID 为 0 应返回 INVALID_ARGUMENT");
     }
 
-    // 缺口 RPC：一律 UNIMPLEMENTED
-    {
+    // RM_GetRoles：全部角色与监管角色
+    for (const hng::clisv::RM_ShowOption option :
+         {hng::clisv::RM_SHOW_ALL, hng::clisv::RM_SHOW_SUPERVISION}) {
         grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
         hng::clisv::RM_GetRolesRequest request;
+        request.set_showoption(option);
         hng::clisv::RM_GetRolesResponse response;
-        CHECK(role.GetRoles(&context, request, &response).error_code() ==
-                  grpc::StatusCode::UNIMPLEMENTED,
-              "GetRoles 应返回 UNIMPLEMENTED");
+        const grpc::Status status =
+            role.GetRoles(&context, request, &response);
+        CHECK(status.ok(), "GetRoles 应成功");
+        CHECK(response.r_size() == 1 && response.r(0).roleid() == kRoleID &&
+                  response.r(0).rolelabel() == kRoleLabel,
+              "GetRoles 应返回替身角色");
     }
     {
         grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_GetRolesRequest request;
+        request.set_showoption(static_cast<hng::clisv::RM_ShowOption>(99));
+        hng::clisv::RM_GetRolesResponse response;
+        CHECK(role.GetRoles(&context, request, &response).error_code() ==
+                  grpc::StatusCode::INVALID_ARGUMENT,
+              "未知 showoption 应返回 INVALID_ARGUMENT");
+    }
+
+    // RM_GetContextSet：组合锚点与成员进程，含附属 context
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_GetContextSetRequest request;
+        request.set_roleid(kRoleID);
+        hng::clisv::RM_GetContextSetResponse response;
+        const grpc::Status status =
+            role.GetContextSet(&context, request, &response);
+        CHECK(status.ok(), "GetContextSet 应成功");
+        CHECK(response.contextid_size() == 2 &&
+                  response.contextid(0) == kContextID &&
+                  response.contextid(1) == kExtraContextID,
+              "GetContextSet 应返回主与附属 context，并按 ID 升序");
+    }
+
+    // RM_GetStats：六个字段逐一映射
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_GetStatsRequest request;
+        hng::clisv::RM_GetStatsResponse response;
+        const grpc::Status status = role.GetStats(&context, request, &response);
+        CHECK(status.ok(), "RM_GetStats 应成功");
+        CHECK(response.rejected() == 1 && response.unknown_instance() == 2 &&
+                  response.owner_conflict() == 3 &&
+                  response.anchors_removed() == 4 &&
+                  response.cgroup_read_empty() == 5 &&
+                  response.queue_rejected() == 6,
+              "RM_GetStats 应映射全部字段");
+    }
+
+    // RM_WhichRole：命中、未命中、参数非法
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
         hng::clisv::RM_WhichRoleRequest request;
         request.set_pid(kPidSyscall);
         hng::clisv::RM_WhichRoleResponse response;
-        CHECK(role.WhichRole(&context, request, &response).error_code() ==
-                  grpc::StatusCode::UNIMPLEMENTED,
-              "WhichRole 应返回 UNIMPLEMENTED");
+        const grpc::Status status =
+            role.WhichRole(&context, request, &response);
+        CHECK(status.ok() && response.has_roleid() &&
+                  response.roleid() == kRoleID,
+              "WhichRole 应命中替身角色");
     }
     {
         grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_WhichRoleRequest request;
+        request.set_pid(999999);
+        hng::clisv::RM_WhichRoleResponse response;
+        const grpc::Status status =
+            role.WhichRole(&context, request, &response);
+        CHECK(status.ok() && !response.has_roleid(),
+              "未命中应成功且不设置 roleID");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_WhichRoleRequest request;
+        request.set_pid(0);
+        hng::clisv::RM_WhichRoleResponse response;
+        CHECK(role.WhichRole(&context, request, &response).error_code() ==
+                  grpc::StatusCode::INVALID_ARGUMENT,
+              "pid 为 0 应返回 INVALID_ARGUMENT");
+    }
+
+    // CM_GetExcepCtx / CM_GetExtraCtx
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_GetExcepCtxRequest request;
+        hng::clisv::CM_GetExcepCtxResponse response;
+        const grpc::Status status =
+            context_svc.GetExcepCtx(&context, request, &response);
+        CHECK(status.ok() && response.contextid_size() == 1 &&
+                  response.contextid(0) == kContextID,
+              "GetExcepCtx 应返回 ATTACK context");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_GetExtraCtxRequest request;
+        hng::clisv::CM_GetExtraCtxResponse response;
+        const grpc::Status status =
+            context_svc.GetExtraCtx(&context, request, &response);
+        CHECK(status.ok() && response.contextid_size() == 1 &&
+                  response.contextid(0) == kExtraContextID,
+              "GetExtraCtx 应返回 EXTRA_ATTACK context");
+    }
+
+    // CM_GetProcessSet：根与成员；未知 ID 不是错误
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_GetProcessSetRequest request;
+        request.set_contextid(kContextID);
+        hng::clisv::CM_GetProcessSetResponse response;
+        const grpc::Status status =
+            context_svc.GetProcessSet(&context, request, &response);
+        CHECK(status.ok(), "CM_GetProcessSet 应成功");
+        CHECK(response.root_pid() == kPidSyscall, "context 根进程应被填出");
+        CHECK(response.has_pids() && response.pids().pid_size() == 2,
+              "context 成员集应有两条");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_GetProcessSetRequest request;
+        request.set_contextid(0);
+        hng::clisv::CM_GetProcessSetResponse response;
+        CHECK(context_svc.GetProcessSet(&context, request, &response)
+                      .error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+              "contextID 为 0 应返回 INVALID_ARGUMENT");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_GetProcessSetRequest request;
+        request.set_contextid(999999);
+        hng::clisv::CM_GetProcessSetResponse response;
+        const grpc::Status status =
+            context_svc.GetProcessSet(&context, request, &response);
+        CHECK(status.ok() && response.root_pid() == 0 && !response.has_pids(),
+              "未知 contextID 应成功且不设置字段");
+    }
+
+    // CM_GetStats
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
         hng::clisv::CM_GetStatsRequest request;
         hng::clisv::CM_GetStatsResponse response;
-        CHECK(context_svc.GetStats(&context, request, &response).error_code() ==
-                  grpc::StatusCode::UNIMPLEMENTED,
-              "CM_GetStats 应返回 UNIMPLEMENTED");
+        const grpc::Status status =
+            context_svc.GetStats(&context, request, &response);
+        CHECK(status.ok(), "CM_GetStats 应成功");
+        CHECK(response.ctxroot_parent_unsettled() == 11 &&
+                  response.unknown_unregister() == 12,
+              "CM_GetStats 应映射全部字段");
+    }
+
+    // CM_WhichContext：命中、未命中、参数非法
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_WhichContextRequest request;
+        request.set_pid(kPidFile);
+        hng::clisv::CM_WhichContextResponse response;
+        const grpc::Status status =
+            context_svc.WhichContext(&context, request, &response);
+        CHECK(status.ok() && response.has_contextid() &&
+                  response.contextid() == kContextID,
+              "WhichContext 应命中替身 context");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_WhichContextRequest request;
+        request.set_pid(999999);
+        hng::clisv::CM_WhichContextResponse response;
+        const grpc::Status status =
+            context_svc.WhichContext(&context, request, &response);
+        CHECK(status.ok() && !response.has_contextid(),
+              "未命中应成功且不设置 contextID");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::CM_WhichContextRequest request;
+        request.set_pid(0);
+        hng::clisv::CM_WhichContextResponse response;
+        CHECK(context_svc.WhichContext(&context, request, &response)
+                      .error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+              "pid 为 0 应返回 INVALID_ARGUMENT");
     }
 }
 

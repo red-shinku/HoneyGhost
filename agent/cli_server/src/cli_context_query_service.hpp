@@ -48,7 +48,6 @@ class CLIContextQueryService final
 
    private:
     /// 指向 CLIServer 持有的依赖集合，存活期覆盖本组件
-    /// @note 本服务的各 RPC 均因控制平面缺口未实现，故暂未取用
     const CLIServerDeps& deps_;
 };
 

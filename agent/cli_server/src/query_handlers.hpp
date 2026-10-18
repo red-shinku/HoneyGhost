@@ -9,6 +9,7 @@
 #ifndef HNG_QUERYHANDLERS_HPP_
 #define HNG_QUERYHANDLERS_HPP_
 
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -20,6 +21,7 @@
 
 #include <proto/cli_service.pb.h>
 
+#include "agent/control_plane/include/context_service.hpp"
 #include "agent/event_data/include/process.hpp"
 
 namespace hng::cli {
@@ -53,21 +55,22 @@ userver::ugrpc::server::Result<Response> ToResult(std::string_view rpc_name,
 }
 
 /**
- * @brief 服务所需接口未实现时的统一状态
- * @param rpc_name RPC 全名
- * @param gap 该 RPC 所依赖的缺口
- * @return UNIMPLEMENTED，消息里带上 rpc_name 与 gap
- * @note 缺口由其他模块另行补齐，本模块对其只回明确状态
- */
-grpc::Status Unimplemented(std::string_view rpc_name, std::string_view gap);
-
-/**
- * @brief 把角色的成员进程集填进 RM_GetProcessSet 的响应
+ * @brief 把角色的锚点与成员进程集填进 RM_GetProcessSet 的响应
+ * @param root 角色锚点；为空时 root_pid 保持 0
  * @param members 成员进程集；空集不是错误，响应的 pids 字段保持未设置
  * @param out 目标响应
  */
-void FillRoleProcessSet(const std::vector<hng::Process>& members,
+void FillRoleProcessSet(std::optional<hng::Process> root,
+                        const std::vector<hng::Process>& members,
                         hng::clisv::RM_GetProcessSetResponse& out);
+
+/**
+ * @brief 把 context 的根进程与成员进程集填进 CM_GetProcessSet 的响应
+ * @param set 根进程与成员进程集
+ * @param out 目标响应
+ */
+void FillContextProcessSet(const ContextProcessSet& set,
+                           hng::clisv::CM_GetProcessSetResponse& out);
 
 }  // namespace hng::cli
 

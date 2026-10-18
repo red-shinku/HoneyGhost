@@ -7,31 +7,47 @@
 
 #include "agent/cli_server/src/query_handlers.hpp"
 
-#include <string>
+#include <unordered_set>
 
 namespace hng::cli {
 
-grpc::Status Unimplemented(std::string_view rpc_name, std::string_view gap)
+namespace {
+
+/// @brief 按 pid 去重后追加；proto 的 pidList 不携带 start_time
+void AppendPids(const std::vector<hng::Process>& members,
+                hng::clisv::pidList& pids)
 {
-    LOG_DEBUG() << rpc_name << " is not implemented yet: " << gap
-                << " is not provided by the control plane";
-    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                        std::string{rpc_name} + " is not implemented yet: " +
-                            "missing " + std::string{gap});
+    std::unordered_set<uint32_t> seen;
+    for (const hng::Process& p : members) {
+        if (seen.insert(p.pid).second) {
+            pids.add_pid(p.pid);
+        }
+    }
 }
 
-void FillRoleProcessSet(const std::vector<hng::Process>& members,
+}  // namespace
+
+void FillRoleProcessSet(std::optional<hng::Process> root,
+                        const std::vector<hng::Process>& members,
                         hng::clisv::RM_GetProcessSetResponse& out)
 {
-    // TODO: root_pid 暂无数据源 —— RoleLookupService 未暴露角色锚点进程，
-    //       先保持 proto 默认值 0
+    if (root && root->pid != 0) {
+        out.set_root_pid(root->pid);
+    }
     if (members.empty()) {
         return;
     }
-    hng::clisv::pidList* pids = out.mutable_pids();
-    for (const hng::Process& p : members) {
-        pids->add_pid(p.pid);
+    AppendPids(members, *out.mutable_pids());
+}
+
+void FillContextProcessSet(const ContextProcessSet& set,
+                           hng::clisv::CM_GetProcessSetResponse& out)
+{
+    out.set_root_pid(set.root.pid);
+    if (set.members.empty()) {
+        return;
     }
+    AppendPids(set.members, *out.mutable_pids());
 }
 
 }  // namespace hng::cli

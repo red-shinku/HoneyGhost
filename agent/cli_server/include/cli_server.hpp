@@ -27,9 +27,6 @@ struct CLIServerDeps final {
     const ContextLookupService* context = nullptr;
     /// 进程结构查询
     const ProcessLookupService* process = nullptr;
-    // TODO: 查询面还需要 RoleManagerStats / ContextManagerStats，
-    //             待两个 *ManagerStats 从各自的 src/ 私有头移到
-    //             control_plane/include/ (缺-6)
     /// 引擎订阅入口（写侧）
     SubscriberRegService* subs          = nullptr;
 };
