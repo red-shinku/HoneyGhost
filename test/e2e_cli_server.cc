@@ -163,6 +163,11 @@ class ContextStub final : public ContextLookupService {
     {
         return {};
     }
+
+    std::optional<ContextProcessSet> members(uint32_t) const override
+    {
+        return std::nullopt;
+    }
 };
 
 class ProcessStub final : public ProcessLookupService {

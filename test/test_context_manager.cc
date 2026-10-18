@@ -305,6 +305,64 @@ void run_contexts_by_attr()
           "应按 contextID 升序返回");
 }
 
+void run_members_by_context()
+{
+    ContextManager manager;
+    Runner runner(manager);
+
+    CHECK(!manager.members(7).has_value(), "未知 contextID 应返回空");
+
+    register_root(manager, proc(100, 1000), 7, "根进程应注册成功");
+
+    // 根自指：初始成员只有根
+    std::optional<ContextProcessSet> set = manager.members(7);
+    CHECK(set.has_value() && set->root == proc(100, 1000),
+          "应返回根进程");
+    CHECK(set->members.size() == 1 && set->members[0] == proc(100, 1000),
+          "根进程应在成员集中");
+
+    manager.bind_to_ctxroot(proc(102, 1002), proc(100, 1000));
+    manager.bind_to_ctxroot(proc(101, 1001), proc(100, 1000));
+    CHECK(wait_until([&] {
+              auto current = manager.members(7);
+              return current.has_value() && current->members.size() == 3;
+          }),
+          "挂靠后成员集应增加");
+
+    set = manager.members(7);
+    CHECK(set->members.size() == 3 && set->members[0].pid == 100 &&
+              set->members[1].pid == 101 && set->members[2].pid == 102,
+          "成员应按 pid 升序并含根");
+
+    // 附属 context 共用同一根键与成员集
+    manager.register_contextID(proc(100, 1000),
+                               decision(8, contextattr::EXTRA_ATTACK), 7);
+    CHECK(wait_until([&] { return manager.members(8).has_value(); }),
+          "附属 context 应可查询");
+    set = manager.members(8);
+    CHECK(set.has_value() && set->root == proc(100, 1000) &&
+              set->members.size() == 3,
+          "附属 context 应返回同一根与成员集");
+
+    // 成员被完全删除后从成员集消失
+    manager.on_process_removed(proc(101, 1001));
+    CHECK(wait_until([&] {
+              auto current = manager.members(7);
+              return current.has_value() && current->members.size() == 2;
+          }),
+          "成员删除后应从成员集移除");
+    set = manager.members(7);
+    CHECK(set->members.size() == 2 && set->members[0].pid == 100 &&
+              set->members[1].pid == 102,
+          "剩余成员应保持升序");
+
+    // 根被完全删除后 context 消失
+    manager.on_process_removed(proc(100, 1000));
+    CHECK(wait_until([&] { return !manager.members(7).has_value(); }),
+          "根删除后主 context 应不可查");
+    CHECK(!manager.members(8).has_value(), "根删除后附属 context 也应不可查");
+}
+
 void run_stop_semantics()
 {
     // run() 之前 stop()：run() 立即返回
@@ -401,6 +459,7 @@ int main()
     run_cleanup();
     run_set_attr();
     run_contexts_by_attr();
+    run_members_by_context();
     run_stop_semantics();
     run_concurrent_writers();
 

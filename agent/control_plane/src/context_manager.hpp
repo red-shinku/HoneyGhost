@@ -63,6 +63,8 @@ struct ContextTable {
     std::unordered_map<ContextKey, ContextMessage, KeyHash> map;
     /// 属性 → contextID 集合；与 map 同锁维护
     std::unordered_map<hng::contextattr, std::unordered_set<uint32_t>> by_attr;
+    /// contextID → 根键；与 map 同锁维护
+    std::unordered_map<uint32_t, ContextKey> id_to_key;
 };
 
 /**
@@ -80,17 +82,22 @@ struct ParentTable {
  * @details
  * 内部 map 为 hng::Process -> ContextKey。
  * 其中 context 根进程自指。任意进程可直接 O(1) 得到其所属 context 的根进程
- * 该表也隐含地表示了不同 context 的进程集
+ * processes_by_root 是其反向索引，供按 context 枚举成员。
  *
- * 写点只有两类事件：
+ * 写点只有三类事件：
  *   1) 某进程的 context 归属落定 —— bind_to_ctxroot()
  *   2) 进程被完全删除 —— on_process_removed() 清理该进程条目。
+ *   3) context 根注册 —— addContextID() 写入根进程自指。
  * 进程的归属在落定后不再改写（不可变），故本表也无需修改
  */
 struct ToContextRootTable {
     mutable std::shared_mutex smtx;
     std::unordered_map<hng::Process, ContextKey>
         map;  ///< 进程(hng::Process) -> 所属主context根进程(ContextKey)
+    /// 根键 → 成员进程；map 的反向索引，与 map 同锁维护
+    std::unordered_map<ContextKey, std::unordered_set<hng::Process>,
+                       ContextTable::KeyHash>
+        processes_by_root;
 };
 
 /// @brief 上下文管理器的异常态观测快照
@@ -138,6 +145,10 @@ class ContextManager : public ContextLookupService,
 
     /// @brief 指定属性的 contextID 集合，按 ID 升序
     std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override;
+
+    /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
+    std::optional<ContextProcessSet> members(
+        uint32_t contextID) const override;
 
     /// @brief 注册新的 contextID（通知写）
     /// 生成并将实际写操作 加入任务队列
