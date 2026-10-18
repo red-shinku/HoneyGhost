@@ -112,6 +112,18 @@ if(TARGET hng_cli_server)
     add_executable(test_cli_event_converter test_cli_event_converter.cc)
     target_link_libraries(test_cli_event_converter PRIVATE hng_cli_server)
     add_test(NAME test_cli_event_converter COMMAND test_cli_event_converter)
+
+    # 静态配置 schema：解析 YAML 文本并核对配置项
+    add_executable(test_cli_server_config test_cli_server_config.cc)
+    target_link_libraries(test_cli_server_config PRIVATE hng_cli_server)
+    add_test(NAME test_cli_server_config COMMAND test_cli_server_config)
+
+    # 端到端：子进程跑粗糙装配的 userver 应用，父进程用标准 gRPC 客户端断言
+    # 依赖 Unix socket 与 fork，故仅在类 Unix 平台注册
+    add_executable(e2e_cli_server e2e_cli_server.cc)
+    target_link_libraries(e2e_cli_server PRIVATE hng_cli_server userver::grpc)
+    add_test(NAME e2e_cli_server COMMAND e2e_cli_server)
+    set_tests_properties(e2e_cli_server PROPERTIES TIMEOUT 120)
 endif()
 
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
