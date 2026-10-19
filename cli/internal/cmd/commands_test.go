@@ -277,6 +277,502 @@ func TestRoleWhichNotFound(t *testing.T) {
 	}
 }
 
+func TestRoleShowByID(t *testing.T) {
+	var scope model.RoleScope
+	var processID, contextID uint32
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(_ context.Context, s model.RoleScope) ([]model.Role, error) {
+			scope = s
+			return []model.Role{
+				{ID: 3, Label: "ssh"},
+				{ID: 7, Label: "nginx:1.25"},
+			}, nil
+		},
+		processes: func(_ context.Context, id uint32) (model.ProcessSet, error) {
+			processID = id
+			return model.ProcessSet{RootPID: 1234, PIDs: []uint32{1234, 1235}}, nil
+		},
+		contextIDs: func(_ context.Context, id uint32) ([]uint32, error) {
+			contextID = id
+			return []uint32{3, 4}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "7")
+	if err != nil {
+		t.Fatalf("role show: %v", err)
+	}
+	if scope != model.RoleScopeAll {
+		t.Errorf("scope = %v, want all", scope)
+	}
+	if processID != 7 || contextID != 7 {
+		t.Errorf("queried ids = (%d, %d), want (7, 7)", processID, contextID)
+	}
+	want := "ID     7\nLABEL  nginx:1.25\n\nPROCESSES (root 1234)\n  1234\n  1235\n\n" +
+		"CONTEXTS\n  3\n  4\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRoleShowByIDJSON(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 7, Label: "nginx:1.25"}}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{RootPID: 1234, PIDs: []uint32{1234}}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			return []uint32{3}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "7", "-o", "json")
+	if err != nil {
+		t.Fatalf("role show json: %v", err)
+	}
+	want := "{\n  \"role_id\": 7,\n  \"role_label\": \"nginx:1.25\",\n  \"processes\": {\n" +
+		"    \"root_pid\": 1234,\n    \"pids\": [\n      1234\n    ]\n  },\n" +
+		"  \"context_ids\": [\n    3\n  ]\n}\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRoleShowByIDGetRolesFails(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return nil, &api.StatusError{Op: "GetRoles", Kind: api.ErrorUnimplemented, Message: "nope"}
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{RootPID: 0, PIDs: []uint32{1234}}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			return []uint32{3}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "7")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(out, "LABEL") {
+		t.Errorf("stdout contains LABEL on failed label segment:\n%s", out)
+	}
+	if !strings.Contains(out, "PROCESSES") || !strings.Contains(out, "CONTEXTS") {
+		t.Errorf("stdout missing successful segments:\n%s", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if want := "label: GetRoles is not implemented by the server: nope"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+
+	jsonOut, _, _ := executeWithServices(t, svcs, "role", "show", "7", "-o", "json")
+	if !strings.Contains(jsonOut, "\"role_label\": null") {
+		t.Errorf("json label not null:\n%s", jsonOut)
+	}
+}
+
+func TestRoleShowByIDNotFound(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 3, Label: "ssh"}}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			t.Fatal("processes must not be queried for a missing role")
+			return model.ProcessSet{}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			t.Fatal("contexts must not be queried for a missing role")
+			return nil, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "7")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if want := "role 7 not found"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRoleShowByLabel(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 7, Label: "nginx:1.25"}}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{PIDs: []uint32{1234}}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			return []uint32{}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "nginx:1.25")
+	if err != nil {
+		t.Fatalf("role show: %v", err)
+	}
+	if !strings.Contains(out, "LABEL  nginx:1.25") {
+		t.Errorf("stdout missing label:\n%s", out)
+	}
+}
+
+func TestRoleShowNumericLabelRequiresFlag(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 5, Label: "12345"}}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{PIDs: []uint32{}}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			return []uint32{}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "--label", "12345")
+	if err != nil {
+		t.Fatalf("role show --label: %v", err)
+	}
+	if !strings.Contains(out, "ID     5") {
+		t.Errorf("stdout missing resolved id:\n%s", out)
+	}
+
+	// 不带 --label 时按 roleID 解析，节点上不存在 ID 12345。
+	_, _, err = executeWithServices(t, svcs, "role", "show", "12345")
+	if err == nil || err.Error() != "role 12345 not found" {
+		t.Errorf("error = %v, want role 12345 not found", err)
+	}
+}
+
+func TestRoleShowByLabelAmbiguous(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{
+				{ID: 3, Label: "dup"},
+				{ID: 7, Label: "dup"},
+			}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			t.Fatal("processes must not be queried for an ambiguous label")
+			return model.ProcessSet{}, nil
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			t.Fatal("contexts must not be queried for an ambiguous label")
+			return nil, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "dup")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if want := "role label \"dup\" matches multiple roles: 3, 7"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRoleShowByLabelNotFound(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 3, Label: "ssh"}}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "missing")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if want := "role \"missing\" not found"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRoleShowByLabelGetRolesFails(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return nil, &api.StatusError{Op: "GetRoles", Kind: api.ErrorUnavailable, Message: "boom"}
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			t.Fatal("processes must not be queried when target resolution fails")
+			return model.ProcessSet{}, nil
+		},
+	}}
+	_, _, err := executeWithServices(t, svcs, "role", "show", "nginx")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if !strings.Contains(err.Error(), "cannot connect to the CLI service") {
+		t.Errorf("error = %q, want mapped Unavailable message", err.Error())
+	}
+}
+
+func TestRoleShowInvalidTarget(t *testing.T) {
+	for _, target := range []string{"0", "4294967296"} {
+		t.Run(target, func(t *testing.T) {
+			_, _, err := executeWithoutDial(t, "role", "show", target)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if ExitCode(err, false) != 2 {
+				t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+			}
+		})
+	}
+}
+
+func TestRoleShowPartialSegments(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			return []model.Role{{ID: 7, Label: "nginx"}}, nil
+		},
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{}, &api.StatusError{
+				Op: "GetProcessSet", Kind: api.ErrorUnimplemented, Message: "nope",
+			}
+		},
+		contextIDs: func(context.Context, uint32) ([]uint32, error) {
+			return []uint32{3}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "show", "7")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(out, "PROCESSES") {
+		t.Errorf("stdout contains failed PROCESSES section:\n%s", out)
+	}
+	if !strings.Contains(out, "CONTEXTS\n  3") {
+		t.Errorf("stdout missing successful CONTEXTS section:\n%s", out)
+	}
+	if want := "processes: GetProcessSet is not implemented by the server: nope"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestContextShow(t *testing.T) {
+	svcs := api.Services{Contexts: fakeContextService{
+		processes: func(_ context.Context, id uint32) (model.ProcessSet, error) {
+			if id != 3 {
+				t.Errorf("context id = %d, want 3", id)
+			}
+			return model.ProcessSet{RootPID: 1234, PIDs: []uint32{1234, 1235}}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "context", "show", "3")
+	if err != nil {
+		t.Fatalf("context show: %v", err)
+	}
+	want := "CONTEXT  3\n\nPROCESSES (root 1234)\n  1234\n  1235\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+
+	jsonOut, _, err := executeWithServices(t, svcs, "context", "show", "3", "-o", "json")
+	if err != nil {
+		t.Fatalf("context show json: %v", err)
+	}
+	wantJSON := "{\n  \"context_id\": 3,\n  \"processes\": {\n    \"root_pid\": 1234,\n" +
+		"    \"pids\": [\n      1234,\n      1235\n    ]\n  }\n}\n"
+	if jsonOut != wantJSON {
+		t.Errorf("json stdout = %q, want %q", jsonOut, wantJSON)
+	}
+}
+
+func TestContextShowInvalidID(t *testing.T) {
+	for _, id := range []string{"0", "abc", "4294967296"} {
+		t.Run(id, func(t *testing.T) {
+			_, _, err := executeWithoutDial(t, "context", "show", id)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if ExitCode(err, false) != 2 {
+				t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+			}
+		})
+	}
+}
+
+func TestContextShowError(t *testing.T) {
+	svcs := api.Services{Contexts: fakeContextService{
+		processes: func(context.Context, uint32) (model.ProcessSet, error) {
+			return model.ProcessSet{}, &api.StatusError{
+				Op: "GetProcessSet", Kind: api.ErrorInvalidArgument, Message: "bad context",
+			}
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "context", "show", "3")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if err.Error() != "bad context" {
+		t.Errorf("error = %q, want server message", err.Error())
+	}
+}
+
+func TestStatus(t *testing.T) {
+	var scope model.RoleScope
+	svcs := api.Services{
+		Roles: fakeRoleService{
+			list: func(_ context.Context, s model.RoleScope) ([]model.Role, error) {
+				scope = s
+				return []model.Role{{ID: 7}, {ID: 8}}, nil
+			},
+			stats: func(context.Context) (model.RoleStats, error) {
+				return model.RoleStats{Rejected: uint64Ptr(1)}, nil
+			},
+		},
+		Contexts: fakeContextService{
+			exceptionIDs: func(context.Context) ([]uint32, error) { return []uint32{3}, nil },
+			extraIDs:     func(context.Context) ([]uint32, error) { return []uint32{4, 5}, nil },
+			stats: func(context.Context) (model.ContextStats, error) {
+				return model.ContextStats{UnknownUnregister: uint64Ptr(2)}, nil
+			},
+		},
+	}
+	out, _, err := executeWithServices(t, svcs, "status")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if scope != model.RoleScopeSupervision {
+		t.Errorf("scope = %v, want supervision", scope)
+	}
+	for _, line := range []string{
+		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
+		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("stdout missing %q:\n%s", line, out)
+		}
+	}
+
+	jsonOut, _, err := executeWithServices(t, svcs, "status", "-o", "json")
+	if err != nil {
+		t.Fatalf("status json: %v", err)
+	}
+	for _, field := range []string{
+		"\"supervised_role_count\": 2",
+		"\"exception_context_count\": 1",
+		"\"extra_context_count\": 2",
+		"\"role_stats\"",
+		"\"context_stats\"",
+	} {
+		if !strings.Contains(jsonOut, field) {
+			t.Errorf("json missing %q:\n%s", field, jsonOut)
+		}
+	}
+}
+
+func TestStatusPartial(t *testing.T) {
+	svcs := api.Services{
+		Roles: fakeRoleService{
+			list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+				return nil, &api.StatusError{Op: "GetRoles", Kind: api.ErrorUnimplemented, Message: "nope"}
+			},
+			stats: func(context.Context) (model.RoleStats, error) {
+				return model.RoleStats{}, nil
+			},
+		},
+		Contexts: fakeContextService{
+			exceptionIDs: func(context.Context) ([]uint32, error) { return []uint32{3}, nil },
+			extraIDs:     func(context.Context) ([]uint32, error) { return []uint32{4}, nil },
+			stats: func(context.Context) (model.ContextStats, error) {
+				return model.ContextStats{}, nil
+			},
+		},
+	}
+	out, _, err := executeWithServices(t, svcs, "status")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(out, "SUPERVISED ROLES") {
+		t.Errorf("stdout contains failed supervised roles segment:\n%s", out)
+	}
+	if !strings.Contains(out, "EXCEPTION CONTEXTS") || !strings.Contains(out, "ROLE STATS") {
+		t.Errorf("stdout missing successful segments:\n%s", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if want := "supervised roles: GetRoles is not implemented by the server: nope"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+
+	jsonOut, _, _ := executeWithServices(t, svcs, "status", "-o", "json")
+	if !strings.Contains(jsonOut, "\"supervised_role_count\": null") {
+		t.Errorf("json count not null:\n%s", jsonOut)
+	}
+}
+
+func TestStatusAllFail(t *testing.T) {
+	failRoles := func(context.Context) (model.RoleStats, error) {
+		return model.RoleStats{}, &api.StatusError{Op: "GetStats", Kind: api.ErrorUnavailable, Message: "boom"}
+	}
+	failContexts := func(context.Context) (model.ContextStats, error) {
+		return model.ContextStats{}, &api.StatusError{Op: "GetStats", Kind: api.ErrorUnavailable, Message: "boom"}
+	}
+	failIDs := func(context.Context) ([]uint32, error) {
+		return nil, &api.StatusError{Op: "Get", Kind: api.ErrorUnavailable, Message: "boom"}
+	}
+	svcs := api.Services{
+		Roles: fakeRoleService{
+			list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+				return nil, &api.StatusError{Op: "GetRoles", Kind: api.ErrorUnavailable, Message: "boom"}
+			},
+			stats: failRoles,
+		},
+		Contexts: fakeContextService{
+			exceptionIDs: failIDs,
+			extraIDs:     failIDs,
+			stats:        failContexts,
+		},
+	}
+	out, _, err := executeWithServices(t, svcs, "status")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("table stdout = %q, want empty", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+
+	jsonOut, _, _ := executeWithServices(t, svcs, "status", "-o", "json")
+	for _, field := range []string{
+		"\"supervised_role_count\": null",
+		"\"exception_context_count\": null",
+		"\"extra_context_count\": null",
+		"\"role_stats\": null",
+		"\"context_stats\": null",
+	} {
+		if !strings.Contains(jsonOut, field) {
+			t.Errorf("json missing %q:\n%s", field, jsonOut)
+		}
+	}
+}
+
 func TestGroupRejectsUnknownSubcommand(t *testing.T) {
 	for _, group := range []string{"role", "context"} {
 		t.Run(group, func(t *testing.T) {

@@ -15,11 +15,14 @@ import (
 // 渲染器只写调用方给的 writer，不决定 stdout/stderr，不打印错误。
 type Renderer interface {
 	Roles(w io.Writer, roles []model.Role) error
+	RoleDetail(w io.Writer, d model.RoleDetail) error
 	RoleStats(w io.Writer, s model.RoleStats) error
 	WhichRole(w io.Writer, id uint32, found bool) error
 	WhichContext(w io.Writer, id uint32, found bool) error
 	ContextList(w io.Writer, refs []model.ContextRef) error
+	ContextDetail(w io.Writer, contextID uint32, ps model.ProcessSet) error
 	ContextStats(w io.Writer, s model.ContextStats) error
+	Status(w io.Writer, s model.Status) error
 }
 
 // New 返回指定格式的渲染器；Format 由 ParseFormat 校验。
@@ -45,17 +48,37 @@ func (r tableRenderer) Roles(w io.Writer, roles []model.Role) error {
 	return tw.Flush()
 }
 
+func (r tableRenderer) RoleDetail(w io.Writer, d model.RoleDetail) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "ID\t%d\n", d.RoleID)
+	if d.Label != nil {
+		fmt.Fprintf(tw, "LABEL\t%s\n", *d.Label)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	ew := &errWriter{w: w}
+	if d.Processes != nil {
+		ew.println()
+		writeProcessSection(ew, "PROCESSES", *d.Processes)
+	}
+	if d.ContextIDs != nil {
+		ew.println()
+		ew.println("CONTEXTS")
+		for _, id := range *d.ContextIDs {
+			ew.printf("  %d\n", id)
+		}
+	}
+	return ew.err
+}
+
 func (r tableRenderer) RoleStats(w io.Writer, s model.RoleStats) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	if !r.opts.NoHeaders {
 		fmt.Fprintln(tw, "COUNTER\tVALUE")
 	}
-	writeCounter(tw, "rejected", s.Rejected)
-	writeCounter(tw, "unknown_instance", s.UnknownInstance)
-	writeCounter(tw, "owner_conflict", s.OwnerConflict)
-	writeCounter(tw, "anchors_removed", s.AnchorsRemoved)
-	writeCounter(tw, "cgroup_read_empty", s.CgroupReadEmpty)
-	writeCounter(tw, "queue_rejected", s.QueueRejected)
+	writeCounters(tw, roleCounters(s))
 	return tw.Flush()
 }
 
@@ -64,8 +87,7 @@ func (r tableRenderer) ContextStats(w io.Writer, s model.ContextStats) error {
 	if !r.opts.NoHeaders {
 		fmt.Fprintln(tw, "COUNTER\tVALUE")
 	}
-	writeCounter(tw, "ctxroot_parent_unsettled", s.CtxrootParentUnsettled)
-	writeCounter(tw, "unknown_unregister", s.UnknownUnregister)
+	writeCounters(tw, contextCounters(s))
 	return tw.Flush()
 }
 
@@ -96,18 +118,145 @@ func (r tableRenderer) ContextList(w io.Writer, refs []model.ContextRef) error {
 	return tw.Flush()
 }
 
-func writeCounter(tw *tabwriter.Writer, name string, v *uint64) {
-	value := "-"
-	if v != nil {
-		value = strconv.FormatUint(*v, 10)
+func (r tableRenderer) ContextDetail(w io.Writer, contextID uint32, ps model.ProcessSet) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "CONTEXT\t%d\n", contextID)
+	if err := tw.Flush(); err != nil {
+		return err
 	}
-	fmt.Fprintf(tw, "%s\t%s\n", name, value)
+
+	ew := &errWriter{w: w}
+	ew.println()
+	writeProcessSection(ew, "PROCESSES", ps)
+	return ew.err
+}
+
+func (r tableRenderer) Status(w io.Writer, s model.Status) error {
+	ew := &errWriter{w: w}
+	first := true
+	open := func() {
+		if !first {
+			ew.println()
+		}
+		first = false
+	}
+
+	if s.SupervisedRoleCount != nil || s.ExceptionContextCount != nil ||
+		s.ExtraContextCount != nil {
+		open()
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		if s.SupervisedRoleCount != nil {
+			fmt.Fprintf(tw, "SUPERVISED ROLES\t%d\n", *s.SupervisedRoleCount)
+		}
+		if s.ExceptionContextCount != nil {
+			fmt.Fprintf(tw, "EXCEPTION CONTEXTS\t%d\n", *s.ExceptionContextCount)
+		}
+		if s.ExtraContextCount != nil {
+			fmt.Fprintf(tw, "EXTRA CONTEXTS\t%d\n", *s.ExtraContextCount)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if s.RoleStats != nil {
+		open()
+		ew.println("ROLE STATS")
+		if err := writeIndentedCounters(w, roleCounters(*s.RoleStats)); err != nil {
+			return err
+		}
+	}
+	if s.ContextStats != nil {
+		open()
+		ew.println("CONTEXT STATS")
+		if err := writeIndentedCounters(w, contextCounters(*s.ContextStats)); err != nil {
+			return err
+		}
+	}
+	return ew.err
+}
+
+func writeProcessSection(ew *errWriter, title string, ps model.ProcessSet) {
+	if ps.RootPID == 0 {
+		ew.println(title)
+	} else {
+		ew.printf("%s (root %d)\n", title, ps.RootPID)
+	}
+	for _, pid := range ps.PIDs {
+		ew.printf("  %d\n", pid)
+	}
+}
+
+type counter struct {
+	name  string
+	value *uint64
+}
+
+func roleCounters(s model.RoleStats) []counter {
+	return []counter{
+		{"rejected", s.Rejected},
+		{"unknown_instance", s.UnknownInstance},
+		{"owner_conflict", s.OwnerConflict},
+		{"anchors_removed", s.AnchorsRemoved},
+		{"cgroup_read_empty", s.CgroupReadEmpty},
+		{"queue_rejected", s.QueueRejected},
+	}
+}
+
+func contextCounters(s model.ContextStats) []counter {
+	return []counter{
+		{"ctxroot_parent_unsettled", s.CtxrootParentUnsettled},
+		{"unknown_unregister", s.UnknownUnregister},
+	}
+}
+
+func writeCounters(tw *tabwriter.Writer, counters []counter) {
+	for _, c := range counters {
+		fmt.Fprintf(tw, "%s\t%s\n", c.name, counterValue(c.value))
+	}
+}
+
+func writeIndentedCounters(w io.Writer, counters []counter) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, c := range counters {
+		fmt.Fprintf(tw, "  %s\t%s\n", c.name, counterValue(c.value))
+	}
+	return tw.Flush()
+}
+
+func counterValue(v *uint64) string {
+	if v == nil {
+		return "-"
+	}
+	return strconv.FormatUint(*v, 10)
+}
+
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) printf(format string, args ...any) {
+	if e.err != nil {
+		return
+	}
+	_, e.err = fmt.Fprintf(e.w, format, args...)
+}
+
+func (e *errWriter) println(args ...any) {
+	if e.err != nil {
+		return
+	}
+	_, e.err = fmt.Fprintln(e.w, args...)
 }
 
 type jsonRenderer struct{}
 
 func (jsonRenderer) Roles(w io.Writer, roles []model.Role) error {
 	return writeJSON(w, nonNilRoles(roles))
+}
+
+func (jsonRenderer) RoleDetail(w io.Writer, d model.RoleDetail) error {
+	return writeJSON(w, d)
 }
 
 func (jsonRenderer) RoleStats(w io.Writer, s model.RoleStats) error {
@@ -140,6 +289,17 @@ func (jsonRenderer) WhichContext(w io.Writer, id uint32, found bool) error {
 
 func (jsonRenderer) ContextList(w io.Writer, refs []model.ContextRef) error {
 	return writeJSON(w, nonNilContextRefs(refs))
+}
+
+func (jsonRenderer) ContextDetail(w io.Writer, contextID uint32, ps model.ProcessSet) error {
+	return writeJSON(w, struct {
+		ContextID uint32           `json:"context_id"`
+		Processes model.ProcessSet `json:"processes"`
+	}{contextID, ps})
+}
+
+func (jsonRenderer) Status(w io.Writer, s model.Status) error {
+	return writeJSON(w, s)
 }
 
 func writeJSON(w io.Writer, v any) error {

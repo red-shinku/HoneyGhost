@@ -102,6 +102,106 @@ func TestGoldenWhich(t *testing.T) {
 		func(r Renderer, b *bytes.Buffer) error { return r.WhichContext(b, 0, false) }))
 }
 
+func TestGoldenRoleDetail(t *testing.T) {
+	label := "nginx:1.25"
+	ids := []uint32{3, 4}
+	processes := model.ProcessSet{RootPID: 1234, PIDs: []uint32{1234, 1235}}
+	full := model.RoleDetail{
+		RoleID:     7,
+		Label:      &label,
+		Processes:  &processes,
+		ContextIDs: &ids,
+	}
+
+	checkGolden(t, "role_detail_table", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.RoleDetail(b, full) }))
+	checkGolden(t, "role_detail_table_minimal", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error {
+			return r.RoleDetail(b, model.RoleDetail{RoleID: 7})
+		}))
+
+	rootless := model.ProcessSet{PIDs: []uint32{1234}}
+	noContexts := []uint32{}
+	checkGolden(t, "role_detail_table_rootless", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error {
+			return r.RoleDetail(b, model.RoleDetail{
+				RoleID:     7,
+				Label:      &label,
+				Processes:  &rootless,
+				ContextIDs: &noContexts,
+			})
+		}))
+
+	checkGolden(t, "role_detail_json", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.RoleDetail(b, full) }))
+	checkGolden(t, "role_detail_json_minimal", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error {
+			return r.RoleDetail(b, model.RoleDetail{RoleID: 7})
+		}))
+
+	emptyLabel := ""
+	emptyProcesses := model.ProcessSet{PIDs: []uint32{}}
+	emptyIDs := []uint32{}
+	checkGolden(t, "role_detail_json_empty", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error {
+			return r.RoleDetail(b, model.RoleDetail{
+				RoleID:     7,
+				Label:      &emptyLabel,
+				Processes:  &emptyProcesses,
+				ContextIDs: &emptyIDs,
+			})
+		}))
+}
+
+func TestGoldenContextDetail(t *testing.T) {
+	processes := model.ProcessSet{RootPID: 1234, PIDs: []uint32{1234, 1235}}
+	checkGolden(t, "context_detail_table", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.ContextDetail(b, 3, processes) }))
+	checkGolden(t, "context_detail_table_rootless", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error {
+			return r.ContextDetail(b, 3, model.ProcessSet{PIDs: []uint32{}})
+		}))
+	checkGolden(t, "context_detail_json", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.ContextDetail(b, 3, processes) }))
+}
+
+func TestGoldenStatus(t *testing.T) {
+	supervised, exception, extra := 12, 3, 0
+	full := model.Status{
+		SupervisedRoleCount:   &supervised,
+		ExceptionContextCount: &exception,
+		ExtraContextCount:     &extra,
+		RoleStats: &model.RoleStats{
+			Rejected:        uint64Ptr(0),
+			UnknownInstance: nil,
+			OwnerConflict:   uint64Ptr(2),
+			AnchorsRemoved:  uint64Ptr(0),
+			CgroupReadEmpty: nil,
+			QueueRejected:   uint64Ptr(5),
+		},
+		ContextStats: &model.ContextStats{
+			CtxrootParentUnsettled: uint64Ptr(1),
+			UnknownUnregister:      uint64Ptr(2),
+		},
+	}
+	checkGolden(t, "status_table", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, full) }))
+	checkGolden(t, "status_json", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, full) }))
+
+	partial := model.Status{
+		RoleStats: &model.RoleStats{Rejected: uint64Ptr(1)},
+	}
+	checkGolden(t, "status_table_partial", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, partial) }))
+	checkGolden(t, "status_json_partial", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, partial) }))
+	checkGolden(t, "status_json_empty", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, model.Status{}) }))
+	checkGolden(t, "status_table_empty", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, model.Status{}) }))
+}
+
 func TestGoldenContextList(t *testing.T) {
 	refs := []model.ContextRef{
 		{Kind: model.ContextKindException, ID: 3},

@@ -23,6 +23,7 @@ func newContextCommand(app *App) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newContextListCommand(app),
+		newContextShowCommand(app),
 		newContextStatsCommand(app),
 		newContextWhichCommand(app),
 	)
@@ -130,6 +131,43 @@ func runContextList(ctx context.Context, out, errOut io.Writer, r render.Rendere
 		return failures
 	}
 	return nil
+}
+
+func newContextShowCommand(app *App) *cobra.Command {
+	var contextID uint32
+	cmd := &cobra.Command{
+		Use:   "show <contextID>",
+		Short: "Show a context's processes",
+		Args:  cobra.ExactArgs(1),
+		PreRunE: func(_ *cobra.Command, args []string) error {
+			id, err := parsePositiveUint32("context id", args[0])
+			if err != nil {
+				return err
+			}
+			contextID = id
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			svcs, err := app.Services(cmd.Context())
+			if err != nil {
+				return app.wrapRuntime(err)
+			}
+			ctx, cancel := app.QueryContext(cmd.Context())
+			defer cancel()
+			return app.wrapRuntime(runContextShow(ctx, cmd.OutOrStdout(),
+				app.renderer(), svcs.Contexts, contextID))
+		},
+	}
+	return cmd
+}
+
+func runContextShow(ctx context.Context, out io.Writer, r render.Renderer,
+	svc api.ContextService, contextID uint32) error {
+	processes, err := svc.Processes(ctx, contextID)
+	if err != nil {
+		return err
+	}
+	return r.ContextDetail(out, contextID, processes)
 }
 
 func newContextStatsCommand(app *App) *cobra.Command {
