@@ -35,6 +35,7 @@ func run() int {
 	defer stop()
 
 	app := cmd.NewApp(dial)
+	app.SetSignalStop(stop)
 	defer app.Close()
 
 	root := cmd.NewRootCommand(app, cmd.BuildInfo{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"honeyghost/cli/internal/model"
@@ -23,6 +24,8 @@ type Renderer interface {
 	ContextDetail(w io.Writer, contextID uint32, ps model.ProcessSet) error
 	ContextStats(w io.Writer, s model.ContextStats) error
 	Status(w io.Writer, s model.Status) error
+	Event(w io.Writer, ev model.Event) error
+	StreamStats(w io.Writer, s model.StreamStats) error
 }
 
 // New 返回指定格式的渲染器；Format 由 ParseFormat 校验。
@@ -30,11 +33,17 @@ func New(format Format, opts Options) Renderer {
 	if format == FormatJSON {
 		return jsonRenderer{}
 	}
-	return tableRenderer{opts: opts}
+	return &tableRenderer{opts: opts, stream: &streamState{}}
 }
 
 type tableRenderer struct {
-	opts Options
+	opts   Options
+	stream *streamState
+}
+
+// streamState 保存流式表格的跨行状态。
+type streamState struct {
+	headerPrinted bool
 }
 
 func (r tableRenderer) Roles(w io.Writer, roles []model.Role) error {
@@ -175,6 +184,113 @@ func (r tableRenderer) Status(w io.Writer, s model.Status) error {
 	return ew.err
 }
 
+// events 表格的固定列宽：逐行输出时无法预知后续字段宽度，
+// 固定宽度保证每一行都与表头对齐；超宽字段原样溢出，不截断。
+const (
+	eventHeaderFormat = "%-7s %-10s %-10s %-24s %-10s %s\n"
+	eventRowFormat    = "%-7s %-10d %-10d %-24s %-10s %s\n"
+)
+
+func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
+	st := r.stream
+	if !st.headerPrinted {
+		st.headerPrinted = true
+		if !r.opts.NoHeaders {
+			if _, err := fmt.Fprintf(w, eventHeaderFormat,
+				"TYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL"); err != nil {
+				return err
+			}
+		}
+	}
+
+	role := ev.Head.RoleLabel
+	if role == "" {
+		if ev.Head.RoleID != 0 {
+			role = fmt.Sprintf("#%d", ev.Head.RoleID)
+		} else {
+			role = "-"
+		}
+	}
+	contextID := "-"
+	if ev.Head.ContextID != 0 {
+		contextID = strconv.FormatUint(uint64(ev.Head.ContextID), 10)
+	}
+	eventType := string(ev.Head.Type)
+	if eventType == "" {
+		eventType = "-"
+	}
+
+	_, err := fmt.Fprintf(w, eventRowFormat,
+		eventType, ev.Head.PID, ev.Head.PPID, role, contextID, eventDetail(ev.Payload))
+	return err
+}
+
+// StreamStats 在 table 模式不输出：丢弃提示由命令层写 stderr。
+func (r tableRenderer) StreamStats(io.Writer, model.StreamStats) error {
+	return nil
+}
+
+// eventDetail 生成人读摘要；不是稳定契约，脚本应使用 JSON。
+func eventDetail(p model.Payload) string {
+	fields := p.Fields
+	name := stringField(fields, "syscall_name")
+	switch p.Kind {
+	case model.PayloadProcess:
+		return fmt.Sprintf("%s exit=%v", name, fields["exit_code"])
+	case model.PayloadExec:
+		return strings.TrimSpace(name + " " + stringField(fields, "semantic_filename"))
+	case model.PayloadCredential:
+		if uid, ok := fields["setuid_uid"]; ok {
+			return fmt.Sprintf("%s uid=%v", name, uid)
+		}
+		if gid, ok := fields["setgid_gid"]; ok {
+			return fmt.Sprintf("%s gid=%v", name, gid)
+		}
+		if capset, ok := fields["capset"].(map[string]any); ok {
+			return fmt.Sprintf("%s eff=%v perm=%v inh=%v", name,
+				capset["effective"], capset["permitted"], capset["inheritable"])
+		}
+		return name
+	case model.PayloadNamespace:
+		return fmt.Sprintf("%s ns_type=%v flags=0x%x", name,
+			fields["ns_type"], uintField(fields, "flags"))
+	case model.PayloadFileSyscall:
+		return fmt.Sprintf("%s flags=0x%x mode=0%o", name,
+			uintField(fields, "flags"), uintField(fields, "mode"))
+	case model.PayloadMemory:
+		return fmt.Sprintf("%s prot=0x%x flags=0x%x", name,
+			uintField(fields, "prot"), uintField(fields, "flags"))
+	case model.PayloadNetworkSyscall:
+		return fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
+			fields["family"], fields["type"], fields["protocol"])
+	case model.PayloadKernel:
+		return fmt.Sprintf("%s command=%v arg=%v", name,
+			fields["command"], fields["arg"])
+	case model.PayloadFile:
+		return stringField(fields, "semantic_filename")
+	default:
+		return p.Kind
+	}
+}
+
+func stringField(fields map[string]any, key string) string {
+	value, _ := fields[key].(string)
+	return value
+}
+
+func uintField(fields map[string]any, key string) uint64 {
+	switch value := fields[key].(type) {
+	case uint32:
+		return uint64(value)
+	case uint64:
+		return value
+	case int32:
+		return uint64(value)
+	default:
+		return 0
+	}
+}
+
 func writeProcessSection(ew *errWriter, title string, ps model.ProcessSet) {
 	if ps.RootPID == 0 {
 		ew.println(title)
@@ -300,6 +416,31 @@ func (jsonRenderer) ContextDetail(w io.Writer, contextID uint32, ps model.Proces
 
 func (jsonRenderer) Status(w io.Writer, s model.Status) error {
 	return writeJSON(w, s)
+}
+
+func (jsonRenderer) Event(w io.Writer, ev model.Event) error {
+	return writeJSONLine(w, struct {
+		Kind    string        `json:"kind"`
+		Head    model.Head    `json:"head"`
+		Payload model.Payload `json:"payload"`
+	}{"event", ev.Head, ev.Payload})
+}
+
+func (jsonRenderer) StreamStats(w io.Writer, s model.StreamStats) error {
+	return writeJSONLine(w, struct {
+		Kind          string `json:"kind"`
+		DroppedEvents uint64 `json:"dropped_events"`
+	}{"stats", s.DroppedEvents})
+}
+
+func writeJSONLine(w io.Writer, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = w.Write(data)
+	return err
 }
 
 func writeJSON(w io.Writer, v any) error {

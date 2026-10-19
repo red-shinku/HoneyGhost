@@ -6,7 +6,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -26,6 +25,7 @@ type Client struct {
 	conn     *grpc.ClientConn
 	roles    clisv.RoleManagerServiceClient
 	contexts clisv.ContextManagerServiceClient
+	events   clisv.RuntimeServiceClient
 }
 
 // Dial 建立到 socket 的连接。
@@ -45,6 +45,7 @@ func Dial(_ context.Context, socket string, opts Options) (*Client, error) {
 		conn:     conn,
 		roles:    clisv.NewRoleManagerServiceClient(conn),
 		contexts: clisv.NewContextManagerServiceClient(conn),
+		events:   clisv.NewRuntimeServiceClient(conn),
 	}, nil
 }
 
@@ -156,12 +157,32 @@ func (s contextService) Which(ctx context.Context, pid uint32) (uint32, bool, er
 	return contextID, found, nil
 }
 
-// eventService 是阶段 4 的接入点；事件流的请求构造与载荷转换届时实现。
 type eventService struct {
 	c *Client
 }
 
-func (eventService) Subscribe(context.Context, model.RuntimeSelector,
-	[]model.EventType) (api.EventStream, error) {
-	return nil, fmt.Errorf("event streaming is not implemented")
+func (s eventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
+	types []model.EventType) (api.EventStream, error) {
+	request := &clisv.ReceiveEventRequest{}
+	for _, eventType := range types {
+		converted, err := toProtoEventType(eventType)
+		if err != nil {
+			return nil, err
+		}
+		request.Etype = append(request.Etype, converted)
+	}
+	if !sel.IsZero() {
+		request.Info = &clisv.Runtimeinfo{
+			RoleID:    append([]uint32(nil), sel.RoleIDs...),
+			RoleLabel: append([]string(nil), sel.RoleLabels...),
+			ContextID: append([]uint32(nil), sel.ContextIDs...),
+			Pid:       append([]uint32(nil), sel.PIDs...),
+		}
+	}
+
+	stream, err := s.c.events.ReceiveEvent(ctx, request)
+	if err != nil {
+		return nil, statusError("ReceiveEvent", err)
+	}
+	return &eventStream{stream: stream}, nil
 }

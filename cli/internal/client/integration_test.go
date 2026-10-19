@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"path/filepath"
 	"reflect"
@@ -10,6 +12,8 @@ import (
 
 	"google.golang.org/grpc"
 
+	"honeyghost/cli/internal/api"
+	"honeyghost/cli/internal/gen/hng"
 	"honeyghost/cli/internal/gen/hng/clisv"
 	"honeyghost/cli/internal/model"
 )
@@ -107,6 +111,193 @@ func startTestServer(t *testing.T) string {
 	}()
 	t.Cleanup(server.Stop)
 	return socket
+}
+
+func startEventServer(t *testing.T, runtime clisv.RuntimeServiceServer) string {
+	t.Helper()
+	socket := filepath.Join(t.TempDir(), "cli.sock")
+	lis, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	clisv.RegisterRuntimeServiceServer(server, runtime)
+	go func() {
+		_ = server.Serve(lis)
+	}()
+	t.Cleanup(server.Stop)
+	return socket
+}
+
+type streamingRuntimeServer struct {
+	clisv.UnimplementedRuntimeServiceServer
+	requests chan *clisv.ReceiveEventRequest
+}
+
+func (s *streamingRuntimeServer) ReceiveEvent(req *clisv.ReceiveEventRequest,
+	stream grpc.ServerStreamingServer[clisv.ReceiveEventResponse]) error {
+	s.requests <- req
+	if err := stream.Send(&clisv.ReceiveEventResponse{
+		Head: testHead(),
+		Event: &clisv.ReceiveEventResponse_SyscallEv{SyscallEv: &clisv.SyscallEventData{
+			SData: &clisv.SyscallEventData_ExecData{ExecData: &hng.ExecSemanticData{
+				SemanticFilename: "/usr/sbin/nginx",
+				SyscallName:      "execve",
+			}},
+		}},
+	}); err != nil {
+		return err
+	}
+	return stream.Send(&clisv.ReceiveEventResponse{
+		Event: &clisv.ReceiveEventResponse_Stats{Stats: &clisv.Streamstats{DroppedEvents: 3}},
+	})
+}
+
+func TestIntegrationEventStream(t *testing.T) {
+	server := &streamingRuntimeServer{requests: make(chan *clisv.ReceiveEventRequest, 1)}
+	socket := startEventServer(t, server)
+
+	c, err := Dial(context.Background(), socket, Options{UserAgent: "hghost/test"})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	selector := model.RuntimeSelector{
+		RoleIDs:    []uint32{7, 8},
+		RoleLabels: []string{"nginx"},
+		ContextIDs: []uint32{3},
+		PIDs:       []uint32{1234},
+	}
+	stream, err := c.Services().Events.Subscribe(ctx, selector,
+		[]model.EventType{model.EventTypeFile, model.EventTypeSyscall})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer stream.Close()
+
+	req := <-server.requests
+	wantTypes := []clisv.EventType{
+		clisv.EventType_EVENT_TYPE_FILE,
+		clisv.EventType_EVENT_TYPE_SYSCALL,
+	}
+	if !reflect.DeepEqual(req.Etype, wantTypes) {
+		t.Errorf("Etype = %v, want %v", req.Etype, wantTypes)
+	}
+	if req.Info == nil {
+		t.Fatal("Info = nil, want selector")
+	}
+	if !reflect.DeepEqual(req.Info.RoleID, []uint32{7, 8}) ||
+		!reflect.DeepEqual(req.Info.RoleLabel, []string{"nginx"}) ||
+		!reflect.DeepEqual(req.Info.ContextID, []uint32{3}) ||
+		!reflect.DeepEqual(req.Info.Pid, []uint32{1234}) {
+		t.Errorf("Info = %+v, want the parsed selector", req.Info)
+	}
+
+	item, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv event: %v", err)
+	}
+	if item.Event == nil || item.Event.Payload.Kind != model.PayloadExec {
+		t.Fatalf("event = %+v, want exec payload", item.Event)
+	}
+	if item.Event.Head.PID != 1234 || item.Event.Head.Type != model.EventTypeSyscall {
+		t.Errorf("head = %+v, want test head", item.Event.Head)
+	}
+
+	item, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv stats: %v", err)
+	}
+	if item.Stats == nil || item.Stats.DroppedEvents != 3 {
+		t.Fatalf("stats = %+v, want 3 dropped", item.Stats)
+	}
+
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Errorf("final Recv error = %v, want io.EOF", err)
+	}
+}
+
+type recordingRuntimeServer struct {
+	clisv.UnimplementedRuntimeServiceServer
+	requests chan *clisv.ReceiveEventRequest
+}
+
+func (s *recordingRuntimeServer) ReceiveEvent(req *clisv.ReceiveEventRequest,
+	_ grpc.ServerStreamingServer[clisv.ReceiveEventResponse]) error {
+	s.requests <- req
+	return nil
+}
+
+func TestIntegrationEventRequestEmpty(t *testing.T) {
+	server := &recordingRuntimeServer{requests: make(chan *clisv.ReceiveEventRequest, 1)}
+	socket := startEventServer(t, server)
+
+	c, err := Dial(context.Background(), socket, Options{UserAgent: "hghost/test"})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	stream, err := c.Services().Events.Subscribe(context.Background(),
+		model.RuntimeSelector{}, nil)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer stream.Close()
+
+	req := <-server.requests
+	if req.Info != nil {
+		t.Errorf("Info = %+v, want nil", req.Info)
+	}
+	if len(req.Etype) != 0 {
+		t.Errorf("Etype = %v, want empty", req.Etype)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Errorf("Recv error = %v, want io.EOF", err)
+	}
+}
+
+type blockingRuntimeServer struct {
+	clisv.UnimplementedRuntimeServiceServer
+}
+
+func (blockingRuntimeServer) ReceiveEvent(_ *clisv.ReceiveEventRequest,
+	stream grpc.ServerStreamingServer[clisv.ReceiveEventResponse]) error {
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
+func TestIntegrationEventStreamCanceled(t *testing.T) {
+	socket := startEventServer(t, blockingRuntimeServer{})
+
+	c, err := Dial(context.Background(), socket, Options{UserAgent: "hghost/test"})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := c.Services().Events.Subscribe(ctx, model.RuntimeSelector{}, nil)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer stream.Close()
+
+	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	_, err = stream.Recv()
+	var se *api.StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("Recv error = %T (%v), want *api.StatusError", err, err)
+	}
+	if se.Kind != api.ErrorCanceled {
+		t.Errorf("Kind = %v, want ErrorCanceled", se.Kind)
+	}
 }
 
 func TestIntegrationQueries(t *testing.T) {

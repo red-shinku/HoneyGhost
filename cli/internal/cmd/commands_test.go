@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"honeyghost/cli/internal/api"
 	"honeyghost/cli/internal/model"
+	"honeyghost/cli/internal/render"
 )
 
 type fakeRoleService struct {
@@ -67,11 +70,37 @@ func (f fakeContextService) Which(ctx context.Context, pid uint32) (uint32, bool
 	return f.which(ctx, pid)
 }
 
-type fakeEventService struct{}
+type fakeEventService struct {
+	subscribe func(context.Context, model.RuntimeSelector,
+		[]model.EventType) (api.EventStream, error)
+}
 
-func (fakeEventService) Subscribe(context.Context, model.RuntimeSelector,
-	[]model.EventType) (api.EventStream, error) {
-	panic("unexpected Subscribe")
+func (f fakeEventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
+	types []model.EventType) (api.EventStream, error) {
+	return f.subscribe(ctx, sel, types)
+}
+
+type fakeEventStream struct {
+	items  []model.StreamItem
+	endErr error
+	closed bool
+}
+
+func (s *fakeEventStream) Recv() (model.StreamItem, error) {
+	if len(s.items) > 0 {
+		item := s.items[0]
+		s.items = s.items[1:]
+		return item, nil
+	}
+	if s.endErr != nil {
+		return model.StreamItem{}, s.endErr
+	}
+	return model.StreamItem{}, io.EOF
+}
+
+func (s *fakeEventStream) Close() error {
+	s.closed = true
+	return nil
 }
 
 func executeWithServices(t *testing.T, svcs api.Services, args ...string) (string, string, error) {
@@ -770,6 +799,262 @@ func TestStatusAllFail(t *testing.T) {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)
 		}
+	}
+}
+
+func testEventStream() *fakeEventStream {
+	return &fakeEventStream{items: []model.StreamItem{
+		{Event: &model.Event{
+			Head: model.Head{
+				RoleLabel: "nginx:1.25",
+				RoleID:    7,
+				ContextID: 3,
+				PID:       1234,
+				PPID:      1,
+				Type:      model.EventTypeSyscall,
+			},
+			Payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
+			}},
+		}},
+		{Stats: &model.StreamStats{DroppedEvents: 2}},
+		{Event: &model.Event{
+			Head: model.Head{
+				RoleID: 7,
+				PID:    2002,
+				PPID:   1,
+				Type:   model.EventTypeFile,
+			},
+			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
+				"semantic_filename": "/etc/nginx/nginx.conf",
+			}},
+		}},
+	}}
+}
+
+func TestEventsTable(t *testing.T) {
+	stream := testEventStream()
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return stream, nil
+		},
+	}}
+	out, errOut, err := executeWithServices(t, svcs, "events")
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, want := range []string{
+		"TYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL",
+		"syscall", "execve /usr/sbin/nginx",
+		"file", "/etc/nginx/nginx.conf",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(errOut, "dropped events: 2\n") {
+		t.Errorf("stderr missing dropped line: %q", errOut)
+	}
+	if !strings.Contains(errOut, "events: 2 received, 2 dropped\n") {
+		t.Errorf("stderr missing summary: %q", errOut)
+	}
+	if !stream.closed {
+		t.Error("stream was not closed")
+	}
+
+	noHeadersStream := testEventStream()
+	noHeadersSvcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return noHeadersStream, nil
+		},
+	}}
+	out, _, err = executeWithServices(t, noHeadersSvcs, "events", "--no-headers")
+	if err != nil {
+		t.Fatalf("events --no-headers: %v", err)
+	}
+	if strings.Contains(out, "DETAIL") {
+		t.Errorf("stdout contains header with --no-headers:\n%s", out)
+	}
+}
+
+func TestEventsJSON(t *testing.T) {
+	stream := &fakeEventStream{items: []model.StreamItem{
+		{Event: &model.Event{
+			Head: model.Head{
+				RoleLabel: "nginx",
+				RoleID:    7,
+				PID:       1234,
+				PPID:      1,
+				Type:      model.EventTypeSyscall,
+			},
+			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
+				"semantic_filename": "/x",
+			}},
+		}},
+		{Stats: &model.StreamStats{DroppedEvents: 2}},
+	}}
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return stream, nil
+		},
+	}}
+	out, errOut, err := executeWithServices(t, svcs, "events", "-o", "json")
+	if err != nil {
+		t.Fatalf("events json: %v", err)
+	}
+	want := `{"kind":"event","head":{"role_label":"nginx","role_id":7,"context_id":0,` +
+		`"pid":1234,"pid_start_time":0,"ppid":1,"ppid_start_time":0,"type":"syscall"},` +
+		`"payload":{"kind":"file","fields":{"semantic_filename":"/x"}}}` + "\n" +
+		`{"kind":"stats","dropped_events":2}` + "\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want empty", errOut)
+	}
+}
+
+func TestEventsFilters(t *testing.T) {
+	var gotSelector model.RuntimeSelector
+	var gotTypes []model.EventType
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(_ context.Context, sel model.RuntimeSelector,
+			types []model.EventType) (api.EventStream, error) {
+			gotSelector = sel
+			gotTypes = types
+			return &fakeEventStream{}, nil
+		},
+	}}
+	_, _, err := executeWithServices(t, svcs, "events",
+		"-t", "file,syscall", "-i", "role=nginx", "-i", "pid=1234", "-i", "roleID=7")
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	wantTypes := []model.EventType{model.EventTypeSyscall, model.EventTypeFile}
+	if !reflect.DeepEqual(gotTypes, wantTypes) {
+		t.Errorf("types = %v, want %v", gotTypes, wantTypes)
+	}
+	wantSelector := model.RuntimeSelector{
+		RoleIDs:    []uint32{7},
+		RoleLabels: []string{"nginx"},
+		PIDs:       []uint32{1234},
+	}
+	if !reflect.DeepEqual(gotSelector, wantSelector) {
+		t.Errorf("selector = %+v, want %+v", gotSelector, wantSelector)
+	}
+}
+
+func TestEventsUsageErrors(t *testing.T) {
+	tests := [][]string{
+		{"events", "--timeout", "1s"},
+		{"events", "--duration=-1s"},
+		{"events", "-t", "bogus"},
+		{"events", "-i", "roleID=0"},
+		{"events", "-i", "bogus=1"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, err := executeWithoutDial(t, args...)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if ExitCode(err, false) != 2 {
+				t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+			}
+		})
+	}
+}
+
+type blockingStream struct {
+	ctx context.Context
+}
+
+func (s blockingStream) Recv() (model.StreamItem, error) {
+	<-s.ctx.Done()
+	return model.StreamItem{}, &api.StatusError{
+		Op: "ReceiveEvent", Kind: api.ErrorCanceled,
+	}
+}
+
+func (blockingStream) Close() error { return nil }
+
+func TestEventsDuration(t *testing.T) {
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(ctx context.Context, _ model.RuntimeSelector,
+			_ []model.EventType) (api.EventStream, error) {
+			return blockingStream{ctx: ctx}, nil
+		},
+	}}
+	out, errOut, err := executeWithServices(t, svcs, "events", "--duration", "20ms")
+	if err != nil {
+		t.Fatalf("events --duration: %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if errOut != "events: 0 received, 0 dropped\n" {
+		t.Errorf("stderr = %q, want summary", errOut)
+	}
+	if code := ExitCode(err, false); code != 0 {
+		t.Errorf("ExitCode = %d, want 0", code)
+	}
+}
+
+func TestEventsRPCError(t *testing.T) {
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return &fakeEventStream{endErr: &api.StatusError{
+				Op: "ReceiveEvent", Kind: api.ErrorUnimplemented, Message: "nope",
+			}}, nil
+		},
+	}}
+	_, errOut, err := executeWithServices(t, svcs, "events")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if want := "ReceiveEvent is not implemented by the server: nope"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if !strings.Contains(errOut, "events: 0 received, 0 dropped\n") {
+		t.Errorf("stderr missing summary: %q", errOut)
+	}
+}
+
+type epipeWriter struct{}
+
+func (epipeWriter) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+func TestEventsEPIPE(t *testing.T) {
+	for _, format := range []render.Format{render.FormatTable, render.FormatJSON} {
+		svcs := api.Services{Events: fakeEventService{
+			subscribe: func(context.Context, model.RuntimeSelector,
+				[]model.EventType) (api.EventStream, error) {
+				return testEventStream(), nil
+			},
+		}}
+		r := render.New(format, render.Options{})
+		err := runEvents(context.Background(), epipeWriter{}, io.Discard, r,
+			format, svcs.Events, model.RuntimeSelector{}, nil, 0)
+		if err != nil {
+			t.Errorf("format %v: runEvents = %v, want nil", format, err)
+		}
+	}
+}
+
+func TestRestoreSignals(t *testing.T) {
+	app := NewApp(nil)
+	called := false
+	app.SetSignalStop(func() { called = true })
+	app.restoreSignals()
+	if !called {
+		t.Error("signal stop was not called")
 	}
 }
 

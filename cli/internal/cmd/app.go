@@ -35,6 +35,8 @@ type App struct {
 	svcs   api.Services
 	closer io.Closer
 	dialed bool
+
+	signalStop func()
 }
 
 // NewApp 创建命令上下文；--socket 的默认值取环境变量 HGHOST_SOCKET。
@@ -80,6 +82,19 @@ func (a *App) QueryContext(ctx context.Context) (context.Context, context.Cancel
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, a.opts.Timeout)
+}
+
+// SetSignalStop 注入根信号 context 的 stop 函数。
+//
+// 流式命令被中断后调用它，使第二次 SIGINT 恢复默认处理。
+func (a *App) SetSignalStop(stop func()) {
+	a.signalStop = stop
+}
+
+func (a *App) restoreSignals() {
+	if a.signalStop != nil {
+		a.signalStop()
+	}
 }
 
 // Close 关闭已建立的连接。

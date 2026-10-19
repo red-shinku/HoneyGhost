@@ -117,6 +117,19 @@ type Head struct {
 	Type          EventType `json:"type"`
 }
 
+// 事件载荷的变体名，与 proto 的 oneof 分支一一对应。
+const (
+	PayloadProcess        = "process"
+	PayloadExec           = "exec"
+	PayloadCredential     = "credential"
+	PayloadNamespace      = "namespace"
+	PayloadFileSyscall    = "file_syscall"
+	PayloadMemory         = "memory"
+	PayloadNetworkSyscall = "network_syscall"
+	PayloadKernel         = "kernel"
+	PayloadFile           = "file"
+)
+
 // Payload 是事件载荷。Kind 为变体名，Fields 的键与 proto 字段同名。
 type Payload struct {
 	Kind   string         `json:"kind"`

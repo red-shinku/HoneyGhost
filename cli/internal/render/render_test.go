@@ -202,6 +202,170 @@ func TestGoldenStatus(t *testing.T) {
 		func(r Renderer, b *bytes.Buffer) error { return r.Status(b, model.Status{}) }))
 }
 
+func renderStream(t *testing.T, format Format, opts Options,
+	events []model.Event, stats []model.StreamStats) string {
+	t.Helper()
+	var buf bytes.Buffer
+	r := New(format, opts)
+	for _, ev := range events {
+		if err := r.Event(&buf, ev); err != nil {
+			t.Fatalf("Event: %v", err)
+		}
+	}
+	for _, s := range stats {
+		if err := r.StreamStats(&buf, s); err != nil {
+			t.Fatalf("StreamStats: %v", err)
+		}
+	}
+	return buf.String()
+}
+
+func testEvents() []model.Event {
+	return []model.Event{
+		{
+			Head: model.Head{
+				RoleLabel: "nginx:1.25",
+				RoleID:    7,
+				ContextID: 3,
+				PID:       1234,
+				PPID:      1,
+				Type:      model.EventTypeSyscall,
+			},
+			Payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+				"semantic_filename": "/usr/sbin/nginx",
+				"argv0":             "nginx",
+				"argv1":             "",
+				"flags":             uint32(0),
+				"syscall_name":      "execve",
+			}},
+		},
+		{
+			Head: model.Head{
+				RoleID: 7,
+				PID:    2002,
+				PPID:   1,
+				Type:   model.EventTypeFile,
+			},
+			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
+				"semantic_filename": "/etc/nginx/nginx.conf",
+				"flags":             uint32(0),
+				"is_innamespace":    false,
+				"comm":              "nginx",
+			}},
+		},
+	}
+}
+
+func TestGoldenEventsTable(t *testing.T) {
+	stats := []model.StreamStats{{DroppedEvents: 12}}
+	checkGolden(t, "events_table", renderStream(t, FormatTable, Options{}, testEvents(), stats))
+	checkGolden(t, "events_table_no_headers",
+		renderStream(t, FormatTable, Options{NoHeaders: true}, testEvents(), stats))
+}
+
+func TestGoldenEventsJSON(t *testing.T) {
+	stats := []model.StreamStats{{DroppedEvents: 12}}
+	checkGolden(t, "events_json", renderStream(t, FormatJSON, Options{}, testEvents(), stats))
+}
+
+func TestEventDetail(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload model.Payload
+		want    string
+	}{
+		{
+			name: "process",
+			payload: model.Payload{Kind: model.PayloadProcess, Fields: map[string]any{
+				"exit_code": int32(-9), "syscall_name": "exit_group",
+			}},
+			want: "exit_group exit=-9",
+		},
+		{
+			name: "exec",
+			payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
+			}},
+			want: "execve /usr/sbin/nginx",
+		},
+		{
+			name: "setuid",
+			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+				"syscall_name": "setuid", "setuid_uid": uint32(1000),
+			}},
+			want: "setuid uid=1000",
+		},
+		{
+			name: "setgid",
+			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+				"syscall_name": "setgid", "setgid_gid": uint32(1000),
+			}},
+			want: "setgid gid=1000",
+		},
+		{
+			name: "capset",
+			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+				"syscall_name": "capset",
+				"capset": map[string]any{
+					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
+				},
+			}},
+			want: "capset eff=1 perm=2 inh=3",
+		},
+		{
+			name: "namespace",
+			payload: model.Payload{Kind: model.PayloadNamespace, Fields: map[string]any{
+				"syscall_name": "unshare", "ns_type": uint32(1), "flags": uint64(2),
+			}},
+			want: "unshare ns_type=1 flags=0x2",
+		},
+		{
+			name: "file_syscall",
+			payload: model.Payload{Kind: model.PayloadFileSyscall, Fields: map[string]any{
+				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
+			}},
+			want: "openat flags=0x3 mode=0644",
+		},
+		{
+			name: "memory",
+			payload: model.Payload{Kind: model.PayloadMemory, Fields: map[string]any{
+				"syscall_name": "mmap", "prot": uint64(4), "flags": uint64(5),
+			}},
+			want: "mmap prot=0x4 flags=0x5",
+		},
+		{
+			name: "network",
+			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+				"syscall_name": "socket", "family": uint32(2), "type": uint32(1),
+				"protocol": uint32(6),
+			}},
+			want: "socket family=2 type=1 protocol=6",
+		},
+		{
+			name: "kernel",
+			payload: model.Payload{Kind: model.PayloadKernel, Fields: map[string]any{
+				"syscall_name": "ptrace", "command": uint32(7), "arg": uint64(8),
+			}},
+			want: "ptrace command=7 arg=8",
+		},
+		{
+			name: "file",
+			payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
+				"semantic_filename": "/etc/nginx/nginx.conf",
+			}},
+			want: "/etc/nginx/nginx.conf",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := eventDetail(tt.payload); got != tt.want {
+				t.Errorf("eventDetail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGoldenContextList(t *testing.T) {
 	refs := []model.ContextRef{
 		{Kind: model.ContextKindException, ID: 3},
