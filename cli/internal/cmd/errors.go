@@ -4,10 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
 
 	"honeyghost/cli/internal/api"
 )
+
+// failure 是组合查询中失败的一段。
+type failure struct {
+	Label string
+	Err   error
+}
+
+// partialError 表示组合查询部分成功：成功段已经输出，失败段由命令层映射后报告。
+type partialError []failure
+
+func (e partialError) Error() string {
+	parts := make([]string, 0, len(e))
+	for _, f := range e {
+		parts = append(parts, f.Label+": "+f.Err.Error())
+	}
+	return strings.Join(parts, "; ")
+}
 
 // usageError 标记用法错误，退出码 2。
 type usageError struct{ err error }
@@ -38,6 +56,14 @@ func (a *App) wrapRuntime(err error) error {
 	var ue usageError
 	if errors.As(err, &ue) {
 		return err
+	}
+	var pe partialError
+	if errors.As(err, &pe) {
+		parts := make([]string, 0, len(pe))
+		for _, f := range pe {
+			parts = append(parts, f.Label+": "+a.describe(f.Err))
+		}
+		return runtimeError{err: err, msg: strings.Join(parts, "; ")}
 	}
 	var re runtimeError
 	if errors.As(err, &re) {

@@ -54,7 +54,11 @@ func NewRootCommand(app *App, info BuildInfo) *cobra.Command {
 	flags.BoolVar(&app.opts.NoHeaders, "no-headers", false,
 		"omit table headers (ignored in JSON mode)")
 
-	root.AddCommand(newVersionCommand(info))
+	root.AddCommand(
+		newRoleCommand(app),
+		newContextCommand(app),
+		newVersionCommand(info),
+	)
 	return root
 }
 

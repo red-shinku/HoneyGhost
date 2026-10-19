@@ -69,6 +69,11 @@ func (a *App) Services(ctx context.Context) (api.Services, error) {
 	return svcs, nil
 }
 
+// renderer 按全局选项创建输出渲染器。
+func (a *App) renderer() render.Renderer {
+	return render.New(a.opts.Format, render.Options{NoHeaders: a.opts.NoHeaders})
+}
+
 // QueryContext 应用 --timeout；0 表示不设截止时间。
 func (a *App) QueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if a.opts.Timeout <= 0 {
