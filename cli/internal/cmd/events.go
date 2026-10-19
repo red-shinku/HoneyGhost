@@ -98,7 +98,9 @@ func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
 	for {
 		item, err := stream.Recv()
 		if err != nil {
-			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			// 取消时传输层可能先返回 Canceled / DeadlineExceeded，
+			// 而 context.Err() 尚未置位；两者都按正常终止处理。
+			if errors.Is(err, io.EOF) || ctx.Err() != nil || streamEnded(err) {
 				return nil
 			}
 			return err
@@ -154,4 +156,15 @@ func streamContext(parent context.Context, duration time.Duration) (context.Cont
 
 func isEPIPE(err error) bool {
 	return errors.Is(err, syscall.EPIPE)
+}
+
+// streamEnded 报告错误是否表示本次订阅被取消或到期。
+func streamEnded(err error) bool {
+	var statusErr *api.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Kind == api.ErrorCanceled ||
+			statusErr.Kind == api.ErrorDeadlineExceeded
+	}
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }

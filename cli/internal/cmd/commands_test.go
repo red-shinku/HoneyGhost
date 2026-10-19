@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -1000,6 +1001,28 @@ func TestEventsDuration(t *testing.T) {
 	}
 	if code := ExitCode(err, false); code != 0 {
 		t.Errorf("ExitCode = %d, want 0", code)
+	}
+}
+
+func TestEventsDeadlineWithoutContextError(t *testing.T) {
+	for _, kind := range []api.ErrorKind{api.ErrorDeadlineExceeded, api.ErrorCanceled} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			svcs := api.Services{Events: fakeEventService{
+				subscribe: func(context.Context, model.RuntimeSelector,
+					[]model.EventType) (api.EventStream, error) {
+					return &fakeEventStream{endErr: &api.StatusError{
+						Op: "ReceiveEvent", Kind: kind, Message: "stop",
+					}}, nil
+				},
+			}}
+			_, errOut, err := executeWithServices(t, svcs, "events", "--duration", "1s")
+			if err != nil {
+				t.Fatalf("events: %v (want normal termination)", err)
+			}
+			if !strings.Contains(errOut, "events: 0 received, 0 dropped\n") {
+				t.Errorf("stderr missing summary: %q", errOut)
+			}
+		})
 	}
 }
 
