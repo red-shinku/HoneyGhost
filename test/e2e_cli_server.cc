@@ -780,6 +780,14 @@ bool WaitForExit(pid_t child, std::chrono::milliseconds timeout, int* code)
 
 int main()
 {
+    // 联调模式：在进程内装配替身服务端并驻留，供外部 CLI 经同一 socket 验证。
+    // 只用于 scripts/test-cli-e2e.sh，默认路径仍是下面的 fork + 断言。
+    if (const char* serve = std::getenv("HNG_CLI_E2E_SERVE");
+        serve != nullptr && serve[0] != '\0') {
+        ::unlink(kSocketPath);
+        RunChild();
+    }
+
     ::unlink(kSocketPath);
 
     const pid_t child = ::fork();
