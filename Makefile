@@ -14,9 +14,14 @@
 BUILD_DIR ?= build-agent
 BIN_DIR   ?= bin
 CMAKE     ?= cmake
+CLI_DIR    := cli
 BRIDGE_DIR := agent/role_discovery/containerd_bridge
 
-.PHONY: all agent ebpf go test clean
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+
+.PHONY: all agent ebpf go go-bridge go-cli test clean
 
 all: agent go
 
@@ -30,10 +35,20 @@ ebpf:
 	$(CMAKE) --build $(BUILD_DIR) --target hng_ebpf
 
 # 需 go >= 1.26.3（go.mod 要求）；低位版本会经 GOTOOLCHAIN 取工具链。
-# 各 Go module 独立构建，后续 central / cli 在此追加。
-go:
+# 各 Go module 独立构建，后续 central 在此追加。
+go: go-bridge go-cli
+
+go-bridge:
 	mkdir -p $(BIN_DIR)
 	cd $(BRIDGE_DIR) && go build -o $(CURDIR)/$(BIN_DIR)/containerd-bridge ./cmd/containerd-bridge
+
+# CLI 构建前先生成协议代码，产物与生成物都不入库。
+go-cli:
+	mkdir -p $(BIN_DIR)
+	cd $(CLI_DIR) && ./gen.sh
+	cd $(CLI_DIR) && go build \
+		-ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BUILD_DATE)" \
+		-o $(CURDIR)/$(BIN_DIR)/hghost ./cmd/hghost
 
 test: agent
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
