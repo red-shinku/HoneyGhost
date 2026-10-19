@@ -5,6 +5,7 @@
 #   make ebpf    只构建 eBPF 探针与骨架（agent 的子集）
 #   make go      构建 Go 程序，产物落 bin/
 #   make test    单测（ctest）
+#   make test-go Go 单测（独立目标，不并入 test）
 #   make all     agent + go
 #   make clean   清构建产物
 #
@@ -21,7 +22,7 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 
-.PHONY: all agent ebpf go go-bridge go-cli test clean
+.PHONY: all agent ebpf go go-bridge go-cli test test-go clean
 
 all: agent go
 
@@ -52,6 +53,11 @@ go-cli:
 
 test: agent
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
+
+# Go 测试单独成目标：先重新生成协议代码，不改变 make test 的语义。
+test-go:
+	cd $(CLI_DIR) && ./gen.sh
+	cd $(CLI_DIR) && go test -race ./...
 
 # 只清 .gitignore 覆盖的产物。kernel/include/vmlinux.h 不删：重生成需 bpftool，
 # 且内核未升级前其内容有效。
