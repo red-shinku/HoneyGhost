@@ -2,12 +2,12 @@
 # eBPF 探针与骨架
 #
 # 产物落源码树：kernel/<n>.skel.h 与 kernel/build/<n>.bpf.o。
-# 理由：collector.hpp 以 "kernel/files.skel.h" 包含骨架、verify_starttime.cc
+# 理由：采集器实现以 "kernel/files.skel.h" 包含骨架、verify_starttime.cc
 # 默认读 "kernel/build/syscalls.bpf.o"，落源码树可做到零代码改动。两者均已被
 # .gitignore 覆盖（*.skel.h 与 build/）。
 #
 # 骨架名必须显式给 <n>_collector：bpftool 的默认名只去掉 .o 扩展名（得
-# files_bpf），而 collector.hpp 与 *_collector.cc 引用的是 files_collector。
+# files_bpf），而 *_event_collector.cc 引用的是 files_collector。
 #
 # 探针的 include 一律仓库根相对，故 -I 指向仓库根，与 C++ 侧同款。
 #
@@ -107,6 +107,8 @@ endforeach()
 
 # ALL：既有的 `cmake --build build-agent`（不带 --target）也要产出探针与骨架
 add_custom_target(hng_ebpf ALL DEPENDS ${HNG_EBPF_OUTPUTS})
+# 消费方据此区分真实生成目标与缺少工具链时的空目标。
+set_property(TARGET hng_ebpf PROPERTY HNG_HAS_SKELETON_GENERATION TRUE)
 
 # 仅供 clangd / CLion 等：CMake 只为编译目标导出 compile_commands.json，而上面探针是
 # add_custom_command 直接调 clang，不是编译目标，语言服务器因此拿不到探针参数（会退化成
