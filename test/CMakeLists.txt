@@ -181,3 +181,23 @@ if(LIBBPF_LIB)
 else()
     message(STATUS "libbpf 未找到，跳过 verify_starttime")
 endif()
+
+# 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
+set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
+file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
+foreach(probe files syscalls networks)
+    configure_file(fixtures/collector_skeleton_stub.hpp
+        ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
+endforeach()
+add_executable(test_collector_filter_map
+    test_collector_filter_map.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/file_event_collector.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/network_event_collector.cc)
+target_include_directories(test_collector_filter_map PRIVATE
+    ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
+add_test(NAME test_collector_filter_map COMMAND test_collector_filter_map)
+
+# 公共头独立编译：不提供骨架替身或 libbpf 的 include 路径。
+add_library(test_collector_public_header OBJECT test_collector_public_header.cc)
+target_include_directories(test_collector_public_header PRIVATE ${HNG_SOURCE_DIR})

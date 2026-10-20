@@ -1,85 +1,88 @@
 /**
  * @file file_event_collector.cc
- * @brief 用户态文件事件收集器 实现
- * @details
- *
- * 显式继承并实现CollectorType接口。
- * 从ringbuf获取数据，推送到文件原始事件队列
- *
- * @author red_shinku
- * @date 2026.08.12
+ * @brief 原始事件采集、探针资源管理与过滤 map fd 接口。
  */
-
 #include "agent/collector/include/collector.hpp"
-#include "kernel/include/files_type.h"
+#include "kernel/files.skel.h"
 
-FileEventCollector::FileEventCollector(
-    hng::SPSC_Queue<struct file_access_data>& queue)
-    : file_rawevent_queue(queue), files_collector(NULL), rb(NULL)
-{
-}
+#include <cerrno>
+#include <cstring>
+#include <new>
+#include <type_traits>
+#include <utility>
 
-FileEventCollector::~FileEventCollector()
-{
-    files_collector__destroy(files_collector);
-    ring_buffer__free(rb);
-}
+namespace hng::detail {
+/** @brief 按声明的逆序销毁成员：先 ringbuf，再探针骨架。 */
+struct FileCollectorState {
+    std::unique_ptr<::files_collector, decltype(&::files_collector__destroy)>
+        skeleton{nullptr, &::files_collector__destroy};
+    std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)>
+        buffer{nullptr, &::ring_buffer__free};
+};
+}  // namespace hng::detail
+
+FileEventCollector::FileEventCollector(hng::SPSC_Queue<file_access_data>& queue)
+    : file_rawevent_queue(queue) {}
+
+FileEventCollector::~FileEventCollector() = default;
 
 /**
- * @brief ringbuf接受事件的回调函数
+ * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
+ * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以 NUL 结束。
+ *       队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
  */
-int FileEventCollector::handle_rb_event(void* ctx, void* data, size_t data_sz)
+int FileEventCollector::handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept
 {
-    if (data_sz < sizeof(struct file_access_data)) {
-        return -1;
+    static_assert(std::is_trivially_copyable_v<file_access_data>);
+    if (!ctx || !data || data_sz < sizeof(file_access_data)) {
+        return -EINVAL;
     }
-    // void* -> file_access_data*
-    struct file_access_data* ev = (struct file_access_data*)data;
-    // 获取 this 指针
-    FileEventCollector* self    = static_cast<FileEventCollector*>(ctx);
-
-    self->file_rawevent_queue.push(*ev);
+    file_access_data event;
+    std::memcpy(&event, data, sizeof(event));
+    auto* self = static_cast<FileEventCollector*>(ctx);
+    self->file_rawevent_queue.push(event);
     return 0;
 }
 
-/**
- * @brief 文件事件收集器初始化函数
- * @details 挂载并连接内核程序，初始化ringbuf
- */
 bool FileEventCollector::init()
 {
-    int err;
-    files_collector = files_collector__open_and_load();
-    if (!files_collector) {
+    if (state_) {
         return false;
     }
-    err = files_collector__attach(files_collector);
-    if (err) {
+    // 只在初始化时分配私有状态；失败路径由局部拥有者自动回收。
+    std::unique_ptr<hng::detail::FileCollectorState> candidate(
+        new (std::nothrow) hng::detail::FileCollectorState);
+    if (!candidate) {
         return false;
     }
-    // this 指针作为 ctx 注册到回调
-    rb = ring_buffer__new(bpf_map__fd(files_collector->maps.file_access_events),
-                          handle_rb_event, this, NULL);
-    if (!rb) {
+    candidate->skeleton.reset(files_collector__open_and_load());
+    if (!candidate->skeleton) {
         return false;
     }
+    const int events_fd = bpf_map__fd(candidate->skeleton->maps.file_access_events);
+    if (events_fd < 0 || bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
+        return false;
+    }
+    if (files_collector__attach(candidate->skeleton.get())) {
+        return false;
+    }
+    candidate->buffer.reset(ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
+    if (!candidate->buffer) {
+        return false;
+    }
+    state_ = std::move(candidate);
     return true;
 }
 
-/**
- * @brief 持续获取文件事件
- */
 void FileEventCollector::collect()
 {
-    while (true) {
-        // 300 ms timeout
-        int err = ring_buffer__poll(rb, 300);
-        // TODO: 错误处理与退出处理
-        if (err == -EINTR) {
-            break;
-        }
-        if (err < 0) {
-            break;
-        }
+    if (!state_) {
+        return;
     }
+    while (ring_buffer__poll(state_->buffer.get(), 300) >= 0) {}
+}
+
+int FileEventCollector::role_filter_map_fd() const noexcept
+{
+    return state_ ? bpf_map__fd(state_->skeleton->maps.hng_role_filter) : -1;
 }

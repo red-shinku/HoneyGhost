@@ -1,54 +1,88 @@
+/**
+ * @file network_event_collector.cc
+ * @brief 原始事件采集、探针资源管理与过滤 map fd 接口。
+ */
 #include "agent/collector/include/collector.hpp"
-#include "kernel/include/networks_type.h"
+#include "kernel/networks.skel.h"
 
-NetworkEventCollector(hng::SPSC_Queue<struct network_data>& queue)
-    : network_rawevent_queue(queue), networks_collector(NULL), rb(NULL)
+#include <cerrno>
+#include <cstring>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace hng::detail {
+/** @brief 按声明的逆序销毁成员：先 ringbuf，再探针骨架。 */
+struct NetworkCollectorState {
+    std::unique_ptr<::networks_collector, decltype(&::networks_collector__destroy)>
+        skeleton{nullptr, &::networks_collector__destroy};
+    std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)>
+        buffer{nullptr, &::ring_buffer__free};
+};
+}  // namespace hng::detail
+
+NetworkEventCollector::NetworkEventCollector(hng::SPSC_Queue<network_data>& queue)
+    : network_rawevent_queue(queue) {}
+
+NetworkEventCollector::~NetworkEventCollector() = default;
+
+/**
+ * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
+ * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以 NUL 结束。
+ *       队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
+ */
+int NetworkEventCollector::handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept
 {
-}
-
-~NetworkEventCollector() {}
-
-static int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
-                                                  size_t data_sz)
-{
-    if (data_sz < sizeof(struct network_data)) {
-        return -1;
+    static_assert(std::is_trivially_copyable_v<network_data>);
+    if (!ctx || !data || data_sz < sizeof(network_data)) {
+        return -EINVAL;
     }
-    struct network_data* ev     = (struct network_data*)data;
-    NetworkEventCollector* self = static_cast<NetworkEventCollector*>(ctx);
-    self->network_rawevent_queue.push(*ev);
+    network_data event;
+    std::memcpy(&event, data, sizeof(event));
+    auto* self = static_cast<NetworkEventCollector*>(ctx);
+    self->network_rawevent_queue.push(event);
     return 0;
 }
 
 bool NetworkEventCollector::init()
 {
-    int err;
-    networks_collector = networks_collector__open_and_load();
-    if (!networks_collector) {
+    if (state_) {
         return false;
     }
-    err = networks_collector__attach();
-    if (err) {
+    // 只在初始化时分配私有状态；失败路径由局部拥有者自动回收。
+    std::unique_ptr<hng::detail::NetworkCollectorState> candidate(
+        new (std::nothrow) hng::detail::NetworkCollectorState);
+    if (!candidate) {
         return false;
     }
-    rb = ring_buffer__new(bpf_map__fd(networks_collector->maps.network_data),
-                          handle_rb_event, this, NULL);
-    if (!rb) {
+    candidate->skeleton.reset(networks_collector__open_and_load());
+    if (!candidate->skeleton) {
         return false;
     }
+    const int events_fd = bpf_map__fd(candidate->skeleton->maps.network_events);
+    if (events_fd < 0 || bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
+        return false;
+    }
+    if (networks_collector__attach(candidate->skeleton.get())) {
+        return false;
+    }
+    candidate->buffer.reset(ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
+    if (!candidate->buffer) {
+        return false;
+    }
+    state_ = std::move(candidate);
     return true;
 }
 
 void NetworkEventCollector::collect()
 {
-    while (true) {
-        int err = ring_buffer__poll(rb, 300);
-        // TODO: 错误处理与退出处理
-        if (err == -EINTR) {
-            break;
-        }
-        if (err < 0) {
-            break;
-        }
+    if (!state_) {
+        return;
     }
+    while (ring_buffer__poll(state_->buffer.get(), 300) >= 0) {}
+}
+
+int NetworkEventCollector::role_filter_map_fd() const noexcept
+{
+    return state_ ? bpf_map__fd(state_->skeleton->maps.hng_role_filter) : -1;
 }
