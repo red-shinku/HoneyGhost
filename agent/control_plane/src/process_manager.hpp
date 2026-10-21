@@ -65,7 +65,9 @@ struct ProcessManagerStats {
     uint64_t pid_reused = 0;
 };
 
-class ProcessManager : public ProcessLookupService, public ProcessJoinService {
+class ProcessManager : public ProcessLookupService,
+                       public ProcessJoinService,
+                       public ProcessUpdateService {
    public:
     ProcessManager();
     ~ProcessManager();
@@ -86,6 +88,10 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
 
     /// @brief 通知注销 PID：入队即返回
     void unregister_pid(hng::Process p) override;
+
+    /// @brief 通知更新进程镜像路径：入队即返回
+    /// @note 可被任意采集线程调用
+    void update_exe_image(hng::Process p, std::string exe) override;
 
     /// @brief 消费线程入口：取队列、落地、按判定推送完全删除通知，阻塞直到 stop()
     /// @note 不持线程，线程由装配方创建；析构前须已返回
@@ -112,13 +118,15 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
     // 进程树分片数量
     static constexpr size_t kShardCount = 32;
 
-    /// @brief 入队任务：注册或注销一个进程
+    /// @brief 入队任务：注册、注销一个进程，或更新其镜像
     struct Task {
-        enum class Kind { ADD, REMOVE };
+        enum class Kind { ADD, REMOVE, UPDATE_IMAGE };
 
         Kind kind = Kind::ADD;
-        hng::ProcessMessage add;  ///< kind 为 ADD 时有效
-        hng::Process remove;      ///< kind 为 REMOVE 时有效
+        hng::ProcessMessage add;     ///< kind 为 ADD 时有效
+        hng::Process remove;         ///< kind 为 REMOVE 时有效
+        hng::Process image_process;  ///< kind 为 UPDATE_IMAGE 时有效
+        std::string image_exe;       ///< kind 为 UPDATE_IMAGE 时有效
     };
 
     ContextClearService* ctx_clear_service_ = nullptr;
@@ -162,6 +170,10 @@ class ProcessManager : public ProcessLookupService, public ProcessJoinService {
      *  只要 PID 从 ptree_shard 中实际删除，其父进程的孩子计数就会递减
      */
     void deletePID(hng::Process p);
+
+    /// @brief 实际更新进程镜像路径
+    /// @details 先按身份匹配实进程树，未命中再匹配虚拟根；都不命中则丢弃
+    void update_exe_image_(hng::Process p, std::string exe);
 
     /**
      * @brief 退役一条已从实进程树取下的进程记录

@@ -2,7 +2,9 @@
 #define _USER_MODE_PROCESS_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <string>
 
 #include "agent/event_data/include/event_head.hpp"
 
@@ -25,8 +27,17 @@ struct Process {
 };
 
 /**
- * @brief 进程结构记录
- * @details 仅承载进程自身的结构事实（身份与父子关系、存活子进程计数）。
+ * @brief hng::Process 的类型，区分真实进程、虚拟根进程
+ */
+enum class ProcessKind : uint8_t {
+    // 真实运行在宿主机上的进程
+    REAL    = 1,
+    // 系统中定义的虚拟根进程
+    VIRTUAL = 0
+};
+
+/**
+ * @brief 进程具体信息记录
  */
 struct ProcessMessage {
     ProcessMessage(const hng::event_head& ehead)
@@ -36,22 +47,27 @@ struct ProcessMessage {
         pid_start_time  = ehead.pid_start_time;
         ppid_start_time = ehead.ppid_start_time;
         child_count     = 0;
+        kind            = ProcessKind::REAL;
     }
-    ProcessMessage() {}
+    ProcessMessage()
+        : ppid(0),
+          pid(0),
+          ppid_start_time(0),
+          pid_start_time(0),
+          kind(ProcessKind::REAL),
+          child_count(0)
+    {
+    }
 
     uint32_t ppid;
     uint32_t pid;
-    uint64_t pid_start_time;
     uint64_t ppid_start_time;
-
+    uint64_t pid_start_time;
+    /// 最近一次 exec 的镜像路径；未知时为空
+    std::string exe;
+    /// 进程性质；注册时为 REAL，转入虚拟根后为 VIRTUAL
+    ProcessKind kind;
     uint32_t child_count;
-
-    // 虚拟PID，用于标记一个不存在的父进程
-    // 这个父进程生前启动了一批持续运行的子进程
-    // 这些子进程的 ppid 为 fake_pid
-    // 目前设计直接让 原 pid + starttime 作为键
-    // 故这里注释掉
-    // uint64_t fake_pid;
 };
 
 }  // namespace hng

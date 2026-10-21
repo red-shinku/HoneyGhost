@@ -33,13 +33,15 @@ class RuntimePipeline {
     /// @param file_queue 文件语义队列，未接线传 nullptr
     /// @param ctx_maintainer 上下文维护模块，非拥有
     /// @param process_join 控制平面进程注册接口，非拥有
+    /// @param process_update 控制平面进程镜像更新接口，非拥有
     /// @param role_join 控制平面角色归属接口，非拥有
     /// @param role_lookup 控制平面角色查询接口，非拥有
     RuntimePipeline(hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue,
                     hng::SPSC_Queue<hng::file_semantic_data>* file_queue,
                     ContextMaintainer* ctx_maintainer,
-                    ProcessJoinService* process_join, RoleJoinService* role_join,
-                    RoleLookupService* role_lookup);
+                    ProcessJoinService* process_join,
+                    ProcessUpdateService* process_update,
+                    RoleJoinService* role_join, RoleLookupService* role_lookup);
 
     /// @brief 取一轮事件并组装草稿
     /// @param[out] out 本轮产物，槽位数不得少于已接线队列数；可跨轮复用
@@ -75,6 +77,7 @@ class RuntimePipeline {
     // TODO: 未来 ContextMaintainer 在栈上构造
     ContextMaintainer* ctx_maintainer_                          = nullptr;
     ProcessJoinService* process_join_                           = nullptr;
+    ProcessUpdateService* process_update_                       = nullptr;
     RoleJoinService* role_join_                                 = nullptr;
     RoleLookupService* role_lookup_                             = nullptr;
 };

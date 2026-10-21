@@ -171,6 +171,9 @@ void run_register_and_lookup()
               msg->ppid == 1 && msg->ppid_start_time == 10,
           "进程记录应带 ppid 与各自的 start_time");
     CHECK(msg.has_value() && msg->child_count == 0, "新进程的孩子计数应为 0");
+    CHECK(msg.has_value() && msg->kind == hng::ProcessKind::REAL,
+          "注册的进程应为 REAL");
+    CHECK(msg.has_value() && msg->exe.empty(), "注册时镜像为空");
     CHECK(!manager.lookup(proc(100, 9999)).has_value(),
           "同 pid 不同 start_time 应失配");
     CHECK(!manager.lookup(proc(101, 1000)).has_value(), "未注册的 pid 应失配");
@@ -294,6 +297,66 @@ void run_pid_reuse()
     CHECK(manager.stats().pid_reused == 3, "三次 pid 复用都应计数");
 }
 
+void run_image_update()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    // 存活进程：更新落地后镜像可见，性质仍是 REAL
+    manager.register_pid(head(100, 1000, 1, 10));
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
+          "注册应落地");
+    manager.update_exe_image(proc(100, 1000), "/bin/bash");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(100, 1000));
+              return msg && msg->exe == "/bin/bash";
+          }),
+          "镜像更新应落地");
+    CHECK(manager.lookup(proc(100, 1000))->kind == hng::ProcessKind::REAL,
+          "存活进程应为 REAL");
+
+    // 已退出并转入虚拟根：保留最后镜像，性质为 VIRTUAL
+    manager.register_pid(head(200, 2000, 1, 10));
+    manager.register_pid(head(201, 2001, 200, 2000));
+    CHECK(wait_until([&] { return manager.lookup(proc(201, 2001)).has_value(); }),
+          "子进程应落地");
+    manager.update_exe_image(proc(200, 2000), "/usr/bin/python3");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->exe == "/usr/bin/python3";
+          }),
+          "退出前镜像应落地");
+
+    manager.unregister_pid(proc(200, 2000));
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->kind == hng::ProcessKind::VIRTUAL;
+          }),
+          "有子进程的退出进程应转入虚拟根并标记 VIRTUAL");
+    CHECK(manager.lookup(proc(200, 2000))->exe == "/usr/bin/python3",
+          "转虚拟根应保留最后镜像");
+
+    // 迟到更新命中虚拟根；同 pid 的新实例不受影响
+    manager.update_exe_image(proc(200, 2000), "/usr/bin/perl");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->exe == "/usr/bin/perl";
+          }),
+          "虚拟根应接受迟到镜像更新");
+
+    manager.register_pid(head(200, 2002, 1, 10));  // pid 复用
+    CHECK(wait_until([&] { return manager.lookup(proc(200, 2002)).has_value(); }),
+          "新实例应落地");
+    manager.update_exe_image(proc(200, 2000), "/late");
+    manager.register_pid(head(500, 5000, 1, 10));  // 屏障
+    CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
+          "屏障应落地");
+    CHECK(manager.lookup(proc(200, 2002))->exe.empty(),
+          "旧实例的迟到更新不得命中同 pid 的新实例");
+    CHECK(manager.lookup(proc(200, 2000))->exe == "/late",
+          "迟到更新应落到旧实例的虚拟根");
+}
+
 void run_resolve()
 {
     ProcessManager manager;
@@ -320,15 +383,11 @@ void run_resolve()
     // 虚拟根：父进程退出后仍可追溯
     manager.register_pid(head(300, 3000, 1, 10));
     manager.register_pid(head(301, 3001, 300, 3000));
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(301, 3001)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(301, 3001)).has_value(); }),
           "子进程应落地");
     manager.unregister_pid(proc(300, 3000));
     manager.register_pid(head(500, 5000, 1, 10));  // 屏障
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(500, 5000)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
           "屏障应落地");
     CHECK(manager.lookup(proc(300, 3000)).has_value(), "父进程应在虚拟根中");
     std::optional<hng::Process> p = manager.resolve(300);
@@ -338,9 +397,7 @@ void run_resolve()
     // 子进程退出后虚拟根被驱逐
     manager.unregister_pid(proc(301, 3001));
     manager.register_pid(head(501, 5001, 1, 10));  // 屏障
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(501, 5001)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(501, 5001)).has_value(); }),
           "第二个屏障应落地");
     CHECK(!manager.resolve(300).has_value(), "虚拟根驱逐后应返回空");
 }
@@ -534,6 +591,7 @@ int main()
     run_register_and_lookup();
     run_bind_transfer();
     run_pid_reuse();
+    run_image_update();
     run_resolve();
     run_fully_removed_paths();
     run_unknown_and_duplicate();

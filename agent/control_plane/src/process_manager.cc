@@ -67,10 +67,8 @@ std::optional<hng::Process> ProcessManager::resolve(uint32_t pid) const
         if (entry.first.pid != pid) {
             continue;
         }
-        if (!latest ||
-            entry.first.pid_start_time > latest->pid_start_time) {
-            latest =
-                hng::Process{entry.first.pid, entry.first.pid_start_time};
+        if (!latest || entry.first.pid_start_time > latest->pid_start_time) {
+            latest = hng::Process{entry.first.pid, entry.first.pid_start_time};
         }
     }
     return latest;
@@ -78,12 +76,27 @@ std::optional<hng::Process> ProcessManager::resolve(uint32_t pid) const
 
 void ProcessManager::register_pid(hng::event_head ehead)
 {
-    task.push(Task{Task::Kind::ADD, hng::ProcessMessage(ehead), {}});
+    Task t;
+    t.kind = Task::Kind::ADD;
+    t.add  = hng::ProcessMessage(ehead);
+    task.push(std::move(t));
 }
 
 void ProcessManager::unregister_pid(hng::Process p)
 {
-    task.push(Task{Task::Kind::REMOVE, {}, p});
+    Task t;
+    t.kind   = Task::Kind::REMOVE;
+    t.remove = p;
+    task.push(std::move(t));
+}
+
+void ProcessManager::update_exe_image(hng::Process p, std::string exe)
+{
+    Task t;
+    t.kind          = Task::Kind::UPDATE_IMAGE;
+    t.image_process = p;
+    t.image_exe     = std::move(exe);
+    task.push(std::move(t));
 }
 
 void ProcessManager::run()
@@ -105,6 +118,9 @@ void ProcessManager::land(Task& t)
             break;
         case Task::Kind::REMOVE:
             deletePID(t.remove);
+            break;
+        case Task::Kind::UPDATE_IMAGE:
+            update_exe_image_(t.image_process, std::move(t.image_exe));
             break;
     }
 }
@@ -176,6 +192,31 @@ void ProcessManager::deletePID(hng::Process p)
     retire(std::move(*retired));
 }
 
+void ProcessManager::update_exe_image_(hng::Process p, std::string exe)
+{
+    // 存活进程优先；身份不符表示 pid 已被新实例复用，不得改写
+    {
+        auto& shard_ref = ptree_shard[shard_index(p.pid)];
+        std::unique_lock lock(shard_ref.smtx);
+
+        auto it = shard_ref.process.find(p.pid);
+        if (it != shard_ref.process.end() &&
+            it->second.pid_start_time == p.pid_start_time) {
+            it->second.exe = std::move(exe);
+            return;
+        }
+    }
+
+    // 已转入虚拟根：保留最后镜像
+    auto& vshard_ref = vptree_root[shard_index(p.pid)];
+    std::unique_lock vlock(vshard_ref.smtx);
+
+    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
+    if (it != vshard_ref.vprocess.end()) {
+        it->second.exe = std::move(exe);
+    }
+}
+
 void ProcessManager::retire(hng::ProcessMessage&& old)
 {
     const hng::Process self{old.pid, old.pid_start_time};
@@ -183,6 +224,7 @@ void ProcessManager::retire(hng::ProcessMessage&& old)
     const bool keep_as_vroot = old.child_count > 0;
 
     if (keep_as_vroot) {
+        old.kind         = hng::ProcessKind::VIRTUAL;
         auto& vshard_ref = vptree_root[shard_index(old.pid)];
         std::unique_lock vlock(vshard_ref.smtx);
         vshard_ref.vprocess.emplace(VProcessKey{old.pid, old.pid_start_time},

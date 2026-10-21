@@ -24,11 +24,13 @@ RuntimePipeline::RuntimePipeline(
     hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue,
     hng::SPSC_Queue<hng::file_semantic_data>* file_queue,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-    RoleJoinService* role_join, RoleLookupService* role_lookup)
+    ProcessUpdateService* process_update, RoleJoinService* role_join,
+    RoleLookupService* role_lookup)
     : syscall_queue_(syscall_queue),
       file_queue_(file_queue),
       ctx_maintainer_(ctx_maintainer),
       process_join_(process_join),
+      process_update_(process_update),
       role_join_(role_join),
       role_lookup_(role_lookup)
 {
@@ -85,6 +87,7 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
         case kExecPayload: {
             const hng::exec_semantic_data& payload =
                 std::get<hng::exec_semantic_data>(src.data);
+            process_update_->update_exe_image(self, payload.semantic_filename());
             decision = ctx_maintainer_
                            ->should_derive_context(self, parent,
                                                    payload.semantic_filename())

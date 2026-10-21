@@ -20,9 +20,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -121,6 +124,36 @@ class FakeProcessJoin final : public ProcessJoinService {
     void unregister_pid(hng::Process p) override { unregistered.push_back(p); }
 };
 
+/// 进程镜像更新的替身；引擎线程写，测试通过原子量等待、join 后读明细
+class FakeProcessUpdate final : public ProcessUpdateService {
+   public:
+    struct Update {
+        hng::Process process;
+        std::string exe;
+    };
+
+    std::atomic<int> calls{0};
+
+    void update_exe_image(hng::Process p, std::string exe) override
+    {
+        {
+            std::lock_guard lock(mutex);
+            updates.push_back(Update{p, std::move(exe)});
+        }
+        calls.fetch_add(1);
+    }
+
+    std::vector<Update> snapshot() const
+    {
+        std::lock_guard lock(mutex);
+        return updates;
+    }
+
+   private:
+    mutable std::mutex mutex;
+    std::vector<Update> updates;
+};
+
 /// 角色继承通知的替身；只由引擎线程写，测试在 join 之后读
 class FakeRoleJoin final : public RoleJoinService {
    public:
@@ -213,14 +246,15 @@ class AckStub final : public UnsubscribeAck {
 struct Env {
     FakeContextService ctx_svc;
     FakeProcessJoin process_join;
+    FakeProcessUpdate process_update;
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
     hng::SPSC_Queue<hng::syscall_semantic_data> sys_q{64};
     hng::SPSC_Queue<hng::file_semantic_data> file_q{64};
 
     ContextMaintainer cm;
-    RuntimeEngine engine{&sys_q,        &file_q,    &cm,
-                         &process_join, &role_join, &role_lookup};
+    RuntimeEngine engine{&sys_q,          &file_q,    &cm,         &process_join,
+                         &process_update, &role_join, &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -248,6 +282,21 @@ hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* pat
     ev.head.ppid_start_time = 0;
     ev.head.type            = hng::EventType::FILE_EVENT;
     ev.data.set_semantic_filename(path);
+    return ev;
+}
+
+hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart,
+                                     const char* filename)
+{
+    hng::syscall_semantic_data ev;
+    ev.head.pid             = pid;
+    ev.head.pid_start_time  = pstart;
+    ev.head.ppid            = 0;
+    ev.head.ppid_start_time = 0;
+    ev.head.type            = hng::EventType::SYSCALL_EVENT;
+    auto& payload           = ev.data.emplace<hng::exec_semantic_data>();
+    payload.set_semantic_filename(filename);
+    payload.set_syscall_name("execve");
     return ev;
 }
 
@@ -446,6 +495,25 @@ void run_lifecycle_dispatch()
     CHECK(sys.calls.load() == 2, "两条事件各投递一次");
 }
 
+void run_exec_image_update()
+{
+    Env env;
+    std::thread engine_thread([&env] { env.engine.run(); });
+
+    env.sys_q.push(make_exec(5005, 50, "/bin/sh"));
+    CHECK(wait_until([&env] { return env.process_update.calls.load() >= 1; }),
+          "exec 应驱动进程镜像更新");
+
+    env.engine.stop();
+    engine_thread.join();
+
+    const std::vector<FakeProcessUpdate::Update> updates =
+        env.process_update.snapshot();
+    CHECK(updates.size() == 1 && updates[0].process == mk(5005, 50) &&
+              updates[0].exe == "/bin/sh",
+          "更新应携带进程身份与语义化路径");
+}
+
 }  // namespace
 
 int main()
@@ -456,6 +524,7 @@ int main()
     run_live_delivery();
     run_stats_unsettled();
     run_lifecycle_dispatch();
+    run_exec_image_update();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
