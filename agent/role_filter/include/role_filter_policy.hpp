@@ -1,6 +1,7 @@
 /**
  * @file
  * @brief 黑名单优先的只读标签策略。
+ * @author inless427
  */
 #ifndef HNG_ROLE_FILTER_POLICY_HPP_
 #define HNG_ROLE_FILTER_POLICY_HPP_
@@ -9,7 +10,9 @@
 #include "agent/role_filter/include/role_filter_config.hpp"
 
 namespace hng {
-namespace detail { class RoleFilterPolicyData; }
+namespace detail {
+class RoleFilterPolicyData;
+}
 /**
  * @brief 构造时编译、查询时只读的角色名单策略。
  * @details 精确规则使用哈希集合，正则规则依次执行区分大小写的整串匹配。
@@ -29,6 +32,7 @@ class RoleFilterPolicy {
      * @note 生命周期事件由 eBPF 探针绕过过滤，不受本策略限制。
      */
     bool should_collect(const std::string& role_label) const;
+
    private:
     std::shared_ptr<const detail::RoleFilterPolicyData> data_;
 };

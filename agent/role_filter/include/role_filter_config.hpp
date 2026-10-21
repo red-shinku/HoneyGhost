@@ -1,6 +1,7 @@
 /**
  * @file
  * @brief 角色标签名单的数据结构与严格配置解析接口。
+ * @author inless427
  */
 #ifndef HNG_ROLE_FILTER_CONFIG_HPP_
 #define HNG_ROLE_FILTER_CONFIG_HPP_
@@ -14,14 +15,14 @@ enum class LabelMatch { EXACT, REGEX };
 
 /** @brief 一条标签匹配规则。 */
 struct LabelRule {
-    LabelMatch match = LabelMatch::EXACT; ///< 默认精确匹配。
-    std::string expression; ///< 完整标签或正则表达式。
+    LabelMatch match = LabelMatch::EXACT;  ///< 默认精确匹配。
+    std::string expression;                ///< 完整标签或正则表达式。
 };
 
 /** @brief 标签规则集合；黑名单优先，未命中白名单默认拒绝。 */
 struct RoleFilterConfig {
-    std::vector<LabelRule> whitelist; ///< 允许普通事件采集的规则。
-    std::vector<LabelRule> blacklist; ///< 优先拒绝普通事件采集的规则。
+    std::vector<LabelRule> whitelist;  ///< 允许普通事件采集的规则。
+    std::vector<LabelRule> blacklist;  ///< 优先拒绝普通事件采集的规则。
 };
 
 /**
@@ -35,7 +36,7 @@ struct RoleFilterConfig {
  * @throws std::runtime_error 读取、语法、边界或正则校验失败，附来源和行号。
  */
 RoleFilterConfig parse_role_filter_config(std::istream& input,
-                                        const std::string& source = "<stream>");
+                                          const std::string& source = "<stream>");
 /**
  * @brief 打开文件并解析配置。
  * @param[in] path 配置文件路径。

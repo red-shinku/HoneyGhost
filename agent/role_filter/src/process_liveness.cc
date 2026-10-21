@@ -1,6 +1,7 @@
 /**
  * @file
  * @brief 通过 procfs 的启动时间区分存活、退出、PID 复用和未知状态。
+ * @author inless427
  */
 #include "agent/role_filter/src/role_filter_state.hpp"
 #include <cerrno>
@@ -13,10 +14,14 @@ namespace hng::detail {
 ProcessLiveness proc_liveness(Process process, const std::string& root)
 {
     const auto path = root + "/" + std::to_string(process.pid) + "/stat";
-    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return errno == ENOENT || errno == ESRCH
-        ? ProcessLiveness::DEAD : ProcessLiveness::UNKNOWN;
-    struct Close { int fd; ~Close() { close(fd); } } guard{fd};
+    int fd          = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return errno == ENOENT || errno == ESRCH ? ProcessLiveness::DEAD
+                                                 : ProcessLiveness::UNKNOWN;
+    struct Close {
+        int fd;
+        ~Close() { close(fd); }
+    } guard{fd};
     std::string content;
     char buffer[4096];
     while (true) {
@@ -37,9 +42,11 @@ ProcessLiveness proc_liveness(Process process, const std::string& root)
     for (int field = 3; field <= 22; ++field)
         if (!(fields >> value)) return ProcessLiveness::UNKNOWN;
     uint64_t start = 0;
-    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), start);
+    const auto parsed =
+        std::from_chars(value.data(), value.data() + value.size(), start);
     if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size())
         return ProcessLiveness::UNKNOWN;
-    return start == process.pid_start_time ? ProcessLiveness::ALIVE : ProcessLiveness::DEAD;
+    return start == process.pid_start_time ? ProcessLiveness::ALIVE
+                                           : ProcessLiveness::DEAD;
 }
 }  // namespace hng::detail

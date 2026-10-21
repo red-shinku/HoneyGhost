@@ -1,6 +1,7 @@
 /**
  * @file
  * @brief 有界配置读取、严格语法解析及来源行号错误报告。
+ * @author inless427
  */
 #include "agent/role_filter/include/role_filter_config.hpp"
 #include "agent/role_filter/include/role_filter_policy.hpp"
@@ -16,10 +17,12 @@ std::string trim(const std::string& text)
     if (first == std::string::npos) return {};
     return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
 }
-}
+}  // namespace
 
 namespace hng {
-RoleFilterConfig parse_role_filter_config(std::istream& input, const std::string& source)
+
+RoleFilterConfig parse_role_filter_config(std::istream& input,
+                                          const std::string& source)
 {
     RoleFilterConfig result;
     std::vector<LabelRule>* section = nullptr;
@@ -27,7 +30,8 @@ RoleFilterConfig parse_role_filter_config(std::istream& input, const std::string
     std::string line;
     std::size_t number = 0, bytes = 0, count = 0;
     auto fail = [&](const std::string& why) {
-        throw std::runtime_error(source + ":" + std::to_string(number + 1) + ": " + why);
+        throw std::runtime_error(source + ":" + std::to_string(number + 1) +
+                                 ": " + why);
     };
     while (true) {
         line.clear();
@@ -47,26 +51,37 @@ RoleFilterConfig parse_role_filter_config(std::istream& input, const std::string
             if (line == "[whitelist]") {
                 if (white_seen) fail("重复 whitelist 段");
                 white_seen = true;
-                section = &result.whitelist;
-            } else if (line == "[blacklist]") {
+                section    = &result.whitelist;
+            }
+            else if (line == "[blacklist]") {
                 if (black_seen) fail("重复 blacklist 段");
                 black_seen = true;
-                section = &result.blacklist;
-            } else {
+                section    = &result.blacklist;
+            }
+            else {
                 if (!section) fail("规则必须放在名单段内");
                 const auto colon = line.find(':');
-                if (colon == std::string::npos) fail("规则应为 exact:标签 或 regex:正则");
-                const auto kind = trim(line.substr(0, colon));
+                if (colon == std::string::npos)
+                    fail("规则应为 exact:标签 或 regex:正则");
+                const auto kind       = trim(line.substr(0, colon));
                 const auto expression = trim(line.substr(colon + 1));
-                if (expression.empty() || expression.size() > 4096) fail("规则为空或超过 4096 字节");
+                if (expression.empty() || expression.size() > 4096)
+                    fail("规则为空或超过 4096 字节");
                 LabelMatch match = LabelMatch::EXACT;
-                if (kind == "exact") match = LabelMatch::EXACT;
-                else if (kind == "regex") match = LabelMatch::REGEX;
-                else fail("未知规则类型: " + kind);
+                if (kind == "exact")
+                    match = LabelMatch::EXACT;
+                else if (kind == "regex")
+                    match = LabelMatch::REGEX;
+                else
+                    fail("未知规则类型: " + kind);
                 if (++count > 4096) fail("规则数超过 4096");
                 LabelRule rule{match, expression};
-                try { (void)RoleFilterPolicy(RoleFilterConfig{{rule}, {}}); }
-                catch (const std::runtime_error& error) { fail(error.what()); }
+                try {
+                    (void)RoleFilterPolicy(RoleFilterConfig{{rule}, {}});
+                }
+                catch (const std::runtime_error& error) {
+                    fail(error.what());
+                }
                 section->push_back(std::move(rule));
             }
         }

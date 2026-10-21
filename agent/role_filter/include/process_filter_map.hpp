@@ -1,6 +1,7 @@
 /**
  * @file
  * @brief 进程过滤 map 的独占写接口和 Linux 后端工厂。
+ * @author inless427
  */
 #ifndef HNG_PROCESS_FILTER_MAP_HPP_
 #define HNG_PROCESS_FILTER_MAP_HPP_
@@ -16,7 +17,7 @@ namespace hng {
  */
 class ProcessFilterMap {
    public:
-    virtual ~ProcessFilterMap() = default;
+    virtual ~ProcessFilterMap()                             = default;
     /**
      * @brief 向所有后端表写入进程许可。
      * @param[in] process 完整的 PID 与启动时间身份。
@@ -33,12 +34,14 @@ class ProcessFilterMap {
 
 /**
  * @brief 为各探针的 map 创建统一写入后端。
- * @details 直接使用 Linux bpf syscall。校验 ABI、容量与空表，复制 fd 并设置 CLOEXEC。
+ * @details 直接使用 Linux bpf syscall。校验 ABI、容量与空表，复制 fd 并设置
+ * CLOEXEC。
  * @param[in] map_fds 非空 fd 列表；原 fd 的所有权仍属于调用方。
  * @return 独占拥有 fd 副本的后端。
  * @throws std::system_error fd 无效、ABI 不符、表非空或内核调用失败。
  * @pre 同一组 map 只允许一个维护器写入。
  */
-std::unique_ptr<ProcessFilterMap> make_bpf_process_filter_map(const std::vector<int>& map_fds);
+std::unique_ptr<ProcessFilterMap> make_bpf_process_filter_map(
+    const std::vector<int>& map_fds);
 }  // namespace hng
 #endif
