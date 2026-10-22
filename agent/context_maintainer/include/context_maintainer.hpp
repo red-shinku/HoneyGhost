@@ -21,7 +21,6 @@
 #include <string>
 #include <unordered_map>
 
-#include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/detector/include/score.hpp"
 #include "agent/event_data/include/process.hpp"
@@ -66,7 +65,7 @@ class ContextMaintainer {
     /// @details 输入为一次 exec：该进程尚未拥有自身 context 时（pending 或惰性
     /// 首次判定），按规则决策；已拥有自身 context 的进程为原地重 exec，不决策。
     /// 派生发生时分配 contextID、判定 attr 并经 ContextService 注册；KEEP 时
-    /// 只返回 kind=KEEP，不注册。
+    /// 经 ContextService 挂靠到父进程所属 context 的根，并返回 kind=KEEP。
     /// @param p 执行 exec 的进程
     /// @param parent 父进程（pending 记录缺失/乱序时惰性判定用）
     /// @param filename 归一化的 exec 目标路径

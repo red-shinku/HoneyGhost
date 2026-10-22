@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <optional>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -53,6 +55,7 @@ class FakeContextService final : public ContextLookupService,
     std::unordered_map<Key, uint32_t, KeyHash> ctx;
     std::size_t register_calls = 0;
     std::vector<hng::Process> registered_parents;
+    std::vector<std::pair<hng::Process, hng::Process>> bound;
 
     void seed(hng::Process p, uint32_t id) { ctx[Key{p}] = id; }
 
@@ -89,7 +92,14 @@ class FakeContextService final : public ContextLookupService,
     {
     }
     void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
-    void bind_to_ctxroot(hng::Process, hng::Process) override {}
+    void bind_to_ctxroot(hng::Process p, hng::Process parent) override
+    {
+        bound.emplace_back(p, parent);
+        // 模拟控制平面：进程归属父进程所在的 context
+        if (auto id = lookup(parent)) {
+            ctx[Key{p}] = *id;
+        }
+    }
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
 
@@ -124,6 +134,7 @@ void run_derive()
     CHECK(
         svc.registered_parents.size() == 1 && svc.registered_parents[0] == parent,
         "父进程链接应原样交给控制平面解析");
+    CHECK(svc.bound.empty(), "DERIVE 不挂靠父 context");
 
     // 2. 已派生进程原地重 exec（bash 里 exec 别的）→ 不派生
     auto again = m.should_derive_context(bash, parent, "/usr/bin/python3");
@@ -150,9 +161,12 @@ void run_keep()
     m.on_birth(ls, shell);
     auto ld = m.should_derive_context(ls, shell, "/usr/bin/ls");
     CHECK(ld.kind == ContextDecisionKind::KEEP, "解释器会话内普通命令应 KEEP");
-    CHECK(!svc.lookup(ls).has_value(), "KEEP 进程不登记新 context");
-    CHECK(m.lookup_contextID(ls) == std::nullopt,
-          "KEEP 进程无自身 context（归属落地留待后续）");
+    CHECK(svc.bound.size() == 1 && svc.bound[0].first == ls &&
+              svc.bound[0].second == shell,
+          "KEEP 进程应挂靠到父进程所属 context 根");
+    CHECK(svc.register_calls == 1, "KEEP 进程不注册新 context");
+    CHECK(m.lookup_contextID(ls) == std::optional<uint32_t>(sd.contextID),
+          "KEEP 进程归属父 context");
 }
 
 // ---- 窗口耗尽 NO_EXEC ----

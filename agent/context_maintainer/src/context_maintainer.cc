@@ -4,7 +4,8 @@
  * @details
  * 输入事件 kind（exec / 诞生 / 退出 / 普通）由使用方识别并调用对应入口；本模块
  * 只维护窗口与进程→context 状态。派生发生时分配 contextID、判定 attr（decide_attr
- * 当前占位恒 UNKNOWN），并经 ContextService 注册到控制平面。
+ * 当前占位恒 UNKNOWN），并经 ContextService 注册到控制平面；KEEP 时经
+ * ContextService 把进程挂靠到父进程所属 context 的根。
  *
  * "父是否解释器"采用近似：以父进程自身最近一次 exec 目标是否解释器家族判定
  * （exec_is_interpreter_），未知按非解释器 → 落入默认派生（安全侧）。
@@ -71,9 +72,13 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
         return {};  // 防御：判定入口未返回结果
     }
     if (!verdict->derive) {
+        // 留在父 context：把进程挂靠到父进程所属 context 的根
+        if (ctx_join_service_) {
+            ctx_join_service_->bind_to_ctxroot(verdict->child, verdict->parent);
+        }
         ContextDeriveDecision d;
         d.kind = ContextDecisionKind::KEEP;
-        return d;  // 留在父 context，归属落地由调用方处理
+        return d;
     }
     return finalize_derive(*verdict);
 }
