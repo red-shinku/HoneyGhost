@@ -96,8 +96,8 @@ class Runner {
 void register_root(ContextManager& manager, hng::Process root,
                    uint32_t context_id, const char* what)
 {
-    manager.register_contextID(root, decision(context_id, contextattr::UNKNOWN),
-                               {});
+    manager.register_context(root, decision(context_id, contextattr::UNKNOWN),
+                             {});
     CHECK(wait_until(
               [&] { return manager.lookup(root).value_or(0) == context_id; }),
           what);
@@ -106,8 +106,8 @@ void register_root(ContextManager& manager, hng::Process root,
 /// 用一个新根的注册当屏障：它落地即说明此前的写都已落地
 void barrier(ContextManager& manager, uint32_t pid)
 {
-    manager.register_contextID(proc(pid, pid * 10),
-                               decision(pid, contextattr::UNKNOWN), {});
+    manager.register_context(proc(pid, pid * 10),
+                             decision(pid, contextattr::UNKNOWN), {});
     CHECK(wait_until(
               [&] { return manager.lookup(proc(pid, pid * 10)).has_value(); }),
           "屏障应落地");
@@ -126,8 +126,8 @@ void run_register_and_lookup()
           "未注册附属 context 时应失配");
 
     // 幂等重放：同键同 contextID，不改变表状态
-    manager.register_contextID(proc(100, 1000), decision(7, contextattr::UNKNOWN),
-                               {});
+    manager.register_context(proc(100, 1000), decision(7, contextattr::UNKNOWN),
+                             {});
     barrier(manager, 200);
     CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
           "幂等重放后主 context 不变");
@@ -143,8 +143,8 @@ void run_extra_context()
     register_root(manager, proc(100, 1000), 7, "注册后应能查到该 context");
 
     // 主注册接口不再把不同 contextID 转成附属 context
-    manager.register_contextID(proc(100, 1000),
-                               decision(8, contextattr::EXTRA_ATTACK), {});
+    manager.register_context(proc(100, 1000),
+                             decision(8, contextattr::EXTRA_ATTACK), {});
     barrier(manager, 200);
     CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
           "重复主注册不得覆盖主 context");
@@ -152,8 +152,7 @@ void run_extra_context()
           "主注册接口不得产生附属 context");
 
     // 附属 context 经显式接口登记
-    manager.register_extra_context(proc(100, 1000), 8,
-                                   contextattr::EXTRA_ATTACK);
+    manager.register_extra_context(proc(100, 1000), 8, contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] {
               return manager.lookup_extra(proc(100, 1000)).value_or(0) == 8;
           }),
@@ -162,8 +161,7 @@ void run_extra_context()
           "附属 context 不得覆盖主 context");
 
     // 已有附属 context 时保留首个
-    manager.register_extra_context(proc(100, 1000), 9,
-                                   contextattr::EXTRA_ATTACK);
+    manager.register_extra_context(proc(100, 1000), 9, contextattr::EXTRA_ATTACK);
     barrier(manager, 201);
     CHECK(manager.lookup_extra(proc(100, 1000)).value_or(0) == 8,
           "重复附属登记应保留首个");
@@ -220,8 +218,7 @@ void run_cleanup()
     CHECK(
         wait_until([&] { return !manager.lookup(proc(100, 1000)).has_value(); }),
         "退出根应失配");
-    CHECK(manager.lookup(proc(101, 1001)).value_or(0) == 7,
-          "其余成员应保留归属");
+    CHECK(manager.lookup(proc(101, 1001)).value_or(0) == 7, "其余成员应保留归属");
     {
         const std::optional<ContextProcessSet> set = manager.members(7);
         CHECK(set.has_value() && set->root == proc(100, 1000),
@@ -233,8 +230,7 @@ void run_cleanup()
     manager.on_process_exited(proc(101, 1001));
     CHECK(wait_until([&] { return !manager.members(7).has_value(); }),
           "最后一个成员退出后 context 应删除");
-    CHECK(!manager.lookup(proc(101, 1001)).has_value(),
-          "最后成员退出后应失配");
+    CHECK(!manager.lookup(proc(101, 1001)).has_value(), "最后成员退出后应失配");
 
     // 注销：主 context 与同键的附属 context 一并清除
     register_root(manager, proc(200, 2000), 9, "第二个根应注册成功");
@@ -245,7 +241,7 @@ void run_cleanup()
           }),
           "附属 context 应注册成功");
 
-    manager.unregister_contextID(proc(200, 2000));
+    manager.unregister_context(proc(200, 2000));
     CHECK(
         wait_until([&] { return !manager.lookup(proc(200, 2000)).has_value(); }),
         "注销后应失配");
@@ -254,7 +250,7 @@ void run_cleanup()
     CHECK(manager.stats().unknown_unregister == 0, "已知根的注销不应计数");
 
     // 注销未注册的根：丢弃并计数
-    manager.unregister_contextID(proc(500, 5000));
+    manager.unregister_context(proc(500, 5000));
     CHECK(wait_until([&] { return manager.stats().unknown_unregister == 1; }),
           "注销未注册的根应计数");
 }
@@ -305,19 +301,17 @@ void run_contexts_by_attr()
           "属性变更后应退出旧索引");
 
     // 同键的附属 context 按其属性单独入索引
-    manager.register_extra_context(proc(100, 1000), 8,
-                                   contextattr::EXTRA_ATTACK);
+    manager.register_extra_context(proc(100, 1000), 8, contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] {
               return has_id(manager.contexts_by_attr(contextattr::EXTRA_ATTACK),
                             8);
           }),
           "附属 context 应按其属性入索引");
 
-    manager.unregister_contextID(proc(100, 1000));
+    manager.unregister_context(proc(100, 1000));
     CHECK(wait_until([&] {
               return manager.contexts_by_attr(contextattr::ATTACK).empty() &&
-                     manager.contexts_by_attr(contextattr::EXTRA_ATTACK)
-                         .empty();
+                     manager.contexts_by_attr(contextattr::EXTRA_ATTACK).empty();
           }),
           "注销后两个索引都不应残留");
 
@@ -341,8 +335,7 @@ void run_members_by_context()
 
     // 根自指：初始成员只有根
     std::optional<ContextProcessSet> set = manager.members(7);
-    CHECK(set.has_value() && set->root == proc(100, 1000),
-          "应返回根进程");
+    CHECK(set.has_value() && set->root == proc(100, 1000), "应返回根进程");
     CHECK(set->members.size() == 1 && set->members[0] == proc(100, 1000),
           "根进程应在成员集中");
 
@@ -360,8 +353,7 @@ void run_members_by_context()
           "成员应按 pid 升序并含根");
 
     // 附属 context 共用同一根键与成员集
-    manager.register_extra_context(proc(100, 1000), 8,
-                                   contextattr::EXTRA_ATTACK);
+    manager.register_extra_context(proc(100, 1000), 8, contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] { return manager.members(8).has_value(); }),
           "附属 context 应可查询");
     set = manager.members(8);
@@ -428,8 +420,8 @@ void run_stop_semantics()
     // 已入队的任务在 stop() 之后仍被落地
     {
         ContextManager manager;
-        manager.register_contextID(proc(100, 1000),
-                                   decision(7, contextattr::UNKNOWN), {});
+        manager.register_context(proc(100, 1000),
+                                 decision(7, contextattr::UNKNOWN), {});
         manager.stop();
         manager.run();
         CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
@@ -440,8 +432,8 @@ void run_stop_semantics()
     {
         ContextManager manager;
         manager.stop();
-        manager.register_contextID(proc(200, 2000),
-                                   decision(9, contextattr::UNKNOWN), {});
+        manager.register_context(proc(200, 2000),
+                                 decision(9, contextattr::UNKNOWN), {});
         manager.run();  // 队列为空，应直接返回
         CHECK(!manager.lookup(proc(200, 2000)).has_value(),
               "停止后的入队不得落地");
@@ -463,12 +455,11 @@ void run_concurrent_writers()
                 const uint32_t pid = 1000 + static_cast<uint32_t>(t) * 100 +
                                      static_cast<uint32_t>(i);
                 // 同一线程内先注册后注销：队列保序，注销不会先于注册到达
-                manager.register_contextID(
-                    proc(pid, pid * 10), decision(pid, contextattr::UNKNOWN),
-                    {});
+                manager.register_context(proc(pid, pid * 10),
+                                         decision(pid, contextattr::UNKNOWN), {});
                 manager.bind_to_ctxroot(proc(pid + 1, pid * 10 + 1),
                                         proc(pid, pid * 10));
-                manager.unregister_contextID(proc(pid, pid * 10));
+                manager.unregister_context(proc(pid, pid * 10));
             }
         });
     }

@@ -86,17 +86,16 @@ class FakeContextService final : public ContextLookupService,
         return std::nullopt;
     }
     ContextManagerStats stats() const override { return {}; }
-    void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            hng::Process) override
+    void register_context(hng::Process p, ContextDeriveDecision nd,
+                          hng::Process) override
     {
         ++register_calls;
         ctx[Key{p}] = nd.contextID;
     }
-    void register_extra_context(hng::Process, uint32_t,
-                                hng::contextattr) override
+    void register_extra_context(hng::Process, uint32_t, hng::contextattr) override
     {
     }
-    void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
+    void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
@@ -358,8 +357,7 @@ void run_exec_derive()
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与 exec 分两轮各取出一条");
 
     const RuntimeDraft& d = drafts[1];
-    CHECK(d.decision.kind == ContextDecisionKind::DERIVE,
-          "解释器 exec 应派生");
+    CHECK(d.decision.kind == ContextDecisionKind::DERIVE, "解释器 exec 应派生");
     CHECK(env.ctx_svc.register_calls == 1, "派生应登记到控制平面");
     CHECK(d.event.runtimeInfo.contextID == d.decision.contextID,
           "派生后的归属快照应即新 context");

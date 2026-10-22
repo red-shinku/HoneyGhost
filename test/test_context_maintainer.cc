@@ -78,18 +78,17 @@ class FakeContextService final : public ContextLookupService,
         return std::nullopt;
     }
     ContextManagerStats stats() const override { return {}; }
-    void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            hng::Process parent) override
+    void register_context(hng::Process p, ContextDeriveDecision nd,
+                          hng::Process parent) override
     {
         ++register_calls;
         registered_parents.push_back(parent);
         ctx[Key{p}] = nd.contextID;
     }
-    void register_extra_context(hng::Process, uint32_t,
-                                hng::contextattr) override
+    void register_extra_context(hng::Process, uint32_t, hng::contextattr) override
     {
     }
-    void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
+    void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
@@ -122,9 +121,9 @@ void run_derive()
     CHECK(m.lookup_contextID(bash) == std::optional<uint32_t>(d.contextID),
           "派生后归属自身新 context");
     CHECK(d.contextID == svc.lookup(bash), "新 context 已登记到服务");
-    CHECK(svc.registered_parents.size() == 1 &&
-              svc.registered_parents[0] == parent,
-          "父进程链接应原样交给控制平面解析");
+    CHECK(
+        svc.registered_parents.size() == 1 && svc.registered_parents[0] == parent,
+        "父进程链接应原样交给控制平面解析");
 
     // 2. 已派生进程原地重 exec（bash 里 exec 别的）→ 不派生
     auto again = m.should_derive_context(bash, parent, "/usr/bin/python3");
@@ -150,8 +149,7 @@ void run_keep()
     hng::Process ls = mk(11, 110);
     m.on_birth(ls, shell);
     auto ld = m.should_derive_context(ls, shell, "/usr/bin/ls");
-    CHECK(ld.kind == ContextDecisionKind::KEEP,
-          "解释器会话内普通命令应 KEEP");
+    CHECK(ld.kind == ContextDecisionKind::KEEP, "解释器会话内普通命令应 KEEP");
     CHECK(!svc.lookup(ls).has_value(), "KEEP 进程不登记新 context");
     CHECK(m.lookup_contextID(ls) == std::nullopt,
           "KEEP 进程无自身 context（归属落地留待后续）");
@@ -177,8 +175,7 @@ void run_noexec()
     CHECK(d.kind == ContextDecisionKind::DERIVE, "配额耗尽触发 NO_EXEC 派生");
     CHECK(m.lookup_contextID(worker) == std::optional<uint32_t>(d.contextID),
           "耗尽后归自身新 context");
-    CHECK(m.on_event(worker).kind == ContextDecisionKind::NONE,
-          "派生后不再推进");
+    CHECK(m.on_event(worker).kind == ContextDecisionKind::NONE, "派生后不再推进");
 }
 
 // ---- 惰性判定（exec 先于诞生 / 诞生丢失）----
@@ -191,7 +188,8 @@ void run_lazy()
     // 无诞生事件直接 exec 解释器 → 惰性 DERIVE
     hng::Process node = mk(300, 3000);
     auto d            = m.should_derive_context(node, mk(1, 1), "/usr/bin/node");
-    CHECK(d.kind == ContextDecisionKind::DERIVE, "无诞生的惰性 exec 解释器应派生");
+    CHECK(d.kind == ContextDecisionKind::DERIVE,
+          "无诞生的惰性 exec 解释器应派生");
 
     // 乱序：派生后补到的诞生事件应被忽略（不重复开窗）
     m.on_birth(node, mk(1, 1));

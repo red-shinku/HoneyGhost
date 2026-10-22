@@ -101,16 +101,15 @@ class FakeContextService final : public ContextLookupService,
         return std::nullopt;
     }
     ContextManagerStats stats() const override { return {}; }
-    void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            hng::Process) override
+    void register_context(hng::Process p, ContextDeriveDecision nd,
+                          hng::Process) override
     {
         ctx[Key{p}] = nd.contextID;
     }
-    void register_extra_context(hng::Process, uint32_t,
-                                hng::contextattr) override
+    void register_extra_context(hng::Process, uint32_t, hng::contextattr) override
     {
     }
-    void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
+    void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };

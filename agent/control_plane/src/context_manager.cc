@@ -115,8 +115,7 @@ std::vector<uint32_t> ContextManager::contexts_by_attr(
     return result;
 }
 
-std::optional<ContextProcessSet> ContextManager::members(
-    uint32_t contextID) const
+std::optional<ContextProcessSet> ContextManager::members(uint32_t contextID) const
 {
     {
         std::shared_lock lock(contexts.smtx);
@@ -135,9 +134,9 @@ std::optional<ContextProcessSet> ContextManager::members(
     return std::nullopt;
 }
 
-void ContextManager::register_contextID(hng::Process p,
-                                        ContextDeriveDecision newcontext,
-                                        hng::Process parent)
+void ContextManager::register_context(hng::Process p,
+                                      ContextDeriveDecision newcontext,
+                                      hng::Process parent)
 {
     if (newcontext.kind != ContextDecisionKind::DERIVE) {
         return;  // 接口只接受派生决策
@@ -151,7 +150,7 @@ void ContextManager::register_extra_context(hng::Process p, uint32_t contextID,
     task.push(Task{ExtraTask{p, contextID, attr}});
 }
 
-void ContextManager::unregister_contextID(hng::Process p)
+void ContextManager::unregister_context(hng::Process p)
 {
     task.push(Task{DelTask{p}});
 }
@@ -274,7 +273,7 @@ void ContextManager::addExtraContext(hng::Process p, uint32_t contextID,
         extras.map.emplace(key, ContextMessage{contextID, attr, false});
         extras.by_attr[attr].insert(contextID);
         extras.id_to_key[contextID] = key;
-        it->second.has_extra = true;
+        it->second.has_extra        = true;
     }  // 释放 contexts/extras 锁后再记录 parent 关系
 
     std::unique_lock lock(parent.smtx);
@@ -311,8 +310,7 @@ void ContextManager::delContextID(hng::Process p)
         if (eit != extras.map.end()) {
             const uint32_t attached_id = eit->second.contextID;
             attachedID                 = attached_id;
-            erase_from_attr_index(extras.by_attr, eit->second.attr,
-                                  attached_id);
+            erase_from_attr_index(extras.by_attr, eit->second.attr, attached_id);
             extras.id_to_key.erase(attached_id);
             extras.map.erase(eit);
         }
@@ -348,7 +346,7 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
                                       contextID);
                 it->second.attr = attr;
                 contexts.by_attr[attr].insert(contextID);
-                changed         = true;
+                changed = true;
             }
         }
         else if (it->second.has_extra) {
@@ -362,7 +360,7 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
                                           contextID);
                     eit->second.attr = attr;
                     extras.by_attr[attr].insert(contextID);
-                    changed          = true;
+                    changed = true;
                 }
             }
         }
@@ -398,7 +396,7 @@ void ContextManager::bind_to_ctxroot_(hng::Process p, hng::Process parent)
     }
     const ContextKey key = parent_it->second;
 
-    auto it = to_context_root.map.find(p);
+    auto it              = to_context_root.map.find(p);
     if (it == to_context_root.map.end()) {
         to_context_root.map.emplace(p, key);
     }

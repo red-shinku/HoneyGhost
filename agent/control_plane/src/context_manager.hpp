@@ -136,15 +136,14 @@ class ContextManager : public ContextLookupService,
     std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override;
 
     /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
-    std::optional<ContextProcessSet> members(
-        uint32_t contextID) const override;
+    std::optional<ContextProcessSet> members(uint32_t contextID) const override;
 
     /// @brief 注册新的主 contextID（通知写）
     /// @param p context 代表进程
     /// @param newcontext 新 context 信息；kind 须为 DERIVE
     /// @param parent 父进程；落地时解析其 contextID，未落定则按森林根
-    void register_contextID(hng::Process p, ContextDeriveDecision newcontext,
-                            hng::Process parent) override;
+    void register_context(hng::Process p, ContextDeriveDecision newcontext,
+                          hng::Process parent) override;
 
     /// @brief 注册附属 context（通知写）
     /// @param p context 代表进程；须已有主 context
@@ -155,7 +154,7 @@ class ContextManager : public ContextLookupService,
 
     /// @brief 注销 contextID（通知写）
     /// 生成并将实际写操作 加入任务队列
-    void unregister_contextID(hng::Process p) override;
+    void unregister_context(hng::Process p) override;
 
     /// @brief 修改 context 属性（通知写）
     void set_attr(hng::Process p, uint32_t contextID,
@@ -222,8 +221,8 @@ class ContextManager : public ContextLookupService,
     };
 
     /// 六个写接口共用一条队列：多生产者、无界，按到达顺序串行落地
-    using Task = std::variant<AddTask, ExtraTask, DelTask, SetAttrTask,
-                              BindTask, ExitedTask>;
+    using Task = std::variant<AddTask, ExtraTask, DelTask, SetAttrTask, BindTask,
+                              ExitedTask>;
     hng::NotificationQueue<Task> task;
 
     /// 消费线程写、任意线程读，故为原子

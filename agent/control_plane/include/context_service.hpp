@@ -54,7 +54,7 @@ class ContextLookupService {
     /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
     /// @return 根进程与成员进程（含根进程，按 pid 升序）
     virtual std::optional<ContextProcessSet> members(
-        uint32_t contextID) const = 0;
+        uint32_t contextID) const             = 0;
 
     /// @brief 异常态观测快照
     virtual ContextManagerStats stats() const = 0;
@@ -78,9 +78,9 @@ class ContextJoinService {
     /// @param parent 父进程；实现方在落地时解析其 contextID，未落定时按森林根
     /// @note 主 context 键唯一；同键的重复注册不产生附属 context，附属 context
     ///       须经 register_extra_context 登记
-    virtual void register_contextID(hng::Process p,
-                                    ContextDeriveDecision newcontext,
-                                    hng::Process parent)              = 0;
+    virtual void register_context(hng::Process p,
+                                  ContextDeriveDecision newcontext,
+                                  hng::Process parent)                = 0;
 
     /// @brief 其他组件通知注册附属 context
     /// @param p context代表进程的唯一性表示；须已有主 context
@@ -92,7 +92,7 @@ class ContextJoinService {
 
     /// @brief 其他组件通知注销 contextID
     /// @param p context代表进程的唯一性表示
-    virtual void unregister_contextID(hng::Process p)                 = 0;
+    virtual void unregister_context(hng::Process p)                   = 0;
 
     /// @brief 归属落定：不派生的进程挂靠到其父进程所属的 context
     /// @details 派生决策为 KEEP（留在父 context）时由工作平面调用。实现方把 p
