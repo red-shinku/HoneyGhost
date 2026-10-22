@@ -32,7 +32,7 @@ class RoleLookupService {
     /// @brief 角色的对外视图：roleID + roleLabel
     virtual std::optional<hng::Role> role(uint32_t roleID) const = 0;
 
-    /// @brief 角色的当前锚点；角色不存在或锚点已被完全删除时为空
+    /// @brief 角色的当前锚点；角色不存在或锚点已退出时为空
     virtual std::optional<hng::Process> main_process(
         uint32_t roleID) const = 0;
 
