@@ -88,15 +88,12 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
             const hng::exec_semantic_data& payload =
                 std::get<hng::exec_semantic_data>(src.data);
             process_update_->update_exe_image(self, payload.semantic_filename());
-            decision = ctx_maintainer_
-                           ->should_derive_context(self, parent,
-                                                   payload.semantic_filename())
-                           .value_or(ContextDeriveDecision{});
+            decision = ctx_maintainer_->should_derive_context(
+                self, parent, payload.semantic_filename());
             break;
         }
         default: {
-            decision =
-                ctx_maintainer_->on_event(self).value_or(ContextDeriveDecision{});
+            decision = ctx_maintainer_->on_event(self);
             break;
         }
     }
@@ -111,8 +108,7 @@ void RuntimePipeline::handle_file(hng::file_semantic_data src, RuntimeDraft& out
 {
     const hng::Process self{src.head.pid, src.head.pid_start_time};
 
-    const ContextDeriveDecision decision =
-        ctx_maintainer_->on_event(self).value_or(ContextDeriveDecision{});
+    const ContextDeriveDecision decision = ctx_maintainer_->on_event(self);
 
     RoleSnapshot role = role_of(self);
     out.event         = RuntimePackaging::pack(

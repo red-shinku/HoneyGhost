@@ -137,10 +137,18 @@ std::optional<ContextProcessSet> ContextManager::members(
 
 void ContextManager::register_contextID(hng::Process p,
                                         ContextDeriveDecision newcontext,
-                                        uint32_t pcontextID)
+                                        hng::Process parent)
 {
-    task.push(
-        Task{AddTask{p, newcontext.contextID, newcontext.attr, pcontextID}});
+    if (newcontext.kind != ContextDecisionKind::DERIVE) {
+        return;  // 接口只接受派生决策
+    }
+    task.push(Task{AddTask{p, newcontext.contextID, newcontext.attr, parent}});
+}
+
+void ContextManager::register_extra_context(hng::Process p, uint32_t contextID,
+                                            hng::contextattr attr)
+{
+    task.push(Task{ExtraTask{p, contextID, attr}});
 }
 
 void ContextManager::unregister_contextID(hng::Process p)
@@ -178,8 +186,10 @@ void ContextManager::stop() { task.stop(); }
 void ContextManager::land(Task& t)
 {
     if (auto* add = std::get_if<AddTask>(&t)) {
-        addContextID(add->process, add->contextID, add->attr,
-                     add->parent_contextID);
+        addContextID(add->process, add->contextID, add->attr, add->parent);
+    }
+    else if (auto* extra = std::get_if<ExtraTask>(&t)) {
+        addExtraContext(extra->process, extra->contextID, extra->attr);
     }
     else if (auto* del = std::get_if<DelTask>(&t)) {
         delContextID(del->process);
@@ -196,45 +206,79 @@ void ContextManager::land(Task& t)
 }
 
 void ContextManager::addContextID(hng::Process p, uint32_t contextID,
-                                  hng::contextattr attr, uint32_t pcontextID)
+                                  hng::contextattr attr, hng::Process parent_p)
 {
     ContextKey key{p.pid, p.pid_start_time};
+
+    // 父 context 在落地时解析；父未落定（登记竞态）时按森林根处理
+    uint32_t pcontextID = 0;
+    if (parent_p.pid != 0) {
+        if (auto parent_id = lookup(parent_p)) {
+            pcontextID = *parent_id;
+        }
+        else {
+            // 父进程已退出：归属索引会移除父键，但若它是 context 根且仍有
+            // 实成员，context 记录仍在，按其键直接取 contextID
+            std::shared_lock lock(contexts.smtx);
+            auto it = contexts.map.find(
+                ContextKey{parent_p.pid, parent_p.pid_start_time});
+            if (it != contexts.map.end()) {
+                pcontextID = it->second.contextID;
+            }
+        }
+    }
+
+    {
+        std::unique_lock lock(contexts.smtx);
+
+        // 主 context 键唯一：同键已存在时直接返回，不在此处转为附属 context
+        if (contexts.map.find(key) != contexts.map.end()) {
+            return;
+        }
+
+        contexts.map.emplace(key, ContextMessage{contextID, attr, false});
+        contexts.by_attr[attr].insert(contextID);
+        contexts.id_to_key[contextID] = key;
+        // 根进程也是其 context 的一员：登记 进程→自身根，使 lookup/挂靠可用
+        std::unique_lock tlock(to_context_root.smtx);
+        to_context_root.map[p] = key;
+        to_context_root.processes_by_root[key].insert(p);
+    }  // 释放 contexts/to_context_root 锁后再记录 parent 关系
+
+    if (pcontextID != 0) {
+        std::unique_lock lock(parent.smtx);
+        parent.map.emplace(contextID, pcontextID);
+    }
+}
+
+void ContextManager::addExtraContext(hng::Process p, uint32_t contextID,
+                                     hng::contextattr attr)
+{
+    ContextKey key{p.pid, p.pid_start_time};
+    uint32_t primaryID = 0;
 
     {
         std::unique_lock lock(contexts.smtx);
 
         auto it = contexts.map.find(key);
         if (it == contexts.map.end()) {
-            contexts.map.emplace(key, ContextMessage{contextID, attr, false});
-            contexts.by_attr[attr].insert(contextID);
-            contexts.id_to_key[contextID] = key;
-            // 根进程也是其 context 的一员：登记 进程→自身根，使 lookup/挂靠可用
-            std::unique_lock tlock(to_context_root.smtx);
-            to_context_root.map[p] = key;
-            to_context_root.processes_by_root[key].insert(p);
+            return;  // 无主 context：不能登记附属 context
         }
-        else if (it->second.contextID == contextID) {
-            // 幂等:主 context 已注册过同一 contextID,不再重复插入
-            return;
+        primaryID = it->second.contextID;
+
+        std::unique_lock xlock(extras.smtx);
+        if (extras.map.find(key) != extras.map.end()) {
+            return;  // 已有附属 context：保留首个
         }
-        else {
-            // (pid, start_time) 已被主 context 占用,该 contextID 归属附属 context
-            std::unique_lock xlock(extras.smtx);
-            if (extras.map.find(key) != extras.map.end()) {
-                // 幂等:附属 context 已注册过,不再重复插入
-                return;
-            }
-            extras.map.emplace(key, ContextMessage{contextID, attr, false});
-            extras.by_attr[attr].insert(contextID);
-            extras.id_to_key[contextID] = key;
-            it->second.has_extra = true;
-        }
+
+        extras.map.emplace(key, ContextMessage{contextID, attr, false});
+        extras.by_attr[attr].insert(contextID);
+        extras.id_to_key[contextID] = key;
+        it->second.has_extra = true;
     }  // 释放 contexts/extras 锁后再记录 parent 关系
 
-    if (pcontextID != 0) {
-        std::unique_lock lock(parent.smtx);
-        parent.map.emplace(contextID, pcontextID);
-    }
+    std::unique_lock lock(parent.smtx);
+    parent.map.emplace(contextID, primaryID);
 }
 
 void ContextManager::delContextID(hng::Process p)

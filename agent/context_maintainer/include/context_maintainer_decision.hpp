@@ -15,12 +15,20 @@
 #include "agent/event_data/include/context.hpp"
 
 /**
- * @brief 最终的派生 context 的决策
+ * @brief context 决策的种类
+ * @details NONE 表示本次没有决策；KEEP 表示留在父 context；DERIVE 表示派生新
+ *          context。三类决策都以值形式返回，不用空 optional 表达无决策
+ */
+enum class ContextDecisionKind : uint8_t { NONE, KEEP, DERIVE };
+
+/**
+ * @brief 一次 context 决策
+ * @details KEEP 时 contextID 与 attr 无效；DERIVE 时有效
  */
 struct ContextDeriveDecision {
-    bool should_derive;
-    uint32_t contextID;
-    hng::contextattr attr;
+    ContextDecisionKind kind = ContextDecisionKind::NONE;
+    uint32_t contextID      = 0;
+    hng::contextattr attr   = hng::contextattr::UNKNOWN;
 };
 
 /**

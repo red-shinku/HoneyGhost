@@ -87,10 +87,14 @@ class FakeContextService final : public ContextLookupService,
     }
     ContextManagerStats stats() const override { return {}; }
     void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            uint32_t) override
+                            hng::Process) override
     {
         ++register_calls;
         ctx[Key{p}] = nd.contextID;
+    }
+    void register_extra_context(hng::Process, uint32_t,
+                                hng::contextattr) override
+    {
     }
     void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
@@ -249,7 +253,7 @@ hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* pat
 /// 一条草稿的默认决策（无派生）
 bool is_default_decision(const ContextDeriveDecision& d)
 {
-    return !d.should_derive && d.contextID == 0;
+    return d.kind == ContextDecisionKind::NONE && d.contextID == 0;
 }
 
 /// 逐轮取事件直到出现空轮，最多取 max_events 条
@@ -354,7 +358,8 @@ void run_exec_derive()
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与 exec 分两轮各取出一条");
 
     const RuntimeDraft& d = drafts[1];
-    CHECK(d.decision.should_derive, "解释器 exec 应派生");
+    CHECK(d.decision.kind == ContextDecisionKind::DERIVE,
+          "解释器 exec 应派生");
     CHECK(env.ctx_svc.register_calls == 1, "派生应登记到控制平面");
     CHECK(d.event.runtimeInfo.contextID == d.decision.contextID,
           "派生后的归属快照应即新 context");
@@ -411,7 +416,8 @@ void run_plain_event()
 
     env.sys_q.push(make_credential(9100, 910, 50, 500));
     CHECK(pipe.take_round(drafts, 2) == 1, "普通事件取出一条(2)");
-    CHECK(drafts[0].decision.should_derive, "配额耗尽应由普通事件触发派生");
+    CHECK(drafts[0].decision.kind == ContextDecisionKind::DERIVE,
+          "配额耗尽应由普通事件触发派生");
     CHECK(drafts[0].event.runtimeInfo.contextID == drafts[0].decision.contextID,
           "派生后的归属快照应即新 context");
 }

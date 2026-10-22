@@ -1,7 +1,7 @@
 /**
  * @file context_service.hpp
- * @brief 包含一个接口类，是工作平面访问控制平面中进程相关服务的方式
- *  context_manager.hpp 中 ContextManager 实现了该接口
+ * @brief 包含上下文相关的服务接口，是工作平面访问控制平面中上下文服务的方式
+ *  context_manager.hpp 中 ContextManager 实现了这些接口
  * @author red_shinku
  * @date 2026.8.20
  */
@@ -71,13 +71,24 @@ class ContextJoinService {
     virtual ~ContextJoinService() = default;
 
    public:
-    /// @brief 其他组件通知注册新的 contextID
+    /// @brief 其他组件通知注册新的主 contextID
     /// @param p context代表进程的唯一性表示
-    /// @param newcontext 新的 context 及其信息，由工作平面 context 维护工具生成
-    /// @param pcontextID 父 context ID
+    /// @param newcontext 新的 context 及其信息，由工作平面 context 维护工具生成；
+    ///        kind 须为 DERIVE
+    /// @param parent 父进程；实现方在落地时解析其 contextID，未落定时按森林根
+    /// @note 主 context 键唯一；同键的重复注册不产生附属 context，附属 context
+    ///       须经 register_extra_context 登记
     virtual void register_contextID(hng::Process p,
                                     ContextDeriveDecision newcontext,
-                                    uint32_t pcontextID)              = 0;
+                                    hng::Process parent)              = 0;
+
+    /// @brief 其他组件通知注册附属 context
+    /// @param p context代表进程的唯一性表示；须已有主 context
+    /// @param contextID 附属 contextID
+    /// @param attr 附属 context 属性
+    /// @note 主 context 未落定或已有附属 context 时丢弃/保留首个；不解决竞态
+    virtual void register_extra_context(hng::Process p, uint32_t contextID,
+                                        hng::contextattr attr)        = 0;
 
     /// @brief 其他组件通知注销 contextID
     /// @param p context代表进程的唯一性表示

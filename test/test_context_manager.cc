@@ -48,7 +48,7 @@ hng::Process proc(uint32_t pid, uint64_t start)
 
 ContextDeriveDecision decision(uint32_t context_id, contextattr attr)
 {
-    return ContextDeriveDecision{true, context_id, attr};
+    return ContextDeriveDecision{ContextDecisionKind::DERIVE, context_id, attr};
 }
 
 bool has_id(const std::vector<uint32_t>& ids, uint32_t id)
@@ -97,7 +97,7 @@ void register_root(ContextManager& manager, hng::Process root,
                    uint32_t context_id, const char* what)
 {
     manager.register_contextID(root, decision(context_id, contextattr::UNKNOWN),
-                               0);
+                               {});
     CHECK(wait_until(
               [&] { return manager.lookup(root).value_or(0) == context_id; }),
           what);
@@ -107,7 +107,7 @@ void register_root(ContextManager& manager, hng::Process root,
 void barrier(ContextManager& manager, uint32_t pid)
 {
     manager.register_contextID(proc(pid, pid * 10),
-                               decision(pid, contextattr::UNKNOWN), 0);
+                               decision(pid, contextattr::UNKNOWN), {});
     CHECK(wait_until(
               [&] { return manager.lookup(proc(pid, pid * 10)).has_value(); }),
           "屏障应落地");
@@ -127,7 +127,7 @@ void run_register_and_lookup()
 
     // 幂等重放：同键同 contextID，不改变表状态
     manager.register_contextID(proc(100, 1000), decision(7, contextattr::UNKNOWN),
-                               0);
+                               {});
     barrier(manager, 200);
     CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
           "幂等重放后主 context 不变");
@@ -142,22 +142,38 @@ void run_extra_context()
 
     register_root(manager, proc(100, 1000), 7, "注册后应能查到该 context");
 
-    // 同键、不同 contextID：进附属表，主表视图不变
+    // 主注册接口不再把不同 contextID 转成附属 context
     manager.register_contextID(proc(100, 1000),
-                               decision(8, contextattr::EXTRA_ATTACK), 0);
+                               decision(8, contextattr::EXTRA_ATTACK), {});
+    barrier(manager, 200);
+    CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
+          "重复主注册不得覆盖主 context");
+    CHECK(!manager.lookup_extra(proc(100, 1000)).has_value(),
+          "主注册接口不得产生附属 context");
+
+    // 附属 context 经显式接口登记
+    manager.register_extra_context(proc(100, 1000), 8,
+                                   contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] {
               return manager.lookup_extra(proc(100, 1000)).value_or(0) == 8;
           }),
-          "同键二次注册应成为附属 context");
+          "显式登记应产生附属 context");
     CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
           "附属 context 不得覆盖主 context");
 
-    // 附属 context 的幂等重放
-    manager.register_contextID(proc(100, 1000),
-                               decision(8, contextattr::EXTRA_ATTACK), 0);
-    barrier(manager, 200);
+    // 已有附属 context 时保留首个
+    manager.register_extra_context(proc(100, 1000), 9,
+                                   contextattr::EXTRA_ATTACK);
+    barrier(manager, 201);
     CHECK(manager.lookup_extra(proc(100, 1000)).value_or(0) == 8,
-          "附属 context 幂等重放不变");
+          "重复附属登记应保留首个");
+
+    // 无主 context 的附属登记被丢弃
+    manager.register_extra_context(proc(300, 3000), 10,
+                                   contextattr::EXTRA_ATTACK);
+    barrier(manager, 202);
+    CHECK(!manager.lookup_extra(proc(300, 3000)).has_value(),
+          "无主 context 不得登记附属 context");
 }
 
 void run_bind_to_ctxroot()
@@ -222,8 +238,8 @@ void run_cleanup()
 
     // 注销：主 context 与同键的附属 context 一并清除
     register_root(manager, proc(200, 2000), 9, "第二个根应注册成功");
-    manager.register_contextID(proc(200, 2000),
-                               decision(10, contextattr::EXTRA_ATTACK), 0);
+    manager.register_extra_context(proc(200, 2000), 10,
+                                   contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] {
               return manager.lookup_extra(proc(200, 2000)).value_or(0) == 10;
           }),
@@ -289,8 +305,8 @@ void run_contexts_by_attr()
           "属性变更后应退出旧索引");
 
     // 同键的附属 context 按其属性单独入索引
-    manager.register_contextID(proc(100, 1000),
-                               decision(8, contextattr::EXTRA_ATTACK), 7);
+    manager.register_extra_context(proc(100, 1000), 8,
+                                   contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] {
               return has_id(manager.contexts_by_attr(contextattr::EXTRA_ATTACK),
                             8);
@@ -344,8 +360,8 @@ void run_members_by_context()
           "成员应按 pid 升序并含根");
 
     // 附属 context 共用同一根键与成员集
-    manager.register_contextID(proc(100, 1000),
-                               decision(8, contextattr::EXTRA_ATTACK), 7);
+    manager.register_extra_context(proc(100, 1000), 8,
+                                   contextattr::EXTRA_ATTACK);
     CHECK(wait_until([&] { return manager.members(8).has_value(); }),
           "附属 context 应可查询");
     set = manager.members(8);
@@ -413,7 +429,7 @@ void run_stop_semantics()
     {
         ContextManager manager;
         manager.register_contextID(proc(100, 1000),
-                                   decision(7, contextattr::UNKNOWN), 0);
+                                   decision(7, contextattr::UNKNOWN), {});
         manager.stop();
         manager.run();
         CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
@@ -425,7 +441,7 @@ void run_stop_semantics()
         ContextManager manager;
         manager.stop();
         manager.register_contextID(proc(200, 2000),
-                                   decision(9, contextattr::UNKNOWN), 0);
+                                   decision(9, contextattr::UNKNOWN), {});
         manager.run();  // 队列为空，应直接返回
         CHECK(!manager.lookup(proc(200, 2000)).has_value(),
               "停止后的入队不得落地");
@@ -448,7 +464,8 @@ void run_concurrent_writers()
                                      static_cast<uint32_t>(i);
                 // 同一线程内先注册后注销：队列保序，注销不会先于注册到达
                 manager.register_contextID(
-                    proc(pid, pid * 10), decision(pid, contextattr::UNKNOWN), 0);
+                    proc(pid, pid * 10), decision(pid, contextattr::UNKNOWN),
+                    {});
                 manager.bind_to_ctxroot(proc(pid + 1, pid * 10 + 1),
                                         proc(pid, pid * 10));
                 manager.unregister_contextID(proc(pid, pid * 10));

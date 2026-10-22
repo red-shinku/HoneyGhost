@@ -20,7 +20,7 @@
 /// @brief 一条待分发的事件，及本条事件引发的 context 派生决策
 struct RuntimeDraft {
     hng::RuntimeEvent event;         ///< 已填齐运行时信息快照的事件
-    ContextDeriveDecision decision;  ///< 本条事件的派生决策；无派生时为缺省值
+    ContextDeriveDecision decision;  ///< 本条事件的派生决策；无决策时 kind 为 NONE
 };
 
 /**

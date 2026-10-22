@@ -44,7 +44,7 @@ void ContextMaintainer::set_context_service(ContextLookupService* ctx_lookup_sv,
     exit(2);
 }
 
-std::optional<ContextDeriveDecision> ContextMaintainer::should_derive_context(
+ContextDeriveDecision ContextMaintainer::should_derive_context(
     hng::Process p, hng::Process parent, const std::string& filename)
 {
     // 记录该进程最近一次 exec 目标是否解释器（含原地重 exec 的图像变化）
@@ -53,7 +53,7 @@ std::optional<ContextDeriveDecision> ContextMaintainer::should_derive_context(
 
     // 已具自身 context 的进程：原地重 exec，属同一执行实体，不派生
     if (ctx_lookup_service_ && ctx_lookup_service_->lookup(p)) {
-        return std::nullopt;
+        return {};
     }
 
     std::optional<hng::detail::DeriveVerdict> verdict;
@@ -67,8 +67,13 @@ std::optional<ContextDeriveDecision> ContextMaintainer::should_derive_context(
             p, parent, parent_is_interpreter(parent), filename);
     }
 
-    if (!verdict || !verdict->derive) {
-        return std::nullopt;  // KEEP：留在父 context，不派生
+    if (!verdict) {
+        return {};  // 防御：判定入口未返回结果
+    }
+    if (!verdict->derive) {
+        ContextDeriveDecision d;
+        d.kind = ContextDecisionKind::KEEP;
+        return d;  // 留在父 context，归属落地由调用方处理
     }
     return finalize_derive(*verdict);
 }
@@ -86,11 +91,11 @@ void ContextMaintainer::on_birth(hng::Process child, hng::Process parent)
     pending_->on_fork(child, parent, parent_is_interpreter(parent), window_size_);
 }
 
-std::optional<ContextDeriveDecision> ContextMaintainer::on_event(hng::Process p)
+ContextDeriveDecision ContextMaintainer::on_event(hng::Process p)
 {
     auto verdict = pending_->on_event(p);
     if (!verdict) {
-        return std::nullopt;  // 非待决策 / 仍待决策
+        return {};  // 非待决策 / 仍待决策
     }
     return finalize_derive(*verdict);  // 窗口内无 exec，配额耗尽 → NO_EXEC 派生
 }
@@ -130,20 +135,17 @@ hng::contextattr ContextMaintainer::decide_attr(hng::Process child,
     return hng::contextattr::UNKNOWN;
 }
 
-std::optional<ContextDeriveDecision> ContextMaintainer::finalize_derive(
+ContextDeriveDecision ContextMaintainer::finalize_derive(
     const hng::detail::DeriveVerdict& v)
 {
     ContextDeriveDecision d;
-    d.should_derive = true;
-    d.contextID     = allocate_context_id();
-    d.attr          = decide_attr(v.child, v.parent);
+    d.kind      = ContextDecisionKind::DERIVE;
+    d.contextID = allocate_context_id();
+    d.attr      = decide_attr(v.child, v.parent);
 
-    if (ctx_lookup_service_ && ctx_join_service_) {
-        uint32_t pcontextID = 0;  // 0 表示无父 context
-        if (auto pid = ctx_lookup_service_->lookup(v.parent)) {
-            pcontextID = *pid;
-        }
-        ctx_join_service_->register_contextID(v.child, d, pcontextID);
+    if (ctx_join_service_) {
+        // 父进程链接交给控制平面在落地时解析
+        ctx_join_service_->register_contextID(v.child, d, v.parent);
     }
     return d;
 }

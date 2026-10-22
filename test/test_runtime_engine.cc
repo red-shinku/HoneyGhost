@@ -102,9 +102,13 @@ class FakeContextService final : public ContextLookupService,
     }
     ContextManagerStats stats() const override { return {}; }
     void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            uint32_t) override
+                            hng::Process) override
     {
         ctx[Key{p}] = nd.contextID;
+    }
+    void register_extra_context(hng::Process, uint32_t,
+                                hng::contextattr) override
+    {
     }
     void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
@@ -201,14 +205,14 @@ class DecisionSinkStub final : public RuntimeDecisionSink {
    public:
     std::atomic<int> calls{0};
     std::atomic<uint32_t> last_pid{0};
-    std::atomic<bool> should_derive{false};
+    std::atomic<bool> derived{false};
     std::atomic<uint32_t> decision_context{0};
 
     void on_event(const hng::RuntimeEvent& ev,
                   const ContextDeriveDecision& decision) override
     {
         last_pid.store(ev.runtimeInfo.process.pid);
-        should_derive.store(decision.should_derive);
+        derived.store(decision.kind == ContextDecisionKind::DERIVE);
         decision_context.store(decision.contextID);
         calls.fetch_add(1);
     }
