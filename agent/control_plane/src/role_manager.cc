@@ -24,9 +24,9 @@ void RoleManager::bind_to_role(hng::Process child, hng::Process parent)
     enqueue(RoleTask{BindMessage{child, parent}});
 }
 
-void RoleManager::on_process_removed(hng::Process p)
+void RoleManager::on_process_exited(hng::Process p)
 {
-    enqueue(RoleTask{RemovedMessage{p}});
+    enqueue(RoleTask{ExitedMessage{p}});
 }
 
 void RoleManager::enqueue(RoleTask task)
@@ -55,8 +55,8 @@ void RoleManager::land(RoleTask& task)
     else if (auto* bind = std::get_if<BindMessage>(&task)) {
         store_.bind_to_role(bind->child, bind->parent);
     }
-    else if (auto* removed = std::get_if<RemovedMessage>(&task)) {
-        store_.on_process_removed(removed->process);
+    else if (auto* exited = std::get_if<ExitedMessage>(&task)) {
+        store_.on_process_exited(exited->process);
     }
 }
 

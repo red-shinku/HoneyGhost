@@ -5,7 +5,7 @@
  * 无需特权，注册为 ctest 用例。校验的是「装配起来能不能用」，不是单点语义：
  *  - 装配：发现器只拿 hng::role::RoleEventSink&，下游只拿 RoleLifecycleSink，
  *    查询方只拿 RoleLookupService&，ProcessManager 的位置由直接调
- *    RoleJoinService& / RoleClearService& 代替（该组件尚未接线，见
+ *    RoleJoinService& / ProcessLifecycleSink& 代替（该组件尚未接线，见
  *    docs/role_manager/装配与遗留.md）；
  *  - 线程与顺序：先 add_lifecycle_sink、再起消费线程、再起发现器；
  *    停止时先停发现器并 join、再 stop()、最后 join 消费线程；
@@ -207,7 +207,7 @@ int main()
 
     hng::role::RoleEventSink& events = manager;  // 发现器只看见这一个接口
     RoleJoinService& joins           = manager;  // ProcessManager 的位置
-    RoleClearService& clears         = manager;
+    ProcessLifecycleSink& exits      = manager;
     RoleLookupService& lookups       = manager;
 
     // ---- 启动：先起消费线程，再起发现器 ----
@@ -258,7 +258,7 @@ int main()
         std::printf("[verify] 本进程 cgroup 不可读，跳过真实 IO 断言\n");
     }
 
-    // ---- 经接口转交：fork 继承与完全删除 ----
+    // ---- 经接口转交：fork 继承与进程退出 ----
     const hng::Process anchor0 = specs[0].anchor;
     const hng::Process moved = proc(anchor0.pid + 500000, anchor0.pid_start_time);
     const hng::Process child = proc(anchor0.pid + 500001, anchor0.pid_start_time);
@@ -276,20 +276,20 @@ int main()
     CHECK(lookups.lookup(moved).value_or(0) == role0.value_or(0),
           "锚点更换应保持 roleID");
     CHECK(lookups.lookup(anchor0).value_or(0) == role0.value_or(0),
-          "旧锚点条目应仍在（清理由完全删除通知负责）");
+          "旧锚点条目应仍在（清理由进程退出通知负责）");
 
-    clears.on_process_removed(child);
-    clears.on_process_removed(moved);
+    exits.on_process_exited(child);
+    exits.on_process_exited(moved);
     // 屏障：换回原锚点
     events.on_role_event(
         mk_event(RoleAction::MAIN_PROCESS_CHANGE, specs[0], anchor0));
     CHECK(sink.wait_counts(kRoles, 0, 2), "第二次锚点更换通知应在时限内到齐");
-    CHECK(!lookups.lookup(child).has_value(), "完全删除后不得有归属残留");
-    CHECK(!lookups.lookup(moved).has_value(), "被删锚点不得有归属残留");
+    CHECK(!lookups.lookup(child).has_value(), "进程退出后不得有归属残留");
+    CHECK(!lookups.lookup(moved).has_value(), "退出的锚点不得有归属残留");
     CHECK(lookups.lookup(anchor0).value_or(0) == role0.value_or(0),
           "换回原锚点后仍应是同一角色");
     CHECK(lookups.role(role0.value_or(0)).has_value(),
-          "锚点被删不改变角色存在性");
+          "锚点退出不改变角色存在性");
 
     // ---- 停止：先停发现器（均已 join）、再 stop()、最后 join 消费线程 ----
     for (const RoleSpec& spec : specs) {

@@ -21,6 +21,7 @@
 #include <variant>
 #include <vector>
 
+#include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_stats.hpp"
 #include "agent/control_plane/src/role_relation_store.hpp"
@@ -41,7 +42,7 @@ struct RoleManagerProbe {
 class RoleManager : public hng::role::RoleEventSink,
                     public RoleLookupService,
                     public RoleJoinService,
-                    public RoleClearService,
+                    public ProcessLifecycleSink,
                     public RoleSupervisionService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
@@ -59,8 +60,8 @@ class RoleManager : public hng::role::RoleEventSink,
     /// @brief 子进程继承父进程的角色归属：入队即返回
     void bind_to_role(hng::Process child, hng::Process parent) override;
 
-    /// @brief 进程被完全删除：入队即返回
-    void on_process_removed(hng::Process p) override;
+    /// @brief 进程已退出：入队即返回
+    void on_process_exited(hng::Process p) override;
 
     /// @brief 消费线程入口：取队列、落地、按跃迁调出口，阻塞直到 stop()
     /// @note 不持线程，线程由装配方创建；析构前须已返回
@@ -110,8 +111,8 @@ class RoleManager : public hng::role::RoleEventSink,
     RoleManagerStats stats() const override;
 
    private:
-    /// @brief 入队消息：进程被完全删除
-    struct RemovedMessage {
+    /// @brief 入队消息：进程已退出
+    struct ExitedMessage {
         hng::Process process;
     };
 
@@ -123,7 +124,7 @@ class RoleManager : public hng::role::RoleEventSink,
 
     /// 三类入口共用一个队列，按到达顺序串行落地
     using RoleTask =
-        std::variant<hng::role::RoleEvent, BindMessage, RemovedMessage>;
+        std::variant<hng::role::RoleEvent, BindMessage, ExitedMessage>;
 
     /// @brief 入队；生产者线程上只做这一次拷贝
     /// @note 被拒绝（已停止）时计数，不入队

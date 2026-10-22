@@ -18,6 +18,7 @@
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/context_service.hpp"
+#include "agent/control_plane/include/process_lifecycle_sink.hpp"
 
 /**
  * @brief 控制平面记录的一个 context 的消息
@@ -87,7 +88,7 @@ struct ParentTable {
  *
  * 写点只有三类事件：
  *   1) 某进程的 context 归属落定 —— bind_to_ctxroot()
- *   2) 进程被完全删除 —— on_process_removed() 清理该进程条目。
+ *   2) 进程退出 —— on_process_exited() 清理该进程条目。
  *   3) context 根注册 —— addContextID() 写入根进程自指。
  * 进程的归属在落定后不再改写（不可变），故本表也无需修改
  */
@@ -116,7 +117,7 @@ struct ToContextRootTable {
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
                        public ContextUpdateService,
-                       public ContextClearService {
+                       public ProcessLifecycleSink {
    public:
     ContextManager(/* args */);
     ~ContextManager();
@@ -156,10 +157,10 @@ class ContextManager : public ContextLookupService,
     /// 父进程尚未落定时为空操作（登记竞态，归属保持待定）
     void bind_to_ctxroot(hng::Process p, hng::Process parent) override;
 
-    /// @brief 上报进程被完全删除（通知写）
-    /// @details 供 ProcessManager 在进程（实进程/虚拟根）被完全删除时调用；
-    /// 实际清理逻辑（归属条目，若为 context 根则连同 context）在私有方法中执行
-    void on_process_removed(hng::Process p) override;
+    /// @brief 进程已退出（通知写）
+    /// @details 从归属索引与成员集中移除该进程；成员集清空时删除整个 context。
+    ///          根进程退出而其他成员仍在时，context 保留，键仍指向已退出的根
+    void on_process_exited(hng::Process p) override;
 
     /// @brief 消费线程入口：取队列、按到达顺序串行落地，阻塞直到 stop()
     /// @note 不持线程，线程由装配方创建；析构前须已返回
@@ -199,14 +200,14 @@ class ContextManager : public ContextLookupService,
         hng::Process parent;
     };
 
-    /// @brief 入队任务：进程被完全删除
-    struct RemovedTask {
+    /// @brief 入队任务：进程已退出
+    struct ExitedTask {
         hng::Process process;
     };
 
     /// 五个写接口共用一条队列：多生产者、无界，按到达顺序串行落地
     using Task =
-        std::variant<AddTask, DelTask, SetAttrTask, BindTask, RemovedTask>;
+        std::variant<AddTask, DelTask, SetAttrTask, BindTask, ExitedTask>;
     hng::NotificationQueue<Task> task;
 
     /// 消费线程写、任意线程读，故为原子
@@ -214,7 +215,7 @@ class ContextManager : public ContextLookupService,
     std::atomic<uint64_t> unknown_unregister_{0};
 
     // 进程 → 所属 context 根进程 的映射（归属索引）
-    // lookup/lookup_extra/bind_to_ctxroot/on_process_removed 均经该表解析。
+    // lookup/lookup_extra/bind_to_ctxroot/on_process_exited 均经该表解析。
     ToContextRootTable to_context_root;
 
     // context 根进程 到主 context 的映射
@@ -264,9 +265,8 @@ class ContextManager : public ContextLookupService,
     /// @brief 新进程没有派生 context 时，需与 context 根进程绑定
     void bind_to_ctxroot_(hng::Process p, hng::Process parent);
 
-    /// @brief 进程被完全删除时，尝试清理相关 context 与 to_context_root 记录
-    /// 若为 context 根则连同 context 清除
-    void on_process_removed_(hng::Process p);
+    /// @brief 进程退出时清理归属条目；成员集清空则删除整个 context
+    void on_process_exited_(hng::Process p);
 
     /// @brief 落地一条队列任务
     void land(Task& task);

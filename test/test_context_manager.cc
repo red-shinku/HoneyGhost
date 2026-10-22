@@ -6,7 +6,7 @@
  *  - 五个写接口经队列在消费线程上落地，注册后 lookup 命中根进程自指；
  *  - 主 context 与附属 context：同键二次注册进附属表，主表视图不变；
  *  - 挂靠：父已落定则继承其 context 根，未落定则空操作并计数；
- *  - 清理：完全删除或注销会删掉 context，残留的成员条目查询失配但不报错；
+ *  - 清理：进程退出时移出成员集，成员集清空才删 context；注销仍强制删除；
  *  - 幂等重放与未知注销：不改变表状态，后者计数；
  *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
  *  - 多线程并发写入后状态自洽（供 TSAN 构建复验）。
@@ -193,23 +193,32 @@ void run_cleanup()
     ContextManager manager;
     Runner runner(manager);
 
-    // 完全删除 context 根：context 一并清除，残留成员条目查询失配但不报错
+    // 根退出但成员仍在：context 保留，根不再属于成员集
     register_root(manager, proc(100, 1000), 7, "根进程应注册成功");
     manager.bind_to_ctxroot(proc(101, 1001), proc(100, 1000));
     CHECK(wait_until(
               [&] { return manager.lookup(proc(101, 1001)).value_or(0) == 7; }),
           "成员应挂靠成功");
 
-    manager.on_process_removed(proc(100, 1000));
+    manager.on_process_exited(proc(100, 1000));
     CHECK(
         wait_until([&] { return !manager.lookup(proc(100, 1000)).has_value(); }),
-        "根被完全删除后应失配");
-    CHECK(!manager.lookup(proc(101, 1001)).has_value(),
-          "根已清除时残留成员条目应失配（容错）");
+        "退出根应失配");
+    CHECK(manager.lookup(proc(101, 1001)).value_or(0) == 7,
+          "其余成员应保留归属");
+    {
+        const std::optional<ContextProcessSet> set = manager.members(7);
+        CHECK(set.has_value() && set->root == proc(100, 1000),
+              "仍有实成员时 context 应保留，键仍是已退出的根");
+        CHECK(set->members.size() == 1 && set->members[0] == proc(101, 1001),
+              "成员集只含实进程，不补回已退出的根");
+    }
 
-    manager.on_process_removed(proc(101, 1001));
-    barrier(manager, 400);
-    CHECK(!manager.lookup(proc(101, 1001)).has_value(), "成员被删后仍应失配");
+    manager.on_process_exited(proc(101, 1001));
+    CHECK(wait_until([&] { return !manager.members(7).has_value(); }),
+          "最后一个成员退出后 context 应删除");
+    CHECK(!manager.lookup(proc(101, 1001)).has_value(),
+          "最后成员退出后应失配");
 
     // 注销：主 context 与同键的附属 context 一并清除
     register_root(manager, proc(200, 2000), 9, "第二个根应注册成功");
@@ -344,23 +353,38 @@ void run_members_by_context()
               set->members.size() == 3,
           "附属 context 应返回同一根与成员集");
 
-    // 成员被完全删除后从成员集消失
-    manager.on_process_removed(proc(101, 1001));
+    // 成员退出后从成员集消失
+    manager.on_process_exited(proc(101, 1001));
     CHECK(wait_until([&] {
               auto current = manager.members(7);
               return current.has_value() && current->members.size() == 2;
           }),
-          "成员删除后应从成员集移除");
+          "成员退出后应从成员集移除");
     set = manager.members(7);
     CHECK(set->members.size() == 2 && set->members[0].pid == 100 &&
               set->members[1].pid == 102,
           "剩余成员应保持升序");
 
-    // 根被完全删除后 context 消失
-    manager.on_process_removed(proc(100, 1000));
-    CHECK(wait_until([&] { return !manager.members(7).has_value(); }),
-          "根删除后主 context 应不可查");
-    CHECK(!manager.members(8).has_value(), "根删除后附属 context 也应不可查");
+    // 根退出但成员仍在：context 与附属 context 保留，成员集只剩实进程
+    manager.on_process_exited(proc(100, 1000));
+    CHECK(wait_until([&] {
+              auto current = manager.members(7);
+              return current.has_value() && current->members.size() == 1;
+          }),
+          "根退出后仍有实成员，context 应保留");
+    set = manager.members(7);
+    CHECK(set.has_value() && set->root == proc(100, 1000) &&
+              set->members[0] == proc(102, 1002),
+          "成员集不补回已退出的根");
+    CHECK(manager.members(8).has_value(), "附属 context 随主 context 保留");
+
+    // 最后一个成员退出：主/附属 context 一并删除
+    manager.on_process_exited(proc(102, 1002));
+    CHECK(wait_until([&] {
+              return !manager.members(7).has_value() &&
+                     !manager.members(8).has_value();
+          }),
+          "最后一个成员退出后主/附属 context 应一并删除");
 }
 
 void run_stop_semantics()

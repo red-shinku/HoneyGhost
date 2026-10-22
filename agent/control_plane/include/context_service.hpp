@@ -107,17 +107,4 @@ class ContextUpdateService {
                           hng::contextattr attr) = 0;
 };
 
-/**
- * @brief 清理 ContextManager 内关系数据的接口
- * 1) 尝试删除与某进程相关的管理器内部条目
- */
-class ContextClearService {
-   protected:
-    virtual ~ContextClearService() = default;
-
-   public:
-    /// @brief 当进程被删除时，清理相关条目
-    virtual void on_process_removed(hng::Process p) = 0;
-};
-
 #endif  //_CONTROL_PLANE_CONTEXTSERVICE_HPP

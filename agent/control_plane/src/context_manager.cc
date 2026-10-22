@@ -9,13 +9,6 @@ ContextManager::ContextManager() {}
 
 ContextManager::~ContextManager() {}
 
-// hng::Process → ContextKey（contexts/extras 以 context
-// 根进程复合键索引，需要此转换）
-static ContextKey process_key(hng::Process p)
-{
-    return ContextKey{p.pid, p.pid_start_time};
-}
-
 // 查询某进程所属 context 的根进程；未落定返回空
 static std::optional<ContextKey> root_of(const ToContextRootTable& table,
                                          hng::Process p)
@@ -46,6 +39,7 @@ static void erase_from_attr_index(AttrIndex& index, hng::contextattr attr,
 }
 
 /// @brief 按根键组装成员集；取 roots 的共享锁
+/// @note 成员集只含仍为实进程的成员；已退出的根不补回
 static ContextProcessSet process_set_of(const ContextKey& key,
                                         const ToContextRootTable& roots)
 {
@@ -60,11 +54,6 @@ static ContextProcessSet process_set_of(const ContextKey& key,
         }
     }
 
-    // 根进程自指；索引缺失时兜底
-    if (std::find(result.members.begin(), result.members.end(), result.root) ==
-        result.members.end()) {
-        result.members.push_back(result.root);
-    }
     std::sort(result.members.begin(), result.members.end(),
               [](const hng::Process& lhs, const hng::Process& rhs) {
                   if (lhs.pid != rhs.pid) {
@@ -170,9 +159,9 @@ void ContextManager::bind_to_ctxroot(hng::Process p, hng::Process parent)
     task.push(Task{BindTask{p, parent}});
 }
 
-void ContextManager::on_process_removed(hng::Process p)
+void ContextManager::on_process_exited(hng::Process p)
 {
-    task.push(Task{RemovedTask{p}});
+    task.push(Task{ExitedTask{p}});
 }
 
 void ContextManager::run()
@@ -201,8 +190,8 @@ void ContextManager::land(Task& t)
     else if (auto* bind = std::get_if<BindTask>(&t)) {
         bind_to_ctxroot_(bind->process, bind->parent);
     }
-    else if (auto* removed = std::get_if<RemovedTask>(&t)) {
-        on_process_removed_(removed->process);
+    else if (auto* exited = std::get_if<ExitedTask>(&t)) {
+        on_process_exited_(exited->process);
     }
 }
 
@@ -393,30 +382,43 @@ ContextManagerStats ContextManager::stats() const
     return snapshot;
 }
 
-void ContextManager::on_process_removed_(hng::Process p)
+void ContextManager::on_process_exited_(hng::Process p)
 {
-    ContextKey pk = process_key(p);
+    std::optional<ContextKey> emptied_root;
 
-    bool is_root;
-    {
-        std::shared_lock lock(contexts.smtx);
-        is_root = contexts.map.find(pk) != contexts.map.end();
-    }
     {
         std::unique_lock lock(to_context_root.smtx);
         auto it = to_context_root.map.find(p);
-        if (it != to_context_root.map.end()) {
-            auto members = to_context_root.processes_by_root.find(it->second);
-            if (members != to_context_root.processes_by_root.end()) {
-                members->second.erase(p);
-                if (members->second.empty()) {
-                    to_context_root.processes_by_root.erase(members);
-                }
-            }
-            to_context_root.map.erase(it);
+        if (it == to_context_root.map.end()) {
+            return;  // 未归属或已清理：重复投递无副作用
+        }
+
+        const ContextKey root = it->second;
+        to_context_root.map.erase(it);
+
+        auto members = to_context_root.processes_by_root.find(root);
+        if (members == to_context_root.processes_by_root.end()) {
+            return;  // 索引不一致：不据此删除 context
+        }
+        members->second.erase(p);
+        if (members->second.empty()) {
+            to_context_root.processes_by_root.erase(members);
+            emptied_root = root;
         }
     }
-    if (is_root) {
-        delContextID(p);
+
+    if (!emptied_root.has_value()) {
+        return;  // 仍有实成员：context 保留，键仍指向原根
     }
+
+    // 显式注销可能已删除该 context；此处只处理仍然存在的情形，避免
+    // unknown_unregister 误计
+    const hng::Process root{emptied_root->pid, emptied_root->start_time};
+    {
+        std::shared_lock lock(contexts.smtx);
+        if (contexts.map.find(*emptied_root) == contexts.map.end()) {
+            return;
+        }
+    }
+    delContextID(root);
 }

@@ -10,12 +10,14 @@
 
 #include <array>
 #include <atomic>
-#include <unordered_map>
 #include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
+#include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/util/include/notification_queue.hpp"
-#include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/process_service.hpp"
 
 /**
@@ -93,7 +95,7 @@ class ProcessManager : public ProcessLookupService,
     /// @note 可被任意采集线程调用
     void update_exe_image(hng::Process p, std::string exe) override;
 
-    /// @brief 消费线程入口：取队列、落地、按判定推送完全删除通知，阻塞直到 stop()
+    /// @brief 消费线程入口：取队列、落地、推送进程退出通知，阻塞直到 stop()
     /// @note 不持线程，线程由装配方创建；析构前须已返回
     void run();
 
@@ -101,14 +103,13 @@ class ProcessManager : public ProcessLookupService,
     /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
     void stop();
 
-    /// @brief 注入 contextservice 接口依赖
-    void set_context_service(ContextClearService* c_svc);
+    /// @brief 注册进程生命周期订阅者
+    /// @param sink 空指针忽略；须存活到 run() 返回之后
+    /// @note 只可在 run() 之前调用，此后不再变更
+    void add_process_lifecycle_sink(ProcessLifecycleSink* sink);
 
     /// @brief 注入角色归属接口依赖（可空）
     void set_role_join_service(RoleJoinService* service);
-
-    /// @brief 注入角色清理接口依赖（可空）
-    void set_role_clear_service(RoleClearService* service);
 
     /// @brief 异常态观测快照
     /// @note 只供 ProcessManager 的装配者/运维端使用
@@ -129,9 +130,9 @@ class ProcessManager : public ProcessLookupService,
         std::string image_exe;       ///< kind 为 UPDATE_IMAGE 时有效
     };
 
-    ContextClearService* ctx_clear_service_ = nullptr;
-    RoleJoinService* role_join_service_     = nullptr;
-    RoleClearService* role_clear_service_   = nullptr;
+    /// 注册的订阅者，不接管生命周期；run() 之后不再变更
+    std::vector<ProcessLifecycleSink*> lifecycle_sinks_;
+    RoleJoinService* role_join_service_ = nullptr;
 
     // 任务队列：多生产者、无界，写入方是各个采集线程与其他组件的转交
     hng::NotificationQueue<Task> task;
@@ -199,12 +200,9 @@ class ProcessManager : public ProcessLookupService,
      */
     void update_vroot_child_count_decrease(hng::Process p);
 
-    /**
-     * @brief 上报进程已被完全删除
-     * @details 进程在实进程树与虚拟根树中均无记录、不再可能被追溯时调用，
-     *  则通知其他组件 尝试删除与该进程 相关联的记录
-     */
-    void notify_process_fully_removed(hng::Process p);
+    /// @brief 向全部订阅者转发进程退出
+    /// @note 按身份转发；订阅方自行决定清理哪些内部关系，并须容忍重复投递
+    void notify_process_exited(hng::Process p);
 
     /// @brief 落地一条队列任务
     void land(Task& task);

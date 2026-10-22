@@ -136,7 +136,7 @@ void RoleRelationStore::bind_to_role(hng::Process child, hng::Process parent)
     adopt(role_id, record->second, child);
 }
 
-void RoleRelationStore::on_process_removed(hng::Process p)
+void RoleRelationStore::on_process_exited(hng::Process p)
 {
     std::unique_lock lock(mutex_);
 

@@ -81,15 +81,4 @@ class RoleJoinService {
     virtual void bind_to_role(hng::Process child, hng::Process parent) = 0;
 };
 
-/// @brief 归属数据的清理
-class RoleClearService {
-   protected:
-    virtual ~RoleClearService() = default;
-
-   public:
-    /// @brief 进程被完全删除
-    /// @note 只清理该进程的归属条目，不改变角色的存在性
-    virtual void on_process_removed(hng::Process p) = 0;
-};
-
 #endif  // HNG_ROLE_SERVICE_HPP_
