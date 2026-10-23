@@ -56,6 +56,16 @@ add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
 add_test(NAME test_notification_queue COMMAND test_notification_queue)
 
+# 延迟关系表（公共件，header-only）：无 IO / 无特权
+add_executable(test_deferred_relation_table test_deferred_relation_table.cc)
+target_include_directories(test_deferred_relation_table PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_deferred_relation_table COMMAND test_deferred_relation_table)
+
+# 墓碑表（公共件，header-only）：无 IO / 无特权
+add_executable(test_tombstone_table test_tombstone_table.cc)
+target_include_directories(test_tombstone_table PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_tombstone_table COMMAND test_tombstone_table)
+
 # SPSC 无锁队列（公共件，header-only）：单生产者单消费者，无 IO / 无特权
 add_executable(test_spsc_queue test_spsc_queue.cc)
 target_include_directories(test_spsc_queue PRIVATE ${HNG_SOURCE_DIR})
