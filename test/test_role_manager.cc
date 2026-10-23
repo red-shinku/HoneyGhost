@@ -639,6 +639,7 @@ void run_bind_after_join()
     const uint32_t role = sink.calls()[0].roleID;
 
     manager.bind_to_role(proc(102, 1002), proc(100, 1000));
+    manager.bind_to_role(proc(102, 1002), proc(100, 1000));  // 已有归属
     manager.on_role_event(mk_join("barrier", 900, 9000));
     CHECK(sink.wait_calls(2), "屏障事件应通知");
 
@@ -647,6 +648,7 @@ void run_bind_after_join()
     CHECK(
         manager.stats().bind_deferred == 0 && manager.stats().bind_resolved == 0,
         "直接应用不应计入等待表计数");
+    CHECK(manager.stats().bind_ignored == 1, "已有归属的 bind 应计忽略");
 }
 
 void run_periodic_join()
@@ -721,6 +723,8 @@ void run_dead_anchor_filter()
           "store 墓碑命中的锚点不得写入");
     CHECK(tombstone_manager.stats().dead_anchor_rejected == 1,
           "store 墓碑拒绝应计数");
+    CHECK(tombstone_manager.stats().tombstone_depth == 1,
+          "角色管理器快照应反映墓碑当前深度");
 }
 
 void run_dead_member_filter()
@@ -775,6 +779,25 @@ void run_leave_with_liveness()
           "LEAVE 应正常退出");
     CHECK(!manager.role(role).has_value(), "退出后角色记录应删除");
     CHECK(manager.stats().dead_anchor_rejected == 0, "LEAVE 不做存活过滤");
+}
+
+void run_late_adopt_stats()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.on_process_exited(proc(101, 1001));
+    manager.on_role_event(mk_join("a", 100, 1000, {proc(101, 1001)}));
+    CHECK(sink.wait_calls(1), "加入应通知一次");
+
+    const uint32_t role = sink.calls()[0].roleID;
+    CHECK(wait_until([&] { return manager.stats().late_adopt_rejected == 1; }),
+          "死成员应计迟到 adopt");
+    CHECK(manager.stats().tombstone_depth == 1, "墓碑深度应反映当前条数");
+    CHECK(!manager.lookup(proc(101, 1001)).has_value(), "死成员不得归属");
+    CHECK(manager.lookup(proc(100, 1000)).value_or(0) == role, "锚点仍应归属");
 }
 
 void run_bind_capacity_and_expiry()
@@ -850,6 +873,7 @@ int main()
     run_dead_anchor_filter();
     run_dead_member_filter();
     run_leave_with_liveness();
+    run_late_adopt_stats();
     run_bind_capacity_and_expiry();
 
     if (g_fail) {

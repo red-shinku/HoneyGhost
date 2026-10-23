@@ -376,6 +376,24 @@ void run_exit_before_register()
     CHECK(!manager.lookup(orphan).has_value(), "孤儿应保持未归属");
 }
 
+void run_tombstone_hits()
+{
+    ContextManager manager;
+    Runner runner(manager);
+
+    const hng::Process dead = proc(950, 9500);
+    manager.on_process_exited(dead);
+    CHECK(wait_until([&] { return manager.stats().tombstone_hits > 0; }),
+          "退出解析命中墓碑应计数");
+
+    const uint64_t before = manager.stats().tombstone_hits;
+    manager.register_context(dead, decision(98, contextattr::UNKNOWN), {});
+    CHECK(wait_until([&] { return manager.stats().late_register == 1; }),
+          "迟到注册应被墓碑拒绝");
+    CHECK(wait_until([&] { return manager.stats().tombstone_hits > before; }),
+          "迟到注册查墓碑应继续计数");
+}
+
 void run_explicit_unregister_parent()
 {
     ContextManager manager;
@@ -838,6 +856,7 @@ int main()
     run_parent_exit_context_alive();
     run_parent_gone_orphans_child();
     run_exit_before_register();
+    run_tombstone_hits();
     run_explicit_unregister_parent();
     run_register_cancels_bind_wait();
     run_exit_cancels_and_fails_waiters();
