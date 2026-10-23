@@ -10,6 +10,9 @@
  *  - 退出通知的两条路径：无子进程直接退出、有子进程转入虚拟根后退出，
  *    两条都在实进程退出时通知全部订阅者，虚拟根驱逐不重复通知；
  *  - 未登记与重复退出：仍按身份转发，由订阅方幂等处理；
+ *  - 退出墓碑：迟到 ADD 被拒绝、pid 复用不误伤、存活查询命中/未命中/过期、
+ *    墓碑先于退出通知写入、墓碑深度随退出与过期变化；
+ *  - 父计数：父身份缺失时只计 parent_missing，不虚增计数；森林根不计；
  *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
  *  - 多线程并发注册 / 注销后状态自洽（供 TSAN 构建复验）。
  * @author red_shinku
@@ -72,6 +75,11 @@ bool wait_until(const std::function<bool()>& pred, int timeout_ms = 5000)
     return pred();
 }
 
+/// 可控时钟：只随测试推进，供墓碑寿命用例
+struct FakeClock {
+    hng::RelationTimePoint now{};
+};
+
 /// 三个注入点的记录：计数为原子（消费线程写、用例线程读），明细只在停止后读
 struct Recorder {
     std::atomic<std::size_t> binds{0};
@@ -122,6 +130,42 @@ class FakeRoleJoin : public RoleJoinService {
 
    private:
     Recorder& rec_;
+};
+
+/// 在退出回调内查询墓碑：回调运行于消费线程，用于验证墓碑先于通知写入，
+/// 且通知路径不持有墓碑锁
+class TombstoneProbeSink : public ProcessLifecycleSink {
+   public:
+    void attach(const ProcessManager* manager) { manager_ = manager; }
+
+    void on_process_exited(hng::Process p) override
+    {
+        const bool hit = manager_ != nullptr && manager_->is_exited(p);
+        {
+            std::lock_guard lock(mutex_);
+            last_ = p;
+        }
+        if (hit) {
+            hits_.fetch_add(1, std::memory_order_relaxed);
+        }
+        calls_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::size_t calls() const { return calls_.load(std::memory_order_relaxed); }
+    std::size_t hits() const { return hits_.load(std::memory_order_relaxed); }
+
+    hng::Process last() const
+    {
+        std::lock_guard lock(mutex_);
+        return last_;
+    }
+
+   private:
+    const ProcessManager* manager_ = nullptr;
+    std::atomic<std::size_t> calls_{0};
+    std::atomic<std::size_t> hits_{0};
+    mutable std::mutex mutex_;
+    hng::Process last_{};
 };
 
 /// 起 run() 线程，析构时停止并 join
@@ -487,6 +531,176 @@ void run_unknown_and_duplicate()
           "重复退出按身份转发，由订阅方幂等处理");
 }
 
+void run_exit_before_add()
+{
+    Recorder rec;
+    FakeRoleJoin join(rec);
+    ProcessManager manager;
+    manager.set_role_join_service(&join);
+    Runner runner(manager);
+
+    manager.register_pid(head(50, 5000, 0, 0));  // 父进程，森林根
+    CHECK(wait_until([&] { return manager.lookup(proc(50, 5000)).has_value(); }),
+          "父进程应落地");
+    CHECK(wait_until([&] { return rec.binds.load() == 1; }),
+          "父进程应转交一次角色归属");
+
+    // 未登记的退出先写墓碑，随后的 ADD 被整条丢弃
+    manager.unregister_pid(proc(100, 1000));
+    manager.register_pid(head(100, 1000, 50, 5000));
+    CHECK(wait_until([&] { return manager.stats().stale_add == 1; }),
+          "迟到 ADD 应被墓碑拒绝并计数");
+    CHECK(!manager.lookup(proc(100, 1000)).has_value(), "迟到 ADD 不得插入");
+    CHECK(rec.binds.load() == 1, "迟到 ADD 不得转交角色归属");
+    CHECK(manager.lookup(proc(50, 5000))->child_count == 0,
+          "迟到 ADD 不得更新父进程的孩子计数");
+    CHECK(manager.stats().parent_missing == 0, "迟到 ADD 不得计父缺失");
+}
+
+void run_pid_reuse_not_misfire()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    manager.register_pid(head(100, 1000, 0, 0));
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
+          "注册应落地");
+    manager.unregister_pid(proc(100, 1000));
+    manager.register_pid(head(100, 1001, 0, 0));  // 同 pid 的新实例
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1001)).has_value(); }),
+          "同 pid 不同 start_time 的新实例应正常插入");
+    CHECK(manager.is_exited(proc(100, 1000)), "旧实例应有墓碑");
+    CHECK(!manager.is_exited(proc(100, 1001)), "新实例不得命中旧实例的墓碑");
+    CHECK(manager.stats().stale_add == 0, "新实例不得计迟到 ADD");
+}
+
+void run_is_exited_expiry()
+{
+    FakeClock clock;
+    ProcessManagerOptions options;
+    options.tombstones.ttl = std::chrono::milliseconds(100);
+    options.now            = [&clock] { return clock.now; };
+
+    ProcessManager manager(options);
+    Runner runner(manager);
+
+    manager.unregister_pid(proc(100, 1000));
+    CHECK(wait_until([&] { return manager.stats().tombstone_depth == 1; }),
+          "未登记的退出应写墓碑");
+    CHECK(manager.is_exited(proc(100, 1000)), "墓碑应命中");
+    CHECK(!manager.is_exited(proc(101, 1000)), "未记录的身份不应命中");
+    CHECK(!manager.is_exited(proc(100, 1001)), "同 pid 不同 start_time 不应命中");
+
+    clock.now += std::chrono::milliseconds(101);
+    CHECK(!manager.is_exited(proc(100, 1000)), "过期墓碑不应命中");
+    CHECK(manager.stats().tombstone_depth == 0, "过期墓碑应退出深度");
+}
+
+void run_tombstone_depth()
+{
+    FakeClock clock;
+    ProcessManagerOptions options;
+    options.tombstones.ttl = std::chrono::milliseconds(100);
+    options.now            = [&clock] { return clock.now; };
+
+    ProcessManager manager(options);
+    Runner runner(manager);
+
+    manager.unregister_pid(proc(800, 8000));
+    manager.unregister_pid(proc(801, 8010));
+    CHECK(wait_until([&] { return manager.stats().tombstone_depth == 2; }),
+          "两条无记录退出应各写一条墓碑");
+
+    manager.unregister_pid(proc(800, 8000));      // 重复退出
+    manager.register_pid(head(900, 9000, 0, 0));  // 屏障
+    CHECK(wait_until([&] { return manager.lookup(proc(900, 9000)).has_value(); }),
+          "屏障应落地");
+    CHECK(manager.stats().tombstone_depth == 2, "重复退出不得新增墓碑");
+
+    clock.now += std::chrono::milliseconds(101);
+    manager.register_pid(head(901, 9010, 0, 0));  // 屏障：落地末尾清理过期墓碑
+    CHECK(wait_until([&] { return manager.lookup(proc(901, 9010)).has_value(); }),
+          "第二个屏障应落地");
+    CHECK(wait_until([&] { return manager.stats().tombstone_depth == 0; }),
+          "过期墓碑应在落地末尾清除");
+}
+
+void run_tombstone_before_notify()
+{
+    ProcessManager manager;
+    TombstoneProbeSink probe;
+    probe.attach(&manager);
+    manager.add_process_lifecycle_sink(&probe);
+    Runner runner(manager);
+
+    // 有记录退出
+    manager.register_pid(head(100, 1000, 0, 0));
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
+          "注册应落地");
+    manager.unregister_pid(proc(100, 1000));
+    CHECK(wait_until([&] { return probe.hits() == 1; }),
+          "有记录退出在通知时墓碑应已写入");
+    CHECK(probe.last() == proc(100, 1000), "通知的应是该进程");
+
+    // 无记录退出
+    manager.unregister_pid(proc(777, 7777));
+    CHECK(wait_until([&] { return probe.hits() == 2; }),
+          "无记录退出也应在通知前写墓碑");
+    CHECK(probe.last() == proc(777, 7777), "无记录退出应按身份通知");
+}
+
+void run_pid_reuse_retire_tombstone()
+{
+    ProcessManager manager;
+    TombstoneProbeSink probe;
+    probe.attach(&manager);
+    manager.add_process_lifecycle_sink(&probe);
+    Runner runner(manager);
+
+    manager.register_pid(head(200, 2000, 0, 0));
+    CHECK(wait_until([&] { return manager.lookup(proc(200, 2000)).has_value(); }),
+          "注册应落地");
+    manager.register_pid(head(200, 2001, 0, 0));  // pid 复用
+    CHECK(wait_until([&] { return manager.lookup(proc(200, 2001)).has_value(); }),
+          "新实例应落地");
+    CHECK(wait_until([&] { return probe.hits() == 1; }),
+          "旧实例退役通知时墓碑应已写入");
+    CHECK(probe.last() == proc(200, 2000), "通知的应是旧实例");
+    CHECK(manager.is_exited(proc(200, 2000)), "旧实例应可查到墓碑");
+    CHECK(!manager.is_exited(proc(200, 2001)), "新实例不得命中");
+    CHECK(manager.stats().pid_reused == 1, "pid 复用应计数");
+}
+
+void run_parent_missing()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    manager.register_pid(head(100, 1000, 50, 5000));  // 父未注册
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
+          "父缺失的 ADD 仍应插入");
+    CHECK(wait_until([&] { return manager.stats().parent_missing == 1; }),
+          "父缺失应计数");
+
+    manager.register_pid(head(50, 5000, 0, 0));
+    CHECK(wait_until([&] { return manager.lookup(proc(50, 5000)).has_value(); }),
+          "父进程应落地");
+    CHECK(manager.lookup(proc(50, 5000))->child_count == 0,
+          "缺失的 ADD 不得虚增父进程的孩子计数");
+    CHECK(manager.stats().parent_missing == 1, "父落地后不应重复计数");
+}
+
+void run_root_not_parent_missing()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    manager.register_pid(head(10, 100, 0, 0));
+    CHECK(wait_until([&] { return manager.lookup(proc(10, 100)).has_value(); }),
+          "森林根应落地");
+    CHECK(manager.stats().parent_missing == 0, "森林根不应计父缺失");
+}
+
 void run_stop_semantics()
 {
     // run() 之前 stop()：run() 立即返回
@@ -590,6 +804,14 @@ int main()
     run_resolve();
     run_exit_paths();
     run_unknown_and_duplicate();
+    run_exit_before_add();
+    run_pid_reuse_not_misfire();
+    run_is_exited_expiry();
+    run_tombstone_depth();
+    run_tombstone_before_notify();
+    run_pid_reuse_retire_tombstone();
+    run_parent_missing();
+    run_root_not_parent_missing();
     run_stop_semantics();
     run_concurrent_producers();
 

@@ -1,10 +1,16 @@
 #include "agent/control_plane/src/process_manager.hpp"
 
+#include <chrono>
 #include <mutex>
+#include <utility>
+#include <variant>
 
 // 进程关系管理
 
-ProcessManager::ProcessManager() {}
+ProcessManager::ProcessManager(ProcessManagerOptions options)
+    : options_(std::move(options)), tombstones_(options_.tombstones)
+{
+}
 
 ProcessManager::~ProcessManager() {}
 
@@ -121,6 +127,7 @@ void ProcessManager::land(Task& t)
             update_exe_image_(t.image_process, std::move(t.image_exe));
             break;
     }
+    expire_tombstones_();
 }
 
 void ProcessManager::addPID(hng::ProcessMessage&& data)
@@ -129,7 +136,14 @@ void ProcessManager::addPID(hng::ProcessMessage&& data)
     uint64_t ppid_st = data.ppid_start_time;
     uint32_t pid     = data.pid;
     uint64_t pid_st  = data.pid_start_time;
-    auto& shard_ref  = ptree_shard[shard_index(pid)];
+
+    // 退出先于 ADD：该身份已退出，整条事件丢弃
+    if (is_exited(hng::Process{pid, pid_st})) {
+        stale_add_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    auto& shard_ref = ptree_shard[shard_index(pid)];
 
     std::optional<hng::ProcessMessage> retired;
     {
@@ -183,8 +197,9 @@ void ProcessManager::deletePID(hng::Process p)
     }  // 释放本分片锁后再退役,避免同线程重入自锁
 
     if (!retired.has_value()) {
-        // 未登记、已退役，或同 pid 的迟到退出：仍按身份转发，供下游清理
+        // 未登记、已退役，或同 pid 的迟到退出：先写墓碑再转发，供下游清理
         // 陈旧归属；下游按身份匹配，不影响同 pid 的新实例
+        add_tombstone_(p);
         notify_process_exited(p);
         return;
     }
@@ -223,7 +238,8 @@ void ProcessManager::retire(hng::ProcessMessage&& old)
     const hng::Process parent{old.ppid, old.ppid_start_time};
     const bool keep_as_vroot = old.child_count > 0;
 
-    // 实进程已退出：先通知，再决定是否保留追溯用的虚拟根
+    // 实进程已退出：先写墓碑再通知，订阅回调内即可查到该身份已退出
+    add_tombstone_(self);
     notify_process_exited(self);
 
     if (keep_as_vroot) {
@@ -240,6 +256,11 @@ void ProcessManager::retire(hng::ProcessMessage&& old)
 
 void ProcessManager::update_child_count_add(hng::Process p)
 {
+    if (p.pid == 0) {
+        // 森林根：没有父进程可计数
+        return;
+    }
+
     // 父进程存活:递增其 ptree 计数
     {
         auto& shard_ref = ptree_shard[shard_index(p.pid)];
@@ -253,13 +274,19 @@ void ProcessManager::update_child_count_add(hng::Process p)
         }
     }
     // 父进程已退出:回退递增虚拟根计数(事件乱序时保持计数一致)
-    auto& vshard_ref = vptree_root[shard_index(p.pid)];
-    std::unique_lock lock(vshard_ref.smtx);
+    {
+        auto& vshard_ref = vptree_root[shard_index(p.pid)];
+        std::unique_lock lock(vshard_ref.smtx);
 
-    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
-    if (it != vshard_ref.vprocess.end()) {
-        it->second.child_count += 1;
+        auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
+        if (it != vshard_ref.vprocess.end()) {
+            it->second.child_count += 1;
+            return;
+        }
     }
+
+    // 父身份缺失：不更新任何计数，留给统计暴露输入契约被破坏
+    parent_missing_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ProcessManager::update_child_count_decrease(hng::Process p)
@@ -302,8 +329,40 @@ void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
 ProcessManagerStats ProcessManager::stats() const
 {
     ProcessManagerStats snapshot;
-    snapshot.pid_reused = pid_reused_.load(std::memory_order_relaxed);
+    snapshot.pid_reused     = pid_reused_.load(std::memory_order_relaxed);
+    snapshot.stale_add      = stale_add_.load(std::memory_order_relaxed);
+    snapshot.parent_missing = parent_missing_.load(std::memory_order_relaxed);
+    {
+        std::lock_guard lock(tombstone_mutex_);
+        snapshot.tombstone_depth = tombstones_.size();
+    }
     return snapshot;
+}
+
+hng::RelationTimePoint ProcessManager::now() const
+{
+    if (options_.now) {
+        return options_.now();
+    }
+    return std::chrono::steady_clock::now();
+}
+
+void ProcessManager::add_tombstone_(hng::Process p)
+{
+    std::lock_guard lock(tombstone_mutex_);
+    tombstones_.add(p, std::monostate{}, now());
+}
+
+void ProcessManager::expire_tombstones_()
+{
+    std::lock_guard lock(tombstone_mutex_);
+    tombstones_.expire(now());
+}
+
+bool ProcessManager::is_exited(hng::Process p) const
+{
+    std::unique_lock lock(tombstone_mutex_);  // find 会惰性清除过期项
+    return tombstones_.find(p, now()).has_value();
 }
 
 void ProcessManager::notify_process_exited(hng::Process p)
