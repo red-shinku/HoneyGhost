@@ -102,7 +102,7 @@ class FakeContextService final : public ContextLookupService,
     }
     ContextManagerStats stats() const override { return {}; }
     void register_context(hng::Process p, ContextDeriveDecision nd,
-                          hng::Process) override
+                          ContextParentRef) override
     {
         ctx[Key{p}] = nd.contextID;
     }
@@ -110,7 +110,7 @@ class FakeContextService final : public ContextLookupService,
     {
     }
     void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
-    void bind_to_ctxroot(hng::Process, hng::Process) override {}
+    void bind_to_ctxroot(hng::Process, ContextParentRef) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
 

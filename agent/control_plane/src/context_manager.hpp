@@ -9,12 +9,17 @@
 #define _CONTROL_PLANE_CONTEXTMANAGER_HPP
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
 
+#include "agent/util/include/deferred_relation_table.hpp"
+#include "agent/util/include/tombstone_table.hpp"
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/context_service.hpp"
@@ -103,6 +108,33 @@ struct ToContextRootTable {
 };
 
 /**
+ * @brief 上下文管理器接收的关系修复配置
+ * @details 三个表的容量与寿命默认值可直接运行；测试通过覆盖参数注入假时钟与
+ *          小容量、短寿命。
+ */
+struct ContextManagerOptions {
+    hng::DeferredRelationOptions link_pending;  ///< 父链接等待表
+    hng::DeferredRelationOptions bind_pending;  ///< KEEP 挂靠等待表
+    hng::TombstoneOptions tombstones;           ///< 已退出进程墓碑表
+    /// 当前时间来源，必须是单调时钟
+    std::function<hng::RelationTimePoint()> now = [] {
+        return std::chrono::steady_clock::now();
+    };
+};
+
+/// @brief 父链接等待项：子进程已注册主 context，等待父 contextID
+struct LinkAction {
+    hng::Process child;  ///< 等待父链接的子进程
+    uint32_t contextID;  ///< 子进程自己的主 contextID
+};
+
+/// @brief 已退出进程的墓碑信息
+struct ContextTombstone {
+    std::optional<ContextKey> last_root;  ///< 退出时所属 context 的根键
+    uint32_t context_id = 0;              ///< last_root 的 contextID
+};
+
+/**
  * @brief 上下文管理器
  * @details
  * 上下文管理器负责 context 结构关系的管理，是单例的
@@ -113,13 +145,19 @@ struct ToContextRootTable {
  *
  * 六个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
  * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
+ *
+ * 父链接与 KEEP 挂靠可先于父进程落地；此时关系暂存在消费线程私有的延迟表中，
+ * 父落地时收敛，父退出或超时后降级。已退出进程的墓碑用于拒绝迟到的注册与挂靠。
+ * 查询面不读取延迟表或墓碑。
  */
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
                        public ContextUpdateService,
                        public ProcessLifecycleSink {
    public:
-    ContextManager(/* args */);
+    /// @brief 构造管理器
+    /// @param options 延迟表、墓碑表的参数与时间来源
+    explicit ContextManager(ContextManagerOptions options = {});
     ~ContextManager();
 
     /// @brief 查询进程所属主 context 的 ID。
@@ -141,9 +179,10 @@ class ContextManager : public ContextLookupService,
     /// @brief 注册新的主 contextID（通知写）
     /// @param p context 代表进程
     /// @param newcontext 新 context 信息；kind 须为 DERIVE
-    /// @param parent 父进程；落地时解析其 contextID，未落定则按森林根
+    /// @param parent 父进程引用；落地时解析其 contextID
+    /// @see ContextParentRef
     void register_context(hng::Process p, ContextDeriveDecision newcontext,
-                          hng::Process parent) override;
+                          ContextParentRef parent) override;
 
     /// @brief 注册附属 context（通知写）
     /// @param p context 代表进程；须已有主 context
@@ -161,9 +200,11 @@ class ContextManager : public ContextLookupService,
                   hng::contextattr attr) override;
 
     /// @brief 归属落定：KEEP 子进程挂靠到父进程所属的 context（通知写）
-    /// @details 派生决策为 KEEP 时由工作平面调用；实际落地在私有挂靠逻辑，
-    /// 父进程尚未落定时为空操作（登记竞态，归属保持待定）
-    void bind_to_ctxroot(hng::Process p, hng::Process parent) override;
+    /// @param p 子进程
+    /// @param parent 父进程引用；expected 为 true 且父未落定时暂存挂靠，
+    ///        expected 为 false 时直接降级并保持未归属
+    /// @see ContextParentRef
+    void bind_to_ctxroot(hng::Process p, ContextParentRef parent) override;
 
     /// @brief 进程已退出（通知写）
     /// @details 从归属索引与成员集中移除该进程；成员集清空时删除整个 context。
@@ -185,9 +226,9 @@ class ContextManager : public ContextLookupService,
     /// @brief 入队任务：注册一个主 context
     struct AddTask {
         hng::Process process;
-        uint32_t contextID;     ///< 新 context 的 ID，由工作面生成
-        hng::contextattr attr;  ///< 新 context 的属性
-        hng::Process parent;    ///< 父进程；落地时解析其 contextID
+        uint32_t contextID;       ///< 新 context 的 ID，由工作面生成
+        hng::contextattr attr;    ///< 新 context 的属性
+        ContextParentRef parent;  ///< 父进程引用；落地时解析其 contextID
     };
 
     /// @brief 入队任务：注册一个附属 context
@@ -212,7 +253,7 @@ class ContextManager : public ContextLookupService,
     /// @brief 入队任务：把进程挂靠到父进程所属的 context
     struct BindTask {
         hng::Process process;
-        hng::Process parent;
+        ContextParentRef parent;
     };
 
     /// @brief 入队任务：进程已退出
@@ -225,7 +266,32 @@ class ContextManager : public ContextLookupService,
                               ExitedTask>;
     hng::NotificationQueue<Task> task;
 
+    ContextManagerOptions options_;
+    /// 子进程等待父进程 contextID 的延迟表；只在消费线程访问
+    hng::DeferredRelationTable<hng::Process, hng::Process, LinkAction>
+        link_pending_;
+    /// 子进程等待父进程归属的延迟表；只在消费线程访问
+    hng::DeferredRelationTable<hng::Process, hng::Process, std::monostate>
+        bind_pending_;
+    /// 已退出进程的墓碑；只在消费线程访问
+    hng::TombstoneTable<hng::Process, ContextTombstone> tombstones_;
+
     /// 消费线程写、任意线程读，故为原子
+    std::atomic<uint64_t> pending_deferred_{0};
+    std::atomic<uint64_t> pending_resolved_{0};
+    std::atomic<uint64_t> pending_rejected_{0};
+    std::atomic<uint64_t> pending_expired_{0};
+    std::atomic<uint64_t> pending_cancelled_{0};
+    std::atomic<uint64_t> pending_depth_{0};
+    std::atomic<uint64_t> bind_orphaned_{0};
+    std::atomic<uint64_t> extra_orphaned_{0};
+    std::atomic<uint64_t> parent_missing_{0};
+    std::atomic<uint64_t> late_register_{0};
+    std::atomic<uint64_t> late_bind_{0};
+    std::atomic<uint64_t> duplicate_context_{0};
+    std::atomic<uint64_t> ownership_conflict_{0};
+    std::atomic<uint64_t> tombstone_hits_{0};
+    std::atomic<uint64_t> tombstone_depth_{0};
     std::atomic<uint64_t> ctxroot_parent_unsettled_{0};
     std::atomic<uint64_t> unknown_unregister_{0};
 
@@ -247,30 +313,66 @@ class ContextManager : public ContextLookupService,
     // 一个 contextID 映射到它的上一个父级 ID
     ParentTable parent;
 
+    /// @brief 查找墓碑；命中时累计 tombstone_hits
+    /// @param p 进程身份
+    /// @param now 当前时间，用于判断墓碑是否过期
+    std::optional<ContextTombstone> find_tombstone(hng::Process p,
+                                                   hng::RelationTimePoint now);
+
+    /// @brief 解析锚点当前所属 context 的根键
+    /// @details
+    /// 依次尝试：归属索引（根键须仍有 context 记录）、锚点自身仍是存活 context
+    /// 的根键、墓碑记录的 last_root 或 context_id。均未命中时返回空；不回退到
+    /// 祖先 context。显式注销不清理归属索引，故归属索引单独校验 context
+    /// 是否存在。
+    /// @param anchor 锚点进程
+    /// @param now 当前时间，用于判断墓碑是否过期
+    std::optional<ContextKey> resolve_root_of(hng::Process anchor,
+                                              hng::RelationTimePoint now);
+
+    /// @brief 解析锚点当前所属主 context 的 ID
+    /// @param anchor 锚点进程
+    /// @param now 当前时间，用于判断墓碑是否过期
+    /// @return 解析到存活 context 时为它的 ID；否则为空
+    std::optional<uint32_t> resolve_context_id_of(hng::Process anchor,
+                                                  hng::RelationTimePoint now);
+
+    /// @brief 查询根键对应的 contextID
+    /// @param key context 根键
+    /// @return context 存活时为它的 ID；否则为空
+    std::optional<uint32_t> context_id_of(const ContextKey& key);
+
+    /// @brief 查询根键对应的主 context 是否存在
+    bool context_exists(const ContextKey& key) const;
+
     /// @brief 实际插入主 context
-    /// @details 主 context 键唯一：同键已存在时直接返回，同 ID 为幂等，不同 ID
-    ///          也不转为附属 context。父 context ID 在落地时解析，父进程未落定
-    ///          时按森林根（0）处理。
+    /// @details 主 context 键唯一：同键已存在时保留首条并计数。父 contextID
+    ///          解析不到且允许等待时先暂存父链接，主 context 立即插入。
     /// @param p context代表进程的唯一性表示
     /// @param contextID 新的contextID，由工作面生成
     /// @param attr 新 context 的属性
-    /// @param parent 父进程；pid 为 0 表示森林根
+    /// @param parent 父进程引用
+    /// @param now 当前时间
     void addContextID(hng::Process p, uint32_t contextID, hng::contextattr attr,
-                      hng::Process parent);
+                      ContextParentRef parent_ref, hng::RelationTimePoint now);
 
     /// @brief 实际插入附属 context
-    /// @details 要求该键已有主 context；已有附属 context 时保留首个。附属
-    ///          context 的 parent 记录指向其主 context。
+    /// @details 要求该键已有主 context；进程命中墓碑、主 context 不存在或已有
+    ///          附属 context 时丢弃，前两者计入 extra_orphaned。
     /// @param p context代表进程的唯一性表示
     /// @param contextID 附属 contextID
     /// @param attr 附属 context 的属性
+    /// @param now 当前时间
     void addExtraContext(hng::Process p, uint32_t contextID,
-                         hng::contextattr attr);
+                         hng::contextattr attr, hng::RelationTimePoint now);
 
     /// @brief 实际删除 contextID
-    /// @details 删除主 context 时一并删除同键的附属 context 及其 parent 记录
+    /// @details 删除主 context 时一并删除同键的附属 context 及其 parent 记录；
+    ///          以 p 为锚点的等待项按目标消失处理，p 作为等待方的条目被取消。
+    ///          显式注销不写墓碑。
     /// @param p context代表进程的唯一性表示
-    void delContextID(hng::Process p);
+    /// @param now 当前时间
+    void delContextID(hng::Process p, hng::RelationTimePoint now);
 
     /// @brief 设置 context 属性
     /// @details
@@ -281,10 +383,46 @@ class ContextManager : public ContextLookupService,
     void set_attr_(hng::Process p, uint32_t contextID, hng::contextattr attr);
 
     /// @brief 新进程没有派生 context 时，需与 context 根进程绑定
-    void bind_to_ctxroot_(hng::Process p, hng::Process parent);
+    /// @details 解析不了父归属且允许等待时暂存挂靠；否则保持未归属并计数。
+    /// @param p 子进程
+    /// @param parent 父进程引用
+    /// @param now 当前时间
+    void bind_to_ctxroot_(hng::Process p, ContextParentRef parent,
+                          hng::RelationTimePoint now);
+
+    /// @brief 把子进程写入指定 context 根，并递归收敛其等待者
+    /// @param child 子进程
+    /// @param root context 根键
+    /// @param now 当前时间
+    /// @param depth 递归深度
+    /// @return 写入成功或已归属同一根时为 true；墓碑拒绝或归属冲突时为 false
+    /// @note 归属落定后不可改绑
+    bool bind_child(hng::Process child, const ContextKey& root,
+                    hng::RelationTimePoint now, uint32_t depth);
+
+    /// @brief 应用以 anchor 为锚点的等待项
+    /// @param anchor 已落定的锚点进程
+    /// @param now 当前时间
+    /// @param depth 递归深度
+    void drain_waiters(hng::Process anchor, hng::RelationTimePoint now,
+                       uint32_t depth);
+
+    /// @brief 按目标消失处理以 anchor 为锚点的等待项
+    /// @details 链接等待者父链接置 0；挂靠等待者丢弃并级联失败其子等待者。
+    ///          不挂祖先 context，也不新建 context。
+    /// @param anchor 消失的锚点进程
+    /// @param depth 递归深度
+    void fail_waiters(hng::Process anchor, uint32_t depth);
+
+    /// @brief 清理过期的延迟关系与墓碑，并累计对应降级计数
+    /// @param now 当前时间
+    void expire_pending(hng::RelationTimePoint now);
+
+    /// @brief 刷新 pending_depth 与 tombstone_depth 两个观测值
+    void refresh_depths();
 
     /// @brief 进程退出时清理归属条目；成员集清空则删除整个 context
-    void on_process_exited_(hng::Process p);
+    void on_process_exited_(hng::Process p, hng::RelationTimePoint now);
 
     /// @brief 落地一条队列任务
     void land(Task& task);

@@ -62,13 +62,13 @@ class FakeContextService final : public ContextLookupService,
         Kind kind;
         hng::Process p;
         uint32_t contextID = 0;
-        hng::Process parent;
+        ContextParentRef parent;
     };
 
     std::unordered_map<Key, uint32_t, KeyHash> ctx;
     std::size_t register_calls = 0;
-    std::vector<hng::Process> registered_parents;
-    std::vector<std::pair<hng::Process, hng::Process>> bound;
+    std::vector<ContextParentRef> registered_parents;
+    std::vector<std::pair<hng::Process, ContextParentRef>> bound;
     std::vector<QueuedOp> queued;
 
     /// 为 true 时调用立即改变 ctx；为 false 时只记录调用，由 flush() 应用
@@ -85,7 +85,7 @@ class FakeContextService final : public ContextLookupService,
                 ctx[Key{op.p}] = op.contextID;
             }
             else {
-                apply_bind(op.p, op.parent);
+                apply_bind(op.p, op.parent.process);
             }
         }
         queued.clear();
@@ -114,7 +114,7 @@ class FakeContextService final : public ContextLookupService,
     }
     ContextManagerStats stats() const override { return {}; }
     void register_context(hng::Process p, ContextDeriveDecision nd,
-                          hng::Process parent) override
+                          ContextParentRef parent) override
     {
         ++register_calls;
         registered_parents.push_back(parent);
@@ -129,11 +129,11 @@ class FakeContextService final : public ContextLookupService,
     {
     }
     void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
-    void bind_to_ctxroot(hng::Process p, hng::Process parent) override
+    void bind_to_ctxroot(hng::Process p, ContextParentRef parent) override
     {
         bound.emplace_back(p, parent);
         if (apply_immediately) {
-            apply_bind(p, parent);
+            apply_bind(p, parent.process);
             return;
         }
         queued.push_back(QueuedOp{QueuedOp::Kind::BIND, p, 0, parent});
@@ -178,9 +178,10 @@ void run_derive()
     CHECK(m.lookup_contextID(bash) == std::optional<uint32_t>(d.contextID),
           "派生后归属自身新 context");
     CHECK(d.contextID == svc.lookup(bash), "新 context 已登记到服务");
-    CHECK(
-        svc.registered_parents.size() == 1 && svc.registered_parents[0] == parent,
-        "父进程链接应原样交给控制平面解析");
+    CHECK(svc.registered_parents.size() == 1 &&
+              svc.registered_parents[0].process == parent &&
+              !svc.registered_parents[0].expected,
+          "未观测父的 DERIVE 应标记父未观测并交给控制平面解析");
     CHECK(svc.bound.empty(), "DERIVE 不挂靠父 context");
 
     // 2. 已派生进程原地重 exec（bash 里 exec 别的）→ 不派生
@@ -239,8 +240,9 @@ void run_keep()
     auto ld = m.should_derive_context(ls, shell, "/usr/bin/ls");
     CHECK(ld.kind == ContextDecisionKind::KEEP, "解释器会话内普通命令应 KEEP");
     CHECK(svc.bound.size() == 1 && svc.bound[0].first == ls &&
-              svc.bound[0].second == shell,
-          "KEEP 进程应挂靠到父进程所属 context 根");
+              svc.bound[0].second.process == shell &&
+              svc.bound[0].second.expected,
+          "KEEP 进程应以已观测父挂靠到父进程所属 context 根");
     CHECK(svc.register_calls == 1, "KEEP 进程不注册新 context");
     CHECK(m.lookup_contextID(ls) == std::optional<uint32_t>(sd.contextID),
           "KEEP 进程归属父 context");

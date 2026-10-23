@@ -2,10 +2,24 @@
 
 #include <algorithm>
 #include <mutex>
+#include <utility>
 
 // 上下文关系管理
 
-ContextManager::ContextManager() {}
+namespace {
+
+/// 等待者收敛的递归深度上限
+constexpr uint32_t kMaxWaitDepth = 32;
+
+}  // namespace
+
+ContextManager::ContextManager(ContextManagerOptions options)
+    : options_(std::move(options)),
+      link_pending_(options_.link_pending),
+      bind_pending_(options_.bind_pending),
+      tombstones_(options_.tombstones)
+{
+}
 
 ContextManager::~ContextManager() {}
 
@@ -136,7 +150,7 @@ std::optional<ContextProcessSet> ContextManager::members(uint32_t contextID) con
 
 void ContextManager::register_context(hng::Process p,
                                       ContextDeriveDecision newcontext,
-                                      hng::Process parent)
+                                      ContextParentRef parent)
 {
     if (newcontext.kind != ContextDecisionKind::DERIVE) {
         return;  // 接口只接受派生决策
@@ -161,7 +175,7 @@ void ContextManager::set_attr(hng::Process p, uint32_t contextID,
     task.push(Task{SetAttrTask{p, contextID, attr}});
 }
 
-void ContextManager::bind_to_ctxroot(hng::Process p, hng::Process parent)
+void ContextManager::bind_to_ctxroot(hng::Process p, ContextParentRef parent)
 {
     task.push(Task{BindTask{p, parent}});
 }
@@ -184,57 +198,166 @@ void ContextManager::stop() { task.stop(); }
 
 void ContextManager::land(Task& t)
 {
+    const hng::RelationTimePoint now = options_.now();
+
     if (auto* add = std::get_if<AddTask>(&t)) {
-        addContextID(add->process, add->contextID, add->attr, add->parent);
+        addContextID(add->process, add->contextID, add->attr, add->parent, now);
     }
     else if (auto* extra = std::get_if<ExtraTask>(&t)) {
-        addExtraContext(extra->process, extra->contextID, extra->attr);
+        addExtraContext(extra->process, extra->contextID, extra->attr, now);
     }
     else if (auto* del = std::get_if<DelTask>(&t)) {
-        delContextID(del->process);
+        delContextID(del->process, now);
     }
     else if (auto* attr = std::get_if<SetAttrTask>(&t)) {
         set_attr_(attr->process, attr->contextID, attr->attr);
     }
     else if (auto* bind = std::get_if<BindTask>(&t)) {
-        bind_to_ctxroot_(bind->process, bind->parent);
+        bind_to_ctxroot_(bind->process, bind->parent, now);
     }
     else if (auto* exited = std::get_if<ExitedTask>(&t)) {
-        on_process_exited_(exited->process);
+        on_process_exited_(exited->process, now);
     }
+
+    expire_pending(now);
+    refresh_depths();
+}
+
+std::optional<ContextTombstone> ContextManager::find_tombstone(
+    hng::Process p, hng::RelationTimePoint now)
+{
+    auto tombstone = tombstones_.find(p, now);
+    if (tombstone.has_value()) {
+        ++tombstone_hits_;
+    }
+    return tombstone;
+}
+
+std::optional<ContextKey> ContextManager::resolve_root_of(
+    hng::Process anchor, hng::RelationTimePoint now)
+{
+    std::optional<ContextKey> owned;
+    {
+        std::shared_lock lock(to_context_root.smtx);
+        auto it = to_context_root.map.find(anchor);
+        if (it != to_context_root.map.end()) {
+            owned = it->second;
+        }
+    }
+    // 显式注销不清归属索引，故须确认该根键仍有 context 记录
+    if (owned.has_value() && context_exists(*owned)) {
+        return owned;
+    }
+
+    const ContextKey self{anchor.pid, anchor.pid_start_time};
+    {
+        std::shared_lock lock(contexts.smtx);
+        if (contexts.map.find(self) != contexts.map.end()) {
+            return self;
+        }
+    }
+
+    auto tombstone = find_tombstone(anchor, now);
+    if (!tombstone.has_value()) {
+        return std::nullopt;
+    }
+    if (tombstone->last_root.has_value()) {
+        std::shared_lock lock(contexts.smtx);
+        if (contexts.map.find(*tombstone->last_root) != contexts.map.end()) {
+            return tombstone->last_root;
+        }
+    }
+    if (tombstone->context_id != 0) {
+        std::shared_lock lock(contexts.smtx);
+        auto it = contexts.id_to_key.find(tombstone->context_id);
+        if (it != contexts.id_to_key.end()) {
+            return it->second;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<uint32_t> ContextManager::resolve_context_id_of(
+    hng::Process anchor, hng::RelationTimePoint now)
+{
+    auto root = resolve_root_of(anchor, now);
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    return context_id_of(*root);
+}
+
+std::optional<uint32_t> ContextManager::context_id_of(const ContextKey& key)
+{
+    std::shared_lock lock(contexts.smtx);
+    auto it = contexts.map.find(key);
+    if (it == contexts.map.end()) {
+        return std::nullopt;
+    }
+    return it->second.contextID;
+}
+
+bool ContextManager::context_exists(const ContextKey& key) const
+{
+    std::shared_lock lock(contexts.smtx);
+    return contexts.map.find(key) != contexts.map.end();
 }
 
 void ContextManager::addContextID(hng::Process p, uint32_t contextID,
-                                  hng::contextattr attr, hng::Process parent_p)
+                                  hng::contextattr attr,
+                                  ContextParentRef parent_ref,
+                                  hng::RelationTimePoint now)
 {
-    ContextKey key{p.pid, p.pid_start_time};
+    if (find_tombstone(p, now).has_value()) {
+        ++late_register_;
+        return;
+    }
 
-    // 父 context 在落地时解析；父未落定（登记竞态）时按森林根处理
+    const ContextKey key{p.pid, p.pid_start_time};
+    bool duplicate = false;
+    {
+        std::shared_lock lock(contexts.smtx);
+        duplicate = contexts.map.find(key) != contexts.map.end();
+    }
+    if (duplicate) {
+        ++duplicate_context_;  // 同键重复注册：保留首条
+        drain_waiters(p, now, 0);
+        return;
+    }
+
+    // 该进程已有自己的 context（含决策翻转）：不再需要继承父 context
+    if (bind_pending_.cancel(p).has_value()) {
+        ++pending_cancelled_;
+    }
+
     uint32_t pcontextID = 0;
-    if (parent_p.pid != 0) {
-        if (auto parent_id = lookup(parent_p)) {
-            pcontextID = *parent_id;
+    if (parent_ref.process.pid != 0 && !(parent_ref.process == p)) {
+        if (auto id = resolve_context_id_of(parent_ref.process, now)) {
+            pcontextID = *id;
         }
         else {
-            // 父进程已退出：归属索引会移除父键，但若它是 context 根且仍有
-            // 实成员，context 记录仍在，按其键直接取 contextID
-            std::shared_lock lock(contexts.smtx);
-            auto it = contexts.map.find(
-                ContextKey{parent_p.pid, parent_p.pid_start_time});
-            if (it != contexts.map.end()) {
-                pcontextID = it->second.contextID;
+            const bool parent_dead =
+                find_tombstone(parent_ref.process, now).has_value();
+            if (parent_ref.expected && !parent_dead) {
+                const auto result = link_pending_.defer(
+                    parent_ref.process, p, LinkAction{p, contextID}, now);
+                if (result == decltype(link_pending_)::Result::DEFERRED) {
+                    ++pending_deferred_;
+                    ++ctxroot_parent_unsettled_;
+                }
+                else {
+                    ++pending_rejected_;
+                    ++parent_missing_;
+                }
+            }
+            else {
+                ++parent_missing_;
             }
         }
     }
 
     {
         std::unique_lock lock(contexts.smtx);
-
-        // 主 context 键唯一：同键已存在时直接返回，不在此处转为附属 context
-        if (contexts.map.find(key) != contexts.map.end()) {
-            return;
-        }
-
         contexts.map.emplace(key, ContextMessage{contextID, attr, false});
         contexts.by_attr[attr].insert(contextID);
         contexts.id_to_key[contextID] = key;
@@ -242,18 +365,26 @@ void ContextManager::addContextID(hng::Process p, uint32_t contextID,
         std::unique_lock tlock(to_context_root.smtx);
         to_context_root.map[p] = key;
         to_context_root.processes_by_root[key].insert(p);
-    }  // 释放 contexts/to_context_root 锁后再记录 parent 关系
+    }
 
     if (pcontextID != 0) {
         std::unique_lock lock(parent.smtx);
         parent.map.emplace(contextID, pcontextID);
     }
+
+    drain_waiters(p, now, 0);
 }
 
 void ContextManager::addExtraContext(hng::Process p, uint32_t contextID,
-                                     hng::contextattr attr)
+                                     hng::contextattr attr,
+                                     hng::RelationTimePoint now)
 {
-    ContextKey key{p.pid, p.pid_start_time};
+    if (find_tombstone(p, now).has_value()) {
+        ++extra_orphaned_;
+        return;
+    }
+
+    const ContextKey key{p.pid, p.pid_start_time};
     uint32_t primaryID = 0;
 
     {
@@ -261,6 +392,7 @@ void ContextManager::addExtraContext(hng::Process p, uint32_t contextID,
 
         auto it = contexts.map.find(key);
         if (it == contexts.map.end()) {
+            ++extra_orphaned_;
             return;  // 无主 context：不能登记附属 context
         }
         primaryID = it->second.contextID;
@@ -280,9 +412,13 @@ void ContextManager::addExtraContext(hng::Process p, uint32_t contextID,
     parent.map.emplace(contextID, primaryID);
 }
 
-void ContextManager::delContextID(hng::Process p)
+void ContextManager::delContextID(hng::Process p, hng::RelationTimePoint now)
 {
-    ContextKey key{p.pid, p.pid_start_time};
+    const ContextKey key{p.pid, p.pid_start_time};
+    if (find_tombstone(p, now).has_value() && !context_exists(key)) {
+        return;  // 对已退出进程的幂等注销
+    }
+
     std::optional<uint32_t> primaryID;
     std::optional<uint32_t> attachedID;
 
@@ -291,8 +427,6 @@ void ContextManager::delContextID(hng::Process p)
 
         auto it = contexts.map.find(key);
         if (it == contexts.map.end()) {
-            // 注销先于注册到达：该次注销被丢弃，随后的注册会留下永不删除的
-            // context（见 ContextManagerStats::unknown_unregister）
             ++unknown_unregister_;
             return;
         }
@@ -324,6 +458,15 @@ void ContextManager::delContextID(hng::Process p)
         if (attachedID.has_value()) {
             parent.map.erase(*attachedID);
         }
+    }
+
+    fail_waiters(p, 0);
+
+    if (link_pending_.cancel(p).has_value()) {
+        ++pending_cancelled_;
+    }
+    if (bind_pending_.cancel(p).has_value()) {
+        ++pending_cancelled_;
     }
 }
 
@@ -382,41 +525,212 @@ void ContextManager::set_attr_(hng::Process p, uint32_t contextID,
     }
 }
 
-// 归属落定（KEEP）：p 继承父进程所属 context 的根。父进程未落定（登记竞态）
-// 时为空操作 —— 归属保持待定，待父进程落定后再由工作平面补调。
-void ContextManager::bind_to_ctxroot_(hng::Process p, hng::Process parent)
+void ContextManager::bind_to_ctxroot_(hng::Process p, ContextParentRef parent,
+                                      hng::RelationTimePoint now)
 {
-    std::unique_lock lock(to_context_root.smtx);
-    auto parent_it = to_context_root.map.find(parent);
-    if (parent_it == to_context_root.map.end()) {
-        // 父进程尚未落定归属：登记竞态，该次挂靠为空操作，待工作平面补调
-        // （见 ContextManagerStats::ctxroot_parent_unsettled）
-        ++ctxroot_parent_unsettled_;
+    if (find_tombstone(p, now).has_value()) {
+        ++late_bind_;
         return;
     }
-    const ContextKey key = parent_it->second;
 
-    auto it              = to_context_root.map.find(p);
-    if (it == to_context_root.map.end()) {
-        to_context_root.map.emplace(p, key);
-    }
-    else if (!(it->second == key)) {
-        // 归属不可变；防御性清理旧键的反向索引
-        auto old = to_context_root.processes_by_root.find(it->second);
-        if (old != to_context_root.processes_by_root.end()) {
-            old->second.erase(p);
-            if (old->second.empty()) {
-                to_context_root.processes_by_root.erase(old);
-            }
+    std::optional<ContextKey> existing;
+    {
+        std::shared_lock lock(to_context_root.smtx);
+        auto it = to_context_root.map.find(p);
+        if (it != to_context_root.map.end()) {
+            existing = it->second;
         }
-        it->second = key;
     }
-    to_context_root.processes_by_root[key].insert(p);
+    if (existing.has_value()) {
+        const bool resolvable =
+            parent.process.pid != 0 && parent.expected && !(parent.process == p);
+        const std::optional<ContextKey> target =
+            resolvable ? resolve_root_of(parent.process, now) : std::nullopt;
+        if (target.has_value() && !(*target == *existing)) {
+            ++ownership_conflict_;
+            return;  // 归属不可变，保留首条
+        }
+        drain_waiters(p, now, 0);
+        return;
+    }
+
+    if (parent.process.pid == 0 || !parent.expected || parent.process == p) {
+        ++bind_orphaned_;
+        return;
+    }
+
+    if (auto root = resolve_root_of(parent.process, now)) {
+        bind_child(p, *root, now, 0);
+        return;
+    }
+
+    if (find_tombstone(parent.process, now).has_value()) {
+        ++bind_orphaned_;
+        return;
+    }
+
+    const auto result =
+        bind_pending_.defer(parent.process, p, std::monostate{}, now);
+    if (result == decltype(bind_pending_)::Result::DEFERRED) {
+        ++pending_deferred_;
+        ++ctxroot_parent_unsettled_;
+    }
+    else {
+        ++pending_rejected_;
+        ++bind_orphaned_;
+    }
+}
+
+bool ContextManager::bind_child(hng::Process child, const ContextKey& root,
+                                hng::RelationTimePoint now, uint32_t depth)
+{
+    if (find_tombstone(child, now).has_value()) {
+        return false;
+    }
+
+    bool applied = false;
+    {
+        std::unique_lock lock(to_context_root.smtx);
+        auto it = to_context_root.map.find(child);
+        if (it == to_context_root.map.end()) {
+            to_context_root.map.emplace(child, root);
+            to_context_root.processes_by_root[root].insert(child);
+            applied = true;
+        }
+        else if (it->second == root) {
+            applied = true;  // 同根重复挂靠：幂等
+        }
+        else {
+            applied = false;  // 归属不可变，保留首条
+        }
+    }
+
+    if (!applied) {
+        ++ownership_conflict_;
+        return false;
+    }
+
+    drain_waiters(child, now, depth + 1);
+    return true;
+}
+
+void ContextManager::drain_waiters(hng::Process anchor,
+                                   hng::RelationTimePoint now, uint32_t depth)
+{
+    if (depth > kMaxWaitDepth) {
+        return;
+    }
+
+    auto root = resolve_root_of(anchor, now);
+    if (!root.has_value()) {
+        return;
+    }
+    auto anchorID = resolve_context_id_of(anchor, now);
+    if (!anchorID.has_value()) {
+        return;
+    }
+
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, LinkAction>::Entry>
+        links = link_pending_.take(anchor);
+    if (!links.empty()) {
+        std::unique_lock lock(parent.smtx);
+        for (const auto& entry : links) {
+            parent.map.emplace(entry.action.contextID, *anchorID);
+        }
+    }
+    pending_resolved_ += links.size();
+
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, std::monostate>::Entry>
+        binds = bind_pending_.take(anchor);
+    for (const auto& entry : binds) {
+        if (bind_child(entry.waiter, *root, now, depth)) {
+            ++pending_resolved_;
+        }
+    }
+}
+
+void ContextManager::fail_waiters(hng::Process anchor, uint32_t depth)
+{
+    if (depth > kMaxWaitDepth) {
+        return;
+    }
+
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, LinkAction>::Entry>
+        links = link_pending_.take(anchor);
+    if (!links.empty()) {
+        std::unique_lock lock(parent.smtx);
+        for (const auto& entry : links) {
+            parent.map.erase(entry.action.contextID);
+        }
+    }
+    parent_missing_ += links.size();
+
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, std::monostate>::Entry>
+        binds = bind_pending_.take(anchor);
+    for (const auto& entry : binds) {
+        ++bind_orphaned_;
+        fail_waiters(entry.waiter, depth + 1);
+    }
+}
+
+void ContextManager::expire_pending(hng::RelationTimePoint now)
+{
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, LinkAction>::Entry>
+        expired_links = link_pending_.expire(now);
+    if (!expired_links.empty()) {
+        std::unique_lock lock(parent.smtx);
+        for (const auto& entry : expired_links) {
+            parent.map.erase(entry.action.contextID);
+        }
+    }
+    pending_expired_ += expired_links.size();
+    parent_missing_  += expired_links.size();
+
+    const std::vector<typename hng::DeferredRelationTable<
+        hng::Process, hng::Process, std::monostate>::Entry>
+        expired_binds = bind_pending_.expire(now);
+    for (const auto& entry : expired_binds) {
+        ++pending_expired_;
+        ++bind_orphaned_;
+        fail_waiters(entry.waiter, 0);
+    }
+
+    tombstones_.expire(now);
+}
+
+void ContextManager::refresh_depths()
+{
+    pending_depth_.store(link_pending_.size() + bind_pending_.size(),
+                         std::memory_order_relaxed);
+    tombstone_depth_.store(tombstones_.size(), std::memory_order_relaxed);
 }
 
 ContextManagerStats ContextManager::stats() const
 {
     ContextManagerStats snapshot;
+    snapshot.pending_deferred = pending_deferred_.load(std::memory_order_relaxed);
+    snapshot.pending_resolved = pending_resolved_.load(std::memory_order_relaxed);
+    snapshot.pending_rejected = pending_rejected_.load(std::memory_order_relaxed);
+    snapshot.pending_expired  = pending_expired_.load(std::memory_order_relaxed);
+    snapshot.pending_cancelled =
+        pending_cancelled_.load(std::memory_order_relaxed);
+    snapshot.pending_depth  = pending_depth_.load(std::memory_order_relaxed);
+    snapshot.bind_orphaned  = bind_orphaned_.load(std::memory_order_relaxed);
+    snapshot.extra_orphaned = extra_orphaned_.load(std::memory_order_relaxed);
+    snapshot.parent_missing = parent_missing_.load(std::memory_order_relaxed);
+    snapshot.late_register  = late_register_.load(std::memory_order_relaxed);
+    snapshot.late_bind      = late_bind_.load(std::memory_order_relaxed);
+    snapshot.duplicate_context =
+        duplicate_context_.load(std::memory_order_relaxed);
+    snapshot.ownership_conflict =
+        ownership_conflict_.load(std::memory_order_relaxed);
+    snapshot.tombstone_hits  = tombstone_hits_.load(std::memory_order_relaxed);
+    snapshot.tombstone_depth = tombstone_depth_.load(std::memory_order_relaxed);
     snapshot.ctxroot_parent_unsettled =
         ctxroot_parent_unsettled_.load(std::memory_order_relaxed);
     snapshot.unknown_unregister =
@@ -424,43 +738,90 @@ ContextManagerStats ContextManager::stats() const
     return snapshot;
 }
 
-void ContextManager::on_process_exited_(hng::Process p)
+void ContextManager::on_process_exited_(hng::Process p,
+                                        hng::RelationTimePoint now)
 {
-    std::optional<ContextKey> emptied_root;
+    if (find_tombstone(p, now).has_value()) {
+        return;  // 已处理过该进程的退出
+    }
 
+    // 墓碑必须在移除归属之前写入，供迟到的注册/挂靠拒绝
+    ContextTombstone info;
+    {
+        std::shared_lock lock(to_context_root.smtx);
+        auto it = to_context_root.map.find(p);
+        if (it != to_context_root.map.end()) {
+            info.last_root = it->second;
+        }
+    }
+    if (info.last_root.has_value()) {
+        info.context_id = context_id_of(*info.last_root).value_or(0);
+    }
+    tombstones_.add(p, info, now);
+
+    if (link_pending_.cancel(p).has_value()) {
+        ++pending_cancelled_;
+    }
+    if (bind_pending_.cancel(p).has_value()) {
+        ++pending_cancelled_;
+    }
+
+    auto links = link_pending_.take(p);
+    auto binds = bind_pending_.take(p);
+    auto root  = resolve_root_of(p, now);
+
+    // 先收敛以 p 为锚点的挂靠：子进程成为成员，context 不会因 p 退出而清空
+    if (root.has_value()) {
+        for (const auto& entry : binds) {
+            if (bind_child(entry.waiter, *root, now, 0)) {
+                ++pending_resolved_;
+            }
+        }
+    }
+    else {
+        for (const auto& entry : binds) {
+            ++bind_orphaned_;
+            fail_waiters(entry.waiter, 0);
+        }
+    }
+
+    std::optional<ContextKey> emptied_root;
     {
         std::unique_lock lock(to_context_root.smtx);
         auto it = to_context_root.map.find(p);
-        if (it == to_context_root.map.end()) {
-            return;  // 未归属或已清理：重复投递无副作用
-        }
+        if (it != to_context_root.map.end()) {
+            const ContextKey current_root = it->second;
+            to_context_root.map.erase(it);
 
-        const ContextKey root = it->second;
-        to_context_root.map.erase(it);
-
-        auto members = to_context_root.processes_by_root.find(root);
-        if (members == to_context_root.processes_by_root.end()) {
-            return;  // 索引不一致：不据此删除 context
-        }
-        members->second.erase(p);
-        if (members->second.empty()) {
-            to_context_root.processes_by_root.erase(members);
-            emptied_root = root;
+            auto members = to_context_root.processes_by_root.find(current_root);
+            if (members != to_context_root.processes_by_root.end()) {
+                members->second.erase(p);
+                if (members->second.empty()) {
+                    to_context_root.processes_by_root.erase(members);
+                    emptied_root = current_root;
+                }
+            }
         }
     }
 
-    if (!emptied_root.has_value()) {
-        return;  // 仍有实成员：context 保留，键仍指向原根
+    if (emptied_root.has_value() && context_exists(*emptied_root)) {
+        delContextID(hng::Process{emptied_root->pid, emptied_root->start_time},
+                     now);
     }
 
-    // 显式注销可能已删除该 context；此处只处理仍然存在的情形，避免
-    // unknown_unregister 误计
-    const hng::Process root{emptied_root->pid, emptied_root->start_time};
-    {
-        std::shared_lock lock(contexts.smtx);
-        if (contexts.map.find(*emptied_root) == contexts.map.end()) {
-            return;
+    // 再应用以 p 为锚点的父链接：context 已删时保持森林根
+    std::optional<uint32_t> surviving_id;
+    if (root.has_value()) {
+        surviving_id = context_id_of(*root);
+    }
+    for (const auto& entry : links) {
+        if (surviving_id.has_value()) {
+            std::unique_lock lock(parent.smtx);
+            parent.map.emplace(entry.action.contextID, *surviving_id);
+            ++pending_resolved_;
+        }
+        else {
+            ++parent_missing_;
         }
     }
-    delContextID(root);
 }

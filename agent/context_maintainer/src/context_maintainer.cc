@@ -80,8 +80,9 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
 
         if (observed(verdict->parent, verdict->child)) {
             if (ctx_join_service_) {
-                ctx_join_service_->bind_to_ctxroot(verdict->child,
-                                                   verdict->parent);
+                ctx_join_service_->bind_to_ctxroot(
+                    verdict->child,
+                    ContextParentRef{verdict->parent, /*expected=*/true});
             }
         }
         else {
@@ -204,7 +205,8 @@ ContextDeriveDecision ContextMaintainer::finalize_derive(
 
     if (ctx_join_service_) {
         // 父进程链接交给控制平面在落地时解析
-        ctx_join_service_->register_context(v.child, d, v.parent);
+        ctx_join_service_->register_context(
+            v.child, d, ContextParentRef{v.parent, observed(v.parent, v.child)});
     }
     return d;
 }
