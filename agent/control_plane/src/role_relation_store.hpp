@@ -52,7 +52,7 @@ struct RoleRecord {
     /// @invariant ⊇ 归属表中该 roleID 的全部键
     std::unordered_set<hng::Process> entries;
 
-    /// 锚点已被完全删除而角色未退出，是 RoleStoreStats::anchors_removed
+    /// 锚点已退出而角色未退出，是 RoleStoreStats::anchors_removed
     /// 的记账依据
     /// @note 锚点更换时清除：此处说的是当时那个锚点
     bool anchor_removed = false;
@@ -85,11 +85,11 @@ class RoleRelationStore {
     /// @note 父进程未归属时丢弃；该事件不再补账，由后续 JOIN 的重读兜底
     void bind_to_role(hng::Process child, hng::Process parent);
 
-    /// @brief 进程被完全删除：删其归属条目，不改变角色存在性
+    /// @brief 进程已退出：删其归属条目，不改变角色存在性
     /// @note 反向索引里的键留存，LEAVE 删时核对当前值即无副作用
     /// @note p 是该角色的锚点时把它计入 anchors_removed，
     ///       该角色退出或更换锚点后退出该计数
-    void on_process_removed(hng::Process p);
+    void on_process_exited(hng::Process p);
 
     /// @brief 进程 → roleID；未归属时为空
     /// @note 归属条目与角色记录同生共死，命中即是在册角色
@@ -98,7 +98,7 @@ class RoleRelationStore {
     /// @brief 角色的对外视图
     std::optional<hng::Role> role(uint32_t role_id) const;
 
-    /// @brief 角色的当前锚点；角色不存在或锚点已被完全删除时为空
+    /// @brief 角色的当前锚点；角色不存在或锚点已退出时为空
     std::optional<hng::Process> main_process(uint32_t role_id) const;
 
     /// @brief 全部角色的对外视图，按 roleID 升序

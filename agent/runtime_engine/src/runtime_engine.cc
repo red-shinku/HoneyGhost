@@ -13,9 +13,10 @@ RuntimeEngine::RuntimeEngine(
     hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue,
     hng::SPSC_Queue<hng::file_semantic_data>* file_queue,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-    RoleJoinService* role_join, RoleLookupService* role_lookup)
+    ProcessUpdateService* process_update, RoleJoinService* role_join,
+    RoleLookupService* role_lookup)
     : pipeline_(syscall_queue, file_queue, ctx_maintainer, process_join,
-                role_join, role_lookup)
+                process_update, role_join, role_lookup)
 {
 }
 

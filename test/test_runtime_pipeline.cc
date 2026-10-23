@@ -86,13 +86,16 @@ class FakeContextService final : public ContextLookupService,
         return std::nullopt;
     }
     ContextManagerStats stats() const override { return {}; }
-    void register_contextID(hng::Process p, ContextDeriveDecision nd,
-                            uint32_t) override
+    void register_context(hng::Process p, ContextDeriveDecision nd,
+                          hng::Process) override
     {
         ++register_calls;
         ctx[Key{p}] = nd.contextID;
     }
-    void unregister_contextID(hng::Process p) override { ctx.erase(Key{p}); }
+    void register_extra_context(hng::Process, uint32_t, hng::contextattr) override
+    {
+    }
+    void unregister_context(hng::Process p) override { ctx.erase(Key{p}); }
     void bind_to_ctxroot(hng::Process, hng::Process) override {}
     void set_attr(hng::Process, uint32_t, hng::contextattr) override {}
 };
@@ -108,6 +111,22 @@ class FakeProcessJoin final : public ProcessJoinService {
         registered.push_back(ehead);
     }
     void unregister_pid(hng::Process p) override { unregistered.push_back(p); }
+};
+
+/// 记录进程镜像更新通知
+class FakeProcessUpdate final : public ProcessUpdateService {
+   public:
+    struct Update {
+        hng::Process process;
+        std::string exe;
+    };
+
+    std::vector<Update> updates;
+
+    void update_exe_image(hng::Process p, std::string exe) override
+    {
+        updates.push_back(Update{p, std::move(exe)});
+    }
 };
 
 /// 记录角色继承通知
@@ -160,14 +179,15 @@ class FakeRoleLookup final : public RoleLookupService {
 struct Env {
     FakeContextService ctx_svc;
     FakeProcessJoin process_join;
+    FakeProcessUpdate process_update;
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
     hng::SPSC_Queue<hng::syscall_semantic_data> sys_q{16};
     hng::SPSC_Queue<hng::file_semantic_data> file_q{16};
 
     ContextMaintainer cm;
-    RuntimePipeline pipe{&sys_q,        &file_q,    &cm,
-                         &process_join, &role_join, &role_lookup};
+    RuntimePipeline pipe{&sys_q,          &file_q,    &cm,         &process_join,
+                         &process_update, &role_join, &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -232,7 +252,7 @@ hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* pat
 /// 一条草稿的默认决策（无派生）
 bool is_default_decision(const ContextDeriveDecision& d)
 {
-    return !d.should_derive && d.contextID == 0;
+    return d.kind == ContextDecisionKind::NONE && d.contextID == 0;
 }
 
 /// 逐轮取事件直到出现空轮，最多取 max_events 条
@@ -261,7 +281,7 @@ void run_empty()
 
     // 两条队列都未接线：取轮不崩、不产出
     RuntimePipeline bare(nullptr, nullptr, &env.cm, &env.process_join,
-                         &env.role_join, &env.role_lookup);
+                         &env.process_update, &env.role_join, &env.role_lookup);
     CHECK(bare.take_round(drafts, 2) == 0, "未接线的队列不产出草稿");
 }
 
@@ -337,11 +357,15 @@ void run_exec_derive()
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与 exec 分两轮各取出一条");
 
     const RuntimeDraft& d = drafts[1];
-    CHECK(d.decision.should_derive, "解释器 exec 应派生");
+    CHECK(d.decision.kind == ContextDecisionKind::DERIVE, "解释器 exec 应派生");
     CHECK(env.ctx_svc.register_calls == 1, "派生应登记到控制平面");
     CHECK(d.event.runtimeInfo.contextID == d.decision.contextID,
           "派生后的归属快照应即新 context");
     CHECK(d.event.runtimeInfo.contextID != 0, "新 context 不应是未落定哨兵");
+    CHECK(env.process_update.updates.size() == 1 &&
+              env.process_update.updates[0].process == mk(7000, 700) &&
+              env.process_update.updates[0].exe == "/bin/bash",
+          "exec 应按语义化路径更新进程镜像");
 }
 
 void run_exec_keep_keeps_snapshot()
@@ -377,7 +401,7 @@ void run_plain_event()
     ContextMaintainer cm(2);
     cm.set_context_service(&env.ctx_svc, &env.ctx_svc, &env.ctx_svc);
     RuntimePipeline pipe(&env.sys_q, nullptr, &cm, &env.process_join,
-                         &env.role_join, &env.role_lookup);
+                         &env.process_update, &env.role_join, &env.role_lookup);
 
     const hng::Process worker = mk(9100, 910);
     cm.on_birth(worker, parent);
@@ -390,7 +414,8 @@ void run_plain_event()
 
     env.sys_q.push(make_credential(9100, 910, 50, 500));
     CHECK(pipe.take_round(drafts, 2) == 1, "普通事件取出一条(2)");
-    CHECK(drafts[0].decision.should_derive, "配额耗尽应由普通事件触发派生");
+    CHECK(drafts[0].decision.kind == ContextDecisionKind::DERIVE,
+          "配额耗尽应由普通事件触发派生");
     CHECK(drafts[0].event.runtimeInfo.contextID == drafts[0].decision.contextID,
           "派生后的归属快照应即新 context");
 }
@@ -403,7 +428,7 @@ void run_file_event()
 
     // 只接线文件队列：syscall 队列为空指针
     RuntimePipeline pipe(nullptr, &env.file_q, &env.cm, &env.process_join,
-                         &env.role_join, &env.role_lookup);
+                         &env.process_update, &env.role_join, &env.role_lookup);
 
     env.sys_q.push(make_lifecycle(1, 1, 0, 0, "fork"));  // 未接线，应被忽略
     env.file_q.push(make_file(5500, 555, "/etc/passwd"));

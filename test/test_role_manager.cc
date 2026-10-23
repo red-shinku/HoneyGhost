@@ -6,7 +6,7 @@
  *  - 三类事件经队列落地：加入、退出、锚点更换，出口恰好一次；
  *  - 出口回调内反查：加入必命中、退出必失配；
  *  - 加入时重读补上「枚举 → 落地」窗口的 fork，锚点无条件并入，退出不重读；
- *  - bind_to_role 与 on_process_removed 经同一条队列落地，不产通知；
+ *  - bind_to_role 与 on_process_exited 经同一条队列落地，不产通知；
  *  - members()：按记录的 cgroup 路径实时重枚举、角色不存在为空、
  *    路径不可读时返回已收集结果且不改动任何表；
  *  - 入口幂等重放与未知实例键不产通知；
@@ -261,7 +261,7 @@ void run_main_process()
     std::optional<hng::Process> main = manager.main_process(role);
     CHECK(main.has_value() && *main == proc(100, 1000), "应转发锚点");
 
-    manager.on_process_removed(proc(100, 1000));
+    manager.on_process_exited(proc(100, 1000));
     manager.on_role_event(mk_join("barrier", 900, 9000));
     CHECK(sink.wait_calls(2), "屏障事件应通知");
     CHECK(!manager.main_process(role).has_value(), "锚点删除后应返回空");
@@ -381,17 +381,17 @@ void run_bind_and_removed()
     CHECK(!manager.lookup(proc(101, 1001)).has_value(),
           "父未归属的 fork 应被丢弃");
 
-    // 父已归属：继承；进程被完全删除后条目清掉
+    // 父已归属：继承；进程退出后条目清掉
     manager.bind_to_role(proc(102, 1002), proc(100, 1000));
-    manager.on_process_removed(proc(102, 1002));
-    manager.on_process_removed(proc(100, 1000));
+    manager.on_process_exited(proc(102, 1002));
+    manager.on_process_exited(proc(100, 1000));
     manager.on_role_event(mk_join("b", 400, 4000, {}));
     CHECK(sink.wait_calls(2), "屏障事件应通知");
 
     CHECK(sink.calls().size() == 2, "绑定与清理入口不得产通知");
     CHECK(!manager.lookup(proc(102, 1002)).has_value(), "删除后应无残留");
     CHECK(!manager.lookup(proc(100, 1000)).has_value(), "锚点的归属应被删");
-    CHECK(manager.role(role).has_value(), "锚点被删不改变角色存在性");
+    CHECK(manager.role(role).has_value(), "锚点退出不改变角色存在性");
     CHECK(manager.stats().store.anchors_removed == 1, "锚点已删应计入 gauge");
 }
 
@@ -543,7 +543,7 @@ void run_stop_semantics()
         manager.stop();
         manager.on_role_event(mk_join("a", 100, 1000, {}));
         manager.bind_to_role(proc(1, 1), proc(2, 2));
-        manager.on_process_removed(proc(3, 3));
+        manager.on_process_exited(proc(3, 3));
         CHECK(manager.stats().queue_rejected == 3,
               "停止后三类入队都应被拒并计数");
 
@@ -576,7 +576,7 @@ void run_concurrent_producers()
                 manager.on_role_event(mk_join(key, pid, pid * 10));
                 manager.bind_to_role(proc(pid + 1, pid * 10 + 1),
                                      proc(pid, pid * 10));
-                manager.on_process_removed(proc(pid + 2, pid * 10 + 2));
+                manager.on_process_exited(proc(pid + 2, pid * 10 + 2));
             }
         });
     }

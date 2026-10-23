@@ -8,19 +8,17 @@ ProcessManager::ProcessManager() {}
 
 ProcessManager::~ProcessManager() {}
 
-void ProcessManager::set_context_service(ContextClearService* c_svc)
+void ProcessManager::add_process_lifecycle_sink(ProcessLifecycleSink* sink)
 {
-    ctx_clear_service_ = c_svc;
+    if (sink == nullptr) {
+        return;
+    }
+    lifecycle_sinks_.push_back(sink);
 }
 
 void ProcessManager::set_role_join_service(RoleJoinService* service)
 {
     role_join_service_ = service;
-}
-
-void ProcessManager::set_role_clear_service(RoleClearService* service)
-{
-    role_clear_service_ = service;
 }
 
 std::optional<hng::ProcessMessage> ProcessManager::lookup(hng::Process p) const
@@ -67,10 +65,8 @@ std::optional<hng::Process> ProcessManager::resolve(uint32_t pid) const
         if (entry.first.pid != pid) {
             continue;
         }
-        if (!latest ||
-            entry.first.pid_start_time > latest->pid_start_time) {
-            latest =
-                hng::Process{entry.first.pid, entry.first.pid_start_time};
+        if (!latest || entry.first.pid_start_time > latest->pid_start_time) {
+            latest = hng::Process{entry.first.pid, entry.first.pid_start_time};
         }
     }
     return latest;
@@ -78,12 +74,27 @@ std::optional<hng::Process> ProcessManager::resolve(uint32_t pid) const
 
 void ProcessManager::register_pid(hng::event_head ehead)
 {
-    task.push(Task{Task::Kind::ADD, hng::ProcessMessage(ehead), {}});
+    Task t;
+    t.kind = Task::Kind::ADD;
+    t.add  = hng::ProcessMessage(ehead);
+    task.push(std::move(t));
 }
 
 void ProcessManager::unregister_pid(hng::Process p)
 {
-    task.push(Task{Task::Kind::REMOVE, {}, p});
+    Task t;
+    t.kind   = Task::Kind::REMOVE;
+    t.remove = p;
+    task.push(std::move(t));
+}
+
+void ProcessManager::update_exe_image(hng::Process p, std::string exe)
+{
+    Task t;
+    t.kind          = Task::Kind::UPDATE_IMAGE;
+    t.image_process = p;
+    t.image_exe     = std::move(exe);
+    task.push(std::move(t));
 }
 
 void ProcessManager::run()
@@ -105,6 +116,9 @@ void ProcessManager::land(Task& t)
             break;
         case Task::Kind::REMOVE:
             deletePID(t.remove);
+            break;
+        case Task::Kind::UPDATE_IMAGE:
+            update_exe_image_(t.image_process, std::move(t.image_exe));
             break;
     }
 }
@@ -161,19 +175,46 @@ void ProcessManager::deletePID(hng::Process p)
         std::unique_lock lock(shard_ref.smtx);
 
         auto it = shard_ref.process.find(p.pid);
-        if (it == shard_ref.process.end()) {
-            return;
+        if (it != shard_ref.process.end() &&
+            p.pid_start_time == it->second.pid_start_time) {
+            retired.emplace(std::move(it->second));
+            shard_ref.process.erase(it);
         }
-        if (p.pid_start_time != it->second.pid_start_time) {
-            // 该 pid 已被复用：本条是旧实例迟到的退出事件，实例早已退役，
-            // 忽略即可（重复投递）
-            return;
-        }
-        retired.emplace(std::move(it->second));
-        shard_ref.process.erase(it);
     }  // 释放本分片锁后再退役,避免同线程重入自锁
 
+    if (!retired.has_value()) {
+        // 未登记、已退役，或同 pid 的迟到退出：仍按身份转发，供下游清理
+        // 陈旧归属；下游按身份匹配，不影响同 pid 的新实例
+        notify_process_exited(p);
+        return;
+    }
+
     retire(std::move(*retired));
+}
+
+void ProcessManager::update_exe_image_(hng::Process p, std::string exe)
+{
+    // 存活进程优先；身份不符表示 pid 已被新实例复用，不得改写
+    {
+        auto& shard_ref = ptree_shard[shard_index(p.pid)];
+        std::unique_lock lock(shard_ref.smtx);
+
+        auto it = shard_ref.process.find(p.pid);
+        if (it != shard_ref.process.end() &&
+            it->second.pid_start_time == p.pid_start_time) {
+            it->second.exe = std::move(exe);
+            return;
+        }
+    }
+
+    // 已转入虚拟根：保留最后镜像
+    auto& vshard_ref = vptree_root[shard_index(p.pid)];
+    std::unique_lock vlock(vshard_ref.smtx);
+
+    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
+    if (it != vshard_ref.vprocess.end()) {
+        it->second.exe = std::move(exe);
+    }
 }
 
 void ProcessManager::retire(hng::ProcessMessage&& old)
@@ -182,17 +223,15 @@ void ProcessManager::retire(hng::ProcessMessage&& old)
     const hng::Process parent{old.ppid, old.ppid_start_time};
     const bool keep_as_vroot = old.child_count > 0;
 
+    // 实进程已退出：先通知，再决定是否保留追溯用的虚拟根
+    notify_process_exited(self);
+
     if (keep_as_vroot) {
+        old.kind         = hng::ProcessKind::VIRTUAL;
         auto& vshard_ref = vptree_root[shard_index(old.pid)];
         std::unique_lock vlock(vshard_ref.smtx);
         vshard_ref.vprocess.emplace(VProcessKey{old.pid, old.pid_start_time},
                                     std::move(old));
-    }
-    else {
-        // 无存活子进程：不保留虚拟根，进程被完全删除。
-        // 先报自己再递减父计数：后者可能引发父的虚拟根驱逐与通知，
-        // 由此通知沿子到父的次序发出
-        notify_process_fully_removed(self);
     }
 
     // 父进程可能在 ptree(存活)或虚拟根(已退出)中,由函数内部回退处理
@@ -245,27 +284,18 @@ void ProcessManager::update_child_count_decrease(hng::Process p)
 void ProcessManager::update_vroot_child_count_decrease(hng::Process p)
 {
     auto& vshard_ref = vptree_root[shard_index(p.pid)];
-    bool evicted     = false;  // 虚拟根被逐出 → 进程被完全删除
+    std::unique_lock lock(vshard_ref.smtx);
 
-    {
-        std::unique_lock lock(vshard_ref.smtx);
-
-        auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
-        if (it == vshard_ref.vprocess.end()) {
-            return;
-        }
-        if (it->second.child_count > 0) {
-            it->second.child_count -= 1;
-        }
-        if (it->second.child_count == 0) {
-            // 子进程计数归零,不再被追溯,清理虚拟根节点
-            vshard_ref.vprocess.erase(it);
-            evicted = true;
-        }
-    }  // 释放分片锁后再上报,避免跨组件持锁
-
-    if (evicted) {
-        notify_process_fully_removed(p);
+    auto it = vshard_ref.vprocess.find(VProcessKey{p.pid, p.pid_start_time});
+    if (it == vshard_ref.vprocess.end()) {
+        return;
+    }
+    if (it->second.child_count > 0) {
+        it->second.child_count -= 1;
+    }
+    if (it->second.child_count == 0) {
+        // 子进程计数归零,不再被追溯,清理虚拟根节点
+        vshard_ref.vprocess.erase(it);
     }
 }
 
@@ -276,12 +306,9 @@ ProcessManagerStats ProcessManager::stats() const
     return snapshot;
 }
 
-void ProcessManager::notify_process_fully_removed(hng::Process p)
+void ProcessManager::notify_process_exited(hng::Process p)
 {
-    if (ctx_clear_service_) {
-        ctx_clear_service_->on_process_removed(p);
-    }
-    if (role_clear_service_) {
-        role_clear_service_->on_process_removed(p);
+    for (ProcessLifecycleSink* sink : lifecycle_sinks_) {
+        sink->on_process_exited(p);
     }
 }

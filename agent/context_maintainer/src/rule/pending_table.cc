@@ -37,14 +37,9 @@ std::optional<DeriveVerdict> PendingTable::on_exec(
     const PendingEntry entry = it->second;  // 拷贝后擦除，避免悬垂引用
     table_.erase(it);
 
-    DeriveVerdict v =
-        decide_exec(p, entry.parent, entry.parent_context_is_interpreter,
-                    normalized_filename);
-    if (v.derive) {
-        return v;
-    }
-    // KEEP：留在父 context，无派生动作
-    return std::nullopt;
+    // KEEP 与 DERIVE 都是判定结果；调用方按 derive 区分如何落地
+    return decide_exec(p, entry.parent, entry.parent_context_is_interpreter,
+                       normalized_filename);
 }
 
 std::optional<DeriveVerdict> PendingTable::on_event(hng::Process p)

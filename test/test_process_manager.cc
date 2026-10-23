@@ -5,11 +5,11 @@
  * 覆盖 ProcessManager：
  *  - 注册 / 注销经队列在消费线程上落地，查询按 (pid, start_time) 判等；
  *  - 角色归属转交：真正插入或替换后转交一次，幂等重放不转交；
- *  - pid 复用：旧实例按退役路径处理——无存活子进程时立刻报完全删除，
- *    有子进程时转入虚拟根、待其子进程退出后才报，且不虚增其父进程的孩子计数；
- *  - 完全删除的两条路径：无子进程直接删除、虚拟根计数归零后驱逐，
- *    两条都通知 context 与角色两路清理；
- *  - 未知进程与重复注销：不报、不崩；
+ *  - pid 复用：旧实例按退役路径处理——替换时即报退出，
+ *    有子进程时转入虚拟根供追溯，且不虚增其父进程的孩子计数；
+ *  - 退出通知的两条路径：无子进程直接退出、有子进程转入虚拟根后退出，
+ *    两条都在实进程退出时通知全部订阅者，虚拟根驱逐不重复通知；
+ *  - 未登记与重复退出：仍按身份转发，由订阅方幂等处理；
  *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
  *  - 多线程并发注册 / 注销后状态自洽（供 TSAN 构建复验）。
  * @author red_shinku
@@ -75,8 +75,8 @@ bool wait_until(const std::function<bool()>& pred, int timeout_ms = 5000)
 /// 三个注入点的记录：计数为原子（消费线程写、用例线程读），明细只在停止后读
 struct Recorder {
     std::atomic<std::size_t> binds{0};
-    std::atomic<std::size_t> ctx_removed{0};
-    std::atomic<std::size_t> role_removed{0};
+    std::atomic<std::size_t> ctx_exited{0};
+    std::atomic<std::size_t> role_exited{0};
 
     std::mutex mutex;
     std::vector<std::pair<hng::Process, hng::Process>> bind_detail;
@@ -84,21 +84,27 @@ struct Recorder {
     std::vector<hng::Process> role_detail;
 };
 
-class FakeContextClear : public ContextClearService {
+/// 两个订阅方各持一个实例，用于验证多播
+class FakeLifecycleSink : public ProcessLifecycleSink {
    public:
-    explicit FakeContextClear(Recorder& rec) : rec_(rec) {}
+    FakeLifecycleSink(Recorder& rec, bool context_side)
+        : rec_(rec), context_side_(context_side)
+    {
+    }
 
-    void on_process_removed(hng::Process p) override
+    void on_process_exited(hng::Process p) override
     {
         {
             std::lock_guard lock(rec_.mutex);
-            rec_.ctx_detail.push_back(p);
+            (context_side_ ? rec_.ctx_detail : rec_.role_detail).push_back(p);
         }
-        rec_.ctx_removed.fetch_add(1);
+        (context_side_ ? rec_.ctx_exited : rec_.role_exited)
+            .fetch_add(1, std::memory_order_relaxed);
     }
 
    private:
     Recorder& rec_;
+    bool context_side_;
 };
 
 class FakeRoleJoin : public RoleJoinService {
@@ -112,23 +118,6 @@ class FakeRoleJoin : public RoleJoinService {
             rec_.bind_detail.emplace_back(child, parent);
         }
         rec_.binds.fetch_add(1);
-    }
-
-   private:
-    Recorder& rec_;
-};
-
-class FakeRoleClear : public RoleClearService {
-   public:
-    explicit FakeRoleClear(Recorder& rec) : rec_(rec) {}
-
-    void on_process_removed(hng::Process p) override
-    {
-        {
-            std::lock_guard lock(rec_.mutex);
-            rec_.role_detail.push_back(p);
-        }
-        rec_.role_removed.fetch_add(1);
     }
 
    private:
@@ -171,6 +160,9 @@ void run_register_and_lookup()
               msg->ppid == 1 && msg->ppid_start_time == 10,
           "进程记录应带 ppid 与各自的 start_time");
     CHECK(msg.has_value() && msg->child_count == 0, "新进程的孩子计数应为 0");
+    CHECK(msg.has_value() && msg->kind == hng::ProcessKind::REAL,
+          "注册的进程应为 REAL");
+    CHECK(msg.has_value() && msg->exe.empty(), "注册时镜像为空");
     CHECK(!manager.lookup(proc(100, 9999)).has_value(),
           "同 pid 不同 start_time 应失配");
     CHECK(!manager.lookup(proc(101, 1000)).has_value(), "未注册的 pid 应失配");
@@ -211,24 +203,24 @@ void run_bind_transfer()
 void run_pid_reuse()
 {
     Recorder rec;
-    FakeContextClear ctx(rec);
-    FakeRoleClear roles(rec);
+    FakeLifecycleSink ctx(rec, true);
+    FakeLifecycleSink roles(rec, false);
     FakeRoleJoin join(rec);
     ProcessManager manager;
-    manager.set_context_service(&ctx);
-    manager.set_role_clear_service(&roles);
+    manager.add_process_lifecycle_sink(&ctx);
+    manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
     Runner runner(manager);
 
-    // 覆盖的旧实例无存活子进程：应立刻报完全删除
+    // 覆盖的旧实例无存活子进程：替换时即报退出
     manager.register_pid(head(200, 2000, 1, 10));
     CHECK(wait_until([&] { return manager.lookup(proc(200, 2000)).has_value(); }),
           "注册应落地");
     manager.register_pid(head(200, 2001, 1, 10));  // pid 复用
     CHECK(wait_until([&] {
-              return rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1;
+              return rec.ctx_exited.load() == 1 && rec.role_exited.load() == 1;
           }),
-          "无子进程的旧实例应立刻报完全删除");
+          "无子进程的旧实例在替换时应报退出");
     CHECK(!manager.lookup(proc(200, 2000)).has_value(), "旧实例应失配");
     CHECK(manager.lookup(proc(200, 2001)).has_value(), "新实例应可查");
     {
@@ -237,7 +229,7 @@ void run_pid_reuse()
               "报的应是旧实例");
     }
 
-    // 覆盖的旧实例有存活子进程：转入虚拟根，仍可追溯，且不报完全删除
+    // 覆盖的旧实例有存活子进程：替换时即报退出，转入虚拟根保留追溯
     manager.register_pid(head(300, 3000, 1, 10));
     manager.register_pid(head(301, 3001, 300, 3000));  // 子进程
     CHECK(wait_until([&] { return manager.lookup(proc(301, 3001)).has_value(); }),
@@ -249,42 +241,44 @@ void run_pid_reuse()
     manager.register_pid(head(500, 5000, 1, 10));  // 屏障
     CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
           "屏障应落地");
-    CHECK(rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1,
-          "有存活子进程的旧实例不得报完全删除");
+    CHECK(wait_until([&] {
+              return rec.ctx_exited.load() == 2 && rec.role_exited.load() == 2;
+          }),
+          "转入虚拟根的旧实例在退出时即应通知，不等驱逐");
     CHECK(manager.lookup(proc(300, 3000)).has_value(),
           "旧实例应留在虚拟根里，仍可追溯");
     CHECK(manager.lookup(proc(300, 3002)).has_value(), "新实例应可查");
 
-    // 子进程退出后，旧实例在虚拟根里的计数归零，此时才报完全删除
+    // 子进程退出：报子进程自身；虚拟根驱逐不再重复通知
     manager.unregister_pid(proc(301, 3001));
     CHECK(wait_until([&] {
-              return rec.ctx_removed.load() == 3 && rec.role_removed.load() == 3;
+              return rec.ctx_exited.load() == 3 && rec.role_exited.load() == 3;
           }),
-          "最后一个子进程退出后应报子进程与旧实例两者的完全删除");
+          "子进程退出应报一次，虚拟根驱逐不得重复通知");
     CHECK(!manager.lookup(proc(300, 3000)).has_value(), "被驱逐的旧实例应失配");
     {
         std::lock_guard lock(rec.mutex);
         CHECK(rec.ctx_detail.size() == 3 &&
-                  rec.ctx_detail[1] == proc(301, 3001) &&
-                  rec.ctx_detail[2] == proc(300, 3000),
-              "应先报子进程、后报被驱逐的旧实例");
+                  rec.ctx_detail[1] == proc(300, 3000) &&
+                  rec.ctx_detail[2] == proc(301, 3001),
+              "旧实例在替换时通知，子进程在其退出时通知");
     }
 
-    // 父进程的孩子计数不得被虚增：爷爷最终仍应能被完全删除
+    // 父进程的孩子计数不得被虚增：爷爷最终仍应能正常退出
     manager.register_pid(head(400, 4000, 1, 10));      // 爷爷
     manager.register_pid(head(401, 4001, 400, 4000));  // 父
     manager.register_pid(head(401, 4002, 400, 4000));  // 覆盖父
-    CHECK(wait_until([&] { return rec.ctx_removed.load() == 4; }),
-          "被覆盖的父应报完全删除");
+    CHECK(wait_until([&] { return rec.ctx_exited.load() == 4; }),
+          "被覆盖的父应报退出");
     CHECK(manager.lookup(proc(400, 4000))->child_count == 1,
           "爷爷的孩子计数应仍是 1，不得虚增");
 
     manager.unregister_pid(proc(401, 4002));
-    CHECK(wait_until([&] { return rec.ctx_removed.load() == 5; }),
-          "新父退出应报完全删除");
+    CHECK(wait_until([&] { return rec.ctx_exited.load() == 5; }),
+          "新父退出应报退出");
     manager.unregister_pid(proc(400, 4000));
-    CHECK(wait_until([&] { return rec.ctx_removed.load() == 6; }),
-          "孩子计数不虚增，爷爷退出时才能被完全删除");
+    CHECK(wait_until([&] { return rec.ctx_exited.load() == 6; }),
+          "孩子计数不虚增，爷爷退出时应报退出");
     CHECK(!manager.lookup(proc(400, 4000)).has_value(), "爷爷应已失配");
     {
         std::lock_guard lock(rec.mutex);
@@ -292,6 +286,66 @@ void run_pid_reuse()
     }
 
     CHECK(manager.stats().pid_reused == 3, "三次 pid 复用都应计数");
+}
+
+void run_image_update()
+{
+    ProcessManager manager;
+    Runner runner(manager);
+
+    // 存活进程：更新落地后镜像可见，性质仍是 REAL
+    manager.register_pid(head(100, 1000, 1, 10));
+    CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
+          "注册应落地");
+    manager.update_exe_image(proc(100, 1000), "/bin/bash");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(100, 1000));
+              return msg && msg->exe == "/bin/bash";
+          }),
+          "镜像更新应落地");
+    CHECK(manager.lookup(proc(100, 1000))->kind == hng::ProcessKind::REAL,
+          "存活进程应为 REAL");
+
+    // 已退出并转入虚拟根：保留最后镜像，性质为 VIRTUAL
+    manager.register_pid(head(200, 2000, 1, 10));
+    manager.register_pid(head(201, 2001, 200, 2000));
+    CHECK(wait_until([&] { return manager.lookup(proc(201, 2001)).has_value(); }),
+          "子进程应落地");
+    manager.update_exe_image(proc(200, 2000), "/usr/bin/python3");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->exe == "/usr/bin/python3";
+          }),
+          "退出前镜像应落地");
+
+    manager.unregister_pid(proc(200, 2000));
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->kind == hng::ProcessKind::VIRTUAL;
+          }),
+          "有子进程的退出进程应转入虚拟根并标记 VIRTUAL");
+    CHECK(manager.lookup(proc(200, 2000))->exe == "/usr/bin/python3",
+          "转虚拟根应保留最后镜像");
+
+    // 迟到更新命中虚拟根；同 pid 的新实例不受影响
+    manager.update_exe_image(proc(200, 2000), "/usr/bin/perl");
+    CHECK(wait_until([&] {
+              const auto msg = manager.lookup(proc(200, 2000));
+              return msg && msg->exe == "/usr/bin/perl";
+          }),
+          "虚拟根应接受迟到镜像更新");
+
+    manager.register_pid(head(200, 2002, 1, 10));  // pid 复用
+    CHECK(wait_until([&] { return manager.lookup(proc(200, 2002)).has_value(); }),
+          "新实例应落地");
+    manager.update_exe_image(proc(200, 2000), "/late");
+    manager.register_pid(head(500, 5000, 1, 10));  // 屏障
+    CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
+          "屏障应落地");
+    CHECK(manager.lookup(proc(200, 2002))->exe.empty(),
+          "旧实例的迟到更新不得命中同 pid 的新实例");
+    CHECK(manager.lookup(proc(200, 2000))->exe == "/late",
+          "迟到更新应落到旧实例的虚拟根");
 }
 
 void run_resolve()
@@ -320,15 +374,11 @@ void run_resolve()
     // 虚拟根：父进程退出后仍可追溯
     manager.register_pid(head(300, 3000, 1, 10));
     manager.register_pid(head(301, 3001, 300, 3000));
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(301, 3001)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(301, 3001)).has_value(); }),
           "子进程应落地");
     manager.unregister_pid(proc(300, 3000));
     manager.register_pid(head(500, 5000, 1, 10));  // 屏障
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(500, 5000)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(500, 5000)).has_value(); }),
           "屏障应落地");
     CHECK(manager.lookup(proc(300, 3000)).has_value(), "父进程应在虚拟根中");
     std::optional<hng::Process> p = manager.resolve(300);
@@ -338,36 +388,34 @@ void run_resolve()
     // 子进程退出后虚拟根被驱逐
     manager.unregister_pid(proc(301, 3001));
     manager.register_pid(head(501, 5001, 1, 10));  // 屏障
-    CHECK(wait_until([&] {
-              return manager.lookup(proc(501, 5001)).has_value();
-          }),
+    CHECK(wait_until([&] { return manager.lookup(proc(501, 5001)).has_value(); }),
           "第二个屏障应落地");
     CHECK(!manager.resolve(300).has_value(), "虚拟根驱逐后应返回空");
 }
 
-void run_fully_removed_paths()
+void run_exit_paths()
 {
     Recorder rec;
-    FakeContextClear ctx(rec);
-    FakeRoleClear roles(rec);
+    FakeLifecycleSink ctx(rec, true);
+    FakeLifecycleSink roles(rec, false);
     FakeRoleJoin join(rec);
     ProcessManager manager;
-    manager.set_context_service(&ctx);
-    manager.set_role_clear_service(&roles);
+    manager.add_process_lifecycle_sink(&ctx);
+    manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
     Runner runner(manager);
 
-    // 路径一：无存活子进程 → 直接删除即完全删除
+    // 路径一：无存活子进程 → 退出即通知
     manager.register_pid(head(100, 1000, 1, 10));
     CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
           "注册应落地");
     manager.unregister_pid(proc(100, 1000));
     CHECK(wait_until([&] {
-              return rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1;
+              return rec.ctx_exited.load() == 1 && rec.role_exited.load() == 1;
           }),
-          "无子进程的直接删除应报完全删除");
+          "无子进程的退出应报一次");
 
-    // 路径二：有存活子进程 → 先留作虚拟根，子进程被删后才随之驱逐
+    // 路径二：有存活子进程 → 退出即通知，并留作虚拟根供追溯
     manager.register_pid(head(200, 2000, 1, 10));
     manager.register_pid(head(201, 2001, 200, 2000));
     CHECK(wait_until([&] { return manager.lookup(proc(201, 2001)).has_value(); }),
@@ -382,20 +430,22 @@ void run_fully_removed_paths()
           "屏障应落地");
     CHECK(manager.lookup(proc(200, 2000)).has_value(),
           "有存活子进程的父进程应留作虚拟根，仍可查");
-    CHECK(rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1,
-          "留作虚拟根不得报完全删除");
+    CHECK(wait_until([&] {
+              return rec.ctx_exited.load() == 2 && rec.role_exited.load() == 2;
+          }),
+          "留作虚拟根不推迟退出通知");
 
     manager.unregister_pid(proc(201, 2001));
-    // 屏障：注册新进程；子进程删除后父进程的虚拟根计数归零，应被驱逐
+    // 屏障：注册新进程；子进程退出后父进程的虚拟根计数归零，应被驱逐
     manager.register_pid(head(301, 3001, 1, 10));
     CHECK(wait_until([&] {
-              return rec.ctx_removed.load() == 3 && rec.role_removed.load() == 3;
+              return rec.ctx_exited.load() == 3 && rec.role_exited.load() == 3;
           }),
-          "子进程删除后应驱逐虚拟根并报两者的完全删除");
+          "子进程退出应报一次，虚拟根驱逐不得重复通知");
     CHECK(!manager.lookup(proc(200, 2000)).has_value(), "被驱逐后应失配");
     CHECK(!manager.lookup(proc(201, 2001)).has_value(), "子进程应失配");
 
-    // 两路清理收到的进程集合应一致
+    // 两路订阅收到的进程集合应一致
     std::vector<hng::Process> ctx_seen;
     std::vector<hng::Process> role_seen;
     {
@@ -404,35 +454,37 @@ void run_fully_removed_paths()
         role_seen = rec.role_detail;
     }
     CHECK(ctx_seen == role_seen, "context 与角色两路应收到同一批进程");
-    CHECK(ctx_seen.size() == 3, "应恰好报三次完全删除");
+    CHECK(ctx_seen.size() == 3, "应恰好报三次退出");
 }
 
 void run_unknown_and_duplicate()
 {
     Recorder rec;
-    FakeContextClear ctx(rec);
-    FakeRoleClear roles(rec);
+    FakeLifecycleSink ctx(rec, true);
+    FakeLifecycleSink roles(rec, false);
     ProcessManager manager;
-    manager.set_context_service(&ctx);
-    manager.set_role_clear_service(&roles);
+    manager.add_process_lifecycle_sink(&ctx);
+    manager.add_process_lifecycle_sink(&roles);
     Runner runner(manager);
 
-    // 未知进程的注销：既不在实进程树也不在虚拟根树，静默无操作
+    // 未登记的退出：仍按身份转发，供下游清理陈旧归属
     manager.unregister_pid(proc(777, 7777));
     manager.register_pid(head(100, 1000, 1, 10));
     CHECK(wait_until([&] { return manager.lookup(proc(100, 1000)).has_value(); }),
           "注册应落地");
+    CHECK(rec.ctx_exited.load() == 1 && rec.role_exited.load() == 1,
+          "未登记的退出应转发一次");
 
     manager.unregister_pid(proc(100, 1000));
-    CHECK(wait_until([&] { return rec.ctx_removed.load() == 1; }),
-          "首次注销应报完全删除");
+    CHECK(wait_until([&] { return rec.ctx_exited.load() == 2; }),
+          "首次注销应报退出");
     manager.unregister_pid(proc(100, 1000));  // 重复注销
 
     manager.register_pid(head(101, 1001, 1, 10));  // 屏障
     CHECK(wait_until([&] { return manager.lookup(proc(101, 1001)).has_value(); }),
           "屏障应落地");
-    CHECK(rec.ctx_removed.load() == 1 && rec.role_removed.load() == 1,
-          "未知进程与重复注销都不得产生通知");
+    CHECK(rec.ctx_exited.load() == 3 && rec.role_exited.load() == 3,
+          "重复退出按身份转发，由订阅方幂等处理");
 }
 
 void run_stop_semantics()
@@ -481,12 +533,12 @@ void run_stop_semantics()
 void run_concurrent_producers()
 {
     Recorder rec;
-    FakeContextClear ctx(rec);
-    FakeRoleClear roles(rec);
+    FakeLifecycleSink ctx(rec, true);
+    FakeLifecycleSink roles(rec, false);
     FakeRoleJoin join(rec);
     ProcessManager manager;
-    manager.set_context_service(&ctx);
-    manager.set_role_clear_service(&roles);
+    manager.add_process_lifecycle_sink(&ctx);
+    manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
     Runner runner(manager);
 
@@ -510,10 +562,10 @@ void run_concurrent_producers()
     }
 
     CHECK(wait_until([&] {
-              return rec.ctx_removed.load() == static_cast<std::size_t>(kTotal) &&
-                     rec.role_removed.load() == static_cast<std::size_t>(kTotal);
+              return rec.ctx_exited.load() == static_cast<std::size_t>(kTotal) &&
+                     rec.role_exited.load() == static_cast<std::size_t>(kTotal);
           }),
-          "每个进程注销后都应报完全删除");
+          "每个进程注销后都应报退出");
     CHECK(rec.binds.load() == static_cast<std::size_t>(kTotal),
           "每个进程注册都应转交一次");
 
@@ -534,8 +586,9 @@ int main()
     run_register_and_lookup();
     run_bind_transfer();
     run_pid_reuse();
+    run_image_update();
     run_resolve();
-    run_fully_removed_paths();
+    run_exit_paths();
     run_unknown_and_duplicate();
     run_stop_semantics();
     run_concurrent_producers();

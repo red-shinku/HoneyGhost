@@ -18,6 +18,7 @@
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/context_service.hpp"
+#include "agent/control_plane/include/process_lifecycle_sink.hpp"
 
 /**
  * @brief 控制平面记录的一个 context 的消息
@@ -87,7 +88,7 @@ struct ParentTable {
  *
  * 写点只有三类事件：
  *   1) 某进程的 context 归属落定 —— bind_to_ctxroot()
- *   2) 进程被完全删除 —— on_process_removed() 清理该进程条目。
+ *   2) 进程退出 —— on_process_exited() 清理该进程条目。
  *   3) context 根注册 —— addContextID() 写入根进程自指。
  * 进程的归属在落定后不再改写（不可变），故本表也无需修改
  */
@@ -110,13 +111,13 @@ struct ToContextRootTable {
  * 工作平面本地也会维护每个角色的 Context 树关系，并且是第一手的。
  * 控制平面这里则是权威的，所有离散无状态事件的归属标准。
  *
- * 五个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
+ * 六个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
  * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
  */
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
                        public ContextUpdateService,
-                       public ContextClearService {
+                       public ProcessLifecycleSink {
    public:
     ContextManager(/* args */);
     ~ContextManager();
@@ -135,17 +136,25 @@ class ContextManager : public ContextLookupService,
     std::vector<uint32_t> contexts_by_attr(hng::contextattr attr) const override;
 
     /// @brief 按 contextID 取根进程与成员集；未知 ID 返回空
-    std::optional<ContextProcessSet> members(
-        uint32_t contextID) const override;
+    std::optional<ContextProcessSet> members(uint32_t contextID) const override;
 
-    /// @brief 注册新的 contextID（通知写）
-    /// 生成并将实际写操作 加入任务队列
-    void register_contextID(hng::Process p, ContextDeriveDecision newcontext,
-                            uint32_t pcontextID) override;
+    /// @brief 注册新的主 contextID（通知写）
+    /// @param p context 代表进程
+    /// @param newcontext 新 context 信息；kind 须为 DERIVE
+    /// @param parent 父进程；落地时解析其 contextID，未落定则按森林根
+    void register_context(hng::Process p, ContextDeriveDecision newcontext,
+                          hng::Process parent) override;
+
+    /// @brief 注册附属 context（通知写）
+    /// @param p context 代表进程；须已有主 context
+    /// @param contextID 附属 contextID
+    /// @param attr 附属 context 属性
+    void register_extra_context(hng::Process p, uint32_t contextID,
+                                hng::contextattr attr) override;
 
     /// @brief 注销 contextID（通知写）
     /// 生成并将实际写操作 加入任务队列
-    void unregister_contextID(hng::Process p) override;
+    void unregister_context(hng::Process p) override;
 
     /// @brief 修改 context 属性（通知写）
     void set_attr(hng::Process p, uint32_t contextID,
@@ -156,10 +165,10 @@ class ContextManager : public ContextLookupService,
     /// 父进程尚未落定时为空操作（登记竞态，归属保持待定）
     void bind_to_ctxroot(hng::Process p, hng::Process parent) override;
 
-    /// @brief 上报进程被完全删除（通知写）
-    /// @details 供 ProcessManager 在进程（实进程/虚拟根）被完全删除时调用；
-    /// 实际清理逻辑（归属条目，若为 context 根则连同 context）在私有方法中执行
-    void on_process_removed(hng::Process p) override;
+    /// @brief 进程已退出（通知写）
+    /// @details 从归属索引与成员集中移除该进程；成员集清空时删除整个 context。
+    ///          根进程退出而其他成员仍在时，context 保留，键仍指向已退出的根
+    void on_process_exited(hng::Process p) override;
 
     /// @brief 消费线程入口：取队列、按到达顺序串行落地，阻塞直到 stop()
     /// @note 不持线程，线程由装配方创建；析构前须已返回
@@ -173,12 +182,19 @@ class ContextManager : public ContextLookupService,
     ContextManagerStats stats() const override;
 
    private:
-    /// @brief 入队任务：注册一个 context
+    /// @brief 入队任务：注册一个主 context
     struct AddTask {
         hng::Process process;
         uint32_t contextID;     ///< 新 context 的 ID，由工作面生成
         hng::contextattr attr;  ///< 新 context 的属性
-        uint32_t parent_contextID;
+        hng::Process parent;    ///< 父进程；落地时解析其 contextID
+    };
+
+    /// @brief 入队任务：注册一个附属 context
+    struct ExtraTask {
+        hng::Process process;
+        uint32_t contextID;
+        hng::contextattr attr;
     };
 
     /// @brief 入队任务：注销某个根进程的 context
@@ -199,14 +215,14 @@ class ContextManager : public ContextLookupService,
         hng::Process parent;
     };
 
-    /// @brief 入队任务：进程被完全删除
-    struct RemovedTask {
+    /// @brief 入队任务：进程已退出
+    struct ExitedTask {
         hng::Process process;
     };
 
-    /// 五个写接口共用一条队列：多生产者、无界，按到达顺序串行落地
-    using Task =
-        std::variant<AddTask, DelTask, SetAttrTask, BindTask, RemovedTask>;
+    /// 六个写接口共用一条队列：多生产者、无界，按到达顺序串行落地
+    using Task = std::variant<AddTask, ExtraTask, DelTask, SetAttrTask, BindTask,
+                              ExitedTask>;
     hng::NotificationQueue<Task> task;
 
     /// 消费线程写、任意线程读，故为原子
@@ -214,7 +230,7 @@ class ContextManager : public ContextLookupService,
     std::atomic<uint64_t> unknown_unregister_{0};
 
     // 进程 → 所属 context 根进程 的映射（归属索引）
-    // lookup/lookup_extra/bind_to_ctxroot/on_process_removed 均经该表解析。
+    // lookup/lookup_extra/bind_to_ctxroot/on_process_exited 均经该表解析。
     ToContextRootTable to_context_root;
 
     // context 根进程 到主 context 的映射
@@ -224,29 +240,32 @@ class ContextManager : public ContextLookupService,
     // 附属 context 与主 context 共用代表进程，
     // 即 EXTRA_ATTACK 依附于某个 NORMAL context 的情形
     // 每个主 context 至多一个附属 context，由 has_extra 标记
-    // TODO: 附属 context 如何清理？
+    // 主 context 删除时一并清理
     ContextTable extras;
 
     // 维护 context 树状关系，
     // 一个 contextID 映射到它的上一个父级 ID
     ParentTable parent;
 
-    /// @brief 实际插入新 contextID
-    /// 插入的新 context 默认属性为 UNKNOWN
-    /// @details
-    /// 若 Process 尚无主 context，则作为主 context 插入主 map；
-    /// 否则作为附属 context 插入附属 map（对应 EXTRA_ATTACK）。
-    ///
-    /// 关于 context
-    /// 泄漏（孤儿context、附属context意外作为主context插入到主表中），这个问题在
-    /// FIFO 任务队列以及单线程跑 context_manager 的情况下是安全的
-    ///
+    /// @brief 实际插入主 context
+    /// @details 主 context 键唯一：同键已存在时直接返回，同 ID 为幂等，不同 ID
+    ///          也不转为附属 context。父 context ID 在落地时解析，父进程未落定
+    ///          时按森林根（0）处理。
     /// @param p context代表进程的唯一性表示
     /// @param contextID 新的contextID，由工作面生成
     /// @param attr 新 context 的属性
-    /// @param pcontextID 父 context ID
+    /// @param parent 父进程；pid 为 0 表示森林根
     void addContextID(hng::Process p, uint32_t contextID, hng::contextattr attr,
-                      uint32_t pcontextID);
+                      hng::Process parent);
+
+    /// @brief 实际插入附属 context
+    /// @details 要求该键已有主 context；已有附属 context 时保留首个。附属
+    ///          context 的 parent 记录指向其主 context。
+    /// @param p context代表进程的唯一性表示
+    /// @param contextID 附属 contextID
+    /// @param attr 附属 context 的属性
+    void addExtraContext(hng::Process p, uint32_t contextID,
+                         hng::contextattr attr);
 
     /// @brief 实际删除 contextID
     /// @details 删除主 context 时一并删除同键的附属 context 及其 parent 记录
@@ -264,9 +283,8 @@ class ContextManager : public ContextLookupService,
     /// @brief 新进程没有派生 context 时，需与 context 根进程绑定
     void bind_to_ctxroot_(hng::Process p, hng::Process parent);
 
-    /// @brief 进程被完全删除时，尝试清理相关 context 与 to_context_root 记录
-    /// 若为 context 根则连同 context 清除
-    void on_process_removed_(hng::Process p);
+    /// @brief 进程退出时清理归属条目；成员集清空则删除整个 context
+    void on_process_exited_(hng::Process p);
 
     /// @brief 落地一条队列任务
     void land(Task& task);

@@ -136,13 +136,15 @@ void run_pending()
         CHECK(v->child.pid == ch.pid && v->parent.pid == pa.pid,
               "verdict 携带 child/parent");
     }
-    // 2. exec(普通命令) + 解释器父 → KEEP：无派生动作，移出登记
+    // 2. exec(普通命令) + 解释器父 → KEEP：返回判定结果并移出登记
     {
         hng::detail::PendingTable t;
         hng::Process ch = mk(101, 1001), pa = mk(50, 500);
         t.on_fork(ch, pa, true, 8);
         auto v = t.on_exec(ch, "/usr/bin/ls");
-        CHECK(!v.has_value(), "KEEP 不应产生派生动作");
+        CHECK(v.has_value() && !v->derive,
+              "KEEP 应返回不派生的判定结果");
+        CHECK(v->child == ch && v->parent == pa, "KEEP verdict 携带 child/parent");
         CHECK(!t.is_pending(ch), "KEEP 后应移出登记");
     }
     // 3. 事件配额耗尽（窗口内无 exec）→ NO_EXEC_WINDOW 派生

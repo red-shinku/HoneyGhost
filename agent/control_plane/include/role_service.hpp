@@ -32,7 +32,7 @@ class RoleLookupService {
     /// @brief 角色的对外视图：roleID + roleLabel
     virtual std::optional<hng::Role> role(uint32_t roleID) const = 0;
 
-    /// @brief 角色的当前锚点；角色不存在或锚点已被完全删除时为空
+    /// @brief 角色的当前锚点；角色不存在或锚点已退出时为空
     virtual std::optional<hng::Process> main_process(
         uint32_t roleID) const = 0;
 
@@ -79,17 +79,6 @@ class RoleJoinService {
     /// @brief 子进程继承父进程的角色归属
     /// @note 父进程未归属时丢弃该次通知
     virtual void bind_to_role(hng::Process child, hng::Process parent) = 0;
-};
-
-/// @brief 归属数据的清理
-class RoleClearService {
-   protected:
-    virtual ~RoleClearService() = default;
-
-   public:
-    /// @brief 进程被完全删除
-    /// @note 只清理该进程的归属条目，不改变角色的存在性
-    virtual void on_process_removed(hng::Process p) = 0;
 };
 
 #endif  // HNG_ROLE_SERVICE_HPP_

@@ -35,9 +35,9 @@ struct PendingEntry {
 
 /**
  * @brief 待决策进程窗口表
- * @details 对外提供 fork 登记、exec/事件/退出三路推进入口。返回值为空表示
- * 无派生动作（仍待决策、KEEP、或非待决策进程）；非空表示本次触发了 DERIVE，
- * 调用方应据 verdict 为新进程创建 context。
+ * @details 对外提供 fork 登记、exec/事件/退出三路推进入口。返回值为空表示仍
+ * 待决策或非待决策进程；非空表示本次得到了判定结果，调用方按 verdict.derive
+ * 区分 DERIVE 与 KEEP。
  */
 class PendingTable {
    public:
@@ -51,10 +51,10 @@ class PendingTable {
 
     /// 待决策子进程的 exec：立即判定并移除
     /// @details 非待决策进程的 exec 视为既有进程原地重 exec（同一执行实体），
-    /// 不做派生决策，返回空。
+    /// 不做决策，返回空。
     /// @param p 执行 exec 的进程
     /// @param normalized_filename 归一后的 exec 目标路径
-    /// @return 触发 DERIVE 时非空；KEEP / 非待决策 时为空
+    /// @return 待决策进程的判定结果（DERIVE 或 KEEP）；非待决策进程为空
     std::optional<DeriveVerdict> on_exec(hng::Process p,
                                          const std::string& normalized_filename);
 

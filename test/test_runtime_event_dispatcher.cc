@@ -101,7 +101,8 @@ hng::RuntimeEvent mk_event(uint32_t pid, uint32_t roleID, uint32_t contextID,
     return ev;
 }
 
-const ContextDeriveDecision kDerived{true, 42, hng::contextattr::UNKNOWN};
+const ContextDeriveDecision kDerived{ContextDecisionKind::DERIVE, 42,
+                                     hng::contextattr::UNKNOWN};
 
 // ---- 空表 ----
 
@@ -134,9 +135,9 @@ void run_order_and_payload()
     CHECK(sys_a.calls == 1 && sys_b.calls == 1 && cli.calls == 1,
           "三者各收到一次");
     CHECK(sys_a.last_pid == 1001, "系统订阅者收到事件主体");
-    CHECK(
-        sys_a.last_decision.should_derive && sys_a.last_decision.contextID == 42,
-        "系统订阅者收到派生决策");
+    CHECK(sys_a.last_decision.kind == ContextDecisionKind::DERIVE &&
+              sys_a.last_decision.contextID == 42,
+          "系统订阅者收到派生决策");
     CHECK(cli.pids == std::vector<uint32_t>{1001}, "CLI 订阅流收到事件主体");
 }
 

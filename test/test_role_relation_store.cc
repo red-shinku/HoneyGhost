@@ -9,8 +9,8 @@
  *  - 锚点更换：roleID 不变、记录锚点被覆盖、反向索引并入不丢键；
  *  - LEAVE：按反向索引定向删净，核对当前值故不误删他角色条目；
  *  - bind_to_role：父已归属则继承，未归属则丢弃；
- *  - on_process_removed：归属条目消失而角色记录仍在；
- *  - 锚点 gauge：锚点被删时计入、重复上报不重复计入、换锚点与退出时退出计数；
+ *  - on_process_exited：归属条目消失而角色记录仍在；
+ *  - 锚点 gauge：锚点退出时计入、重复上报不重复计入、换锚点与退出时退出计数；
  *  - 入口拒收与异常态计数；roleID 从 1 起单调递增、不复用；
  *  - roleLabel：按来源取 unit 名 / 镜像引用，缺镜像与未声明来源各退到类型键，
  *    锚点更换时随新身份重算。
@@ -195,7 +195,7 @@ void run_join_normalize()
     CHECK(moved.role.roleID == role, "归一不得换 roleID");
     CHECK(owned_by(store, proc(200, 2000), role), "新锚点应写入");
     CHECK(owned_by(store, proc(100, 1000), role),
-          "旧条目不得被删，清理由 on_process_removed 负责");
+          "旧条目不得被删，清理由 on_process_exited 负责");
 
     // 记录锚点已被覆盖：再用新锚点投递是幂等，用旧锚点投递是锚点更换
     CHECK(store.join(mk_payload("a", 200, 2000), {}).kind == Kind::NONE,
@@ -281,18 +281,18 @@ void run_process_removed()
     const uint32_t role =
         join_new(store, "a", 100, 1000, {proc(100, 1000), proc(101, 1001)});
 
-    store.on_process_removed(proc(101, 1001));
+    store.on_process_exited(proc(101, 1001));
     CHECK(!store.lookup(proc(101, 1001)).has_value(),
-          "完全删除的进程应无归属残留");
-    CHECK(store.role(role).has_value(), "成员被删不改变角色存在性");
+          "退出的进程应无归属残留");
+    CHECK(store.role(role).has_value(), "成员退出不改变角色存在性");
     CHECK(store.stats().anchors_removed == 0, "成员不是锚点，不计入");
 
-    store.on_process_removed(proc(100, 1000));
+    store.on_process_exited(proc(100, 1000));
     CHECK(!store.lookup(proc(100, 1000)).has_value(), "锚点的归属条目应被删");
-    CHECK(store.role(role).has_value(), "锚点被删，角色仍等 LEAVE 才退出");
+    CHECK(store.role(role).has_value(), "锚点退出，角色仍等 LEAVE 才退出");
     CHECK(store.stats().anchors_removed == 1, "锚点已删而角色未退出应计入");
 
-    CHECK(store.leave("a").kind == Kind::LEFT, "锚点被删后仍应能退出");
+    CHECK(store.leave("a").kind == Kind::LEFT, "锚点退出后仍应能退出角色");
     CHECK(!store.role(role).has_value(), "退出后角色记录应删除");
     CHECK(store.stats().anchors_removed == 0, "退出后应退出该计数");
 }
@@ -303,9 +303,9 @@ void run_anchor_gauge()
     const uint32_t role_a = join_new(store, "a", 100, 1000, {proc(100, 1000)});
     const uint32_t role_b = join_new(store, "b", 200, 2000, {proc(200, 2000)});
 
-    store.on_process_removed(proc(100, 1000));
+    store.on_process_exited(proc(100, 1000));
     CHECK(store.stats().anchors_removed == 1, "锚点已删的角色应计入");
-    store.on_process_removed(proc(100, 1000));
+    store.on_process_exited(proc(100, 1000));
     CHECK(store.stats().anchors_removed == 1, "同一锚点重复上报不得重复计入");
 
     // 换锚点后该角色不再是「锚点已删」：那个状态说的是旧锚点
@@ -315,13 +315,13 @@ void run_anchor_gauge()
           "锚点已删的角色仍应能更换锚点");
     CHECK(store.stats().anchors_removed == 0, "换锚点后应退出该计数");
 
-    store.on_process_removed(proc(300, 3000));
-    CHECK(store.stats().anchors_removed == 1, "新锚点被删应重新计入");
+    store.on_process_exited(proc(300, 3000));
+    CHECK(store.stats().anchors_removed == 1, "新锚点退出应重新计入");
     CHECK(store.leave("a").kind == Kind::LEFT, "存活角色应能退出");
     CHECK(store.stats().anchors_removed == 0, "角色退出后应退出该计数");
 
     CHECK(store.role(role_b).has_value(), "另一角色不受影响");
-    CHECK(store.stats().anchors_removed == 0, "锚点未被删的角色不计入");
+    CHECK(store.stats().anchors_removed == 0, "锚点未退出的角色不计入");
 }
 
 void run_main_process()
@@ -341,9 +341,9 @@ void run_main_process()
     main = store.main_process(role);
     CHECK(main.has_value() && *main == proc(200, 2000), "应返回新锚点");
 
-    store.on_process_removed(proc(200, 2000));
-    CHECK(!store.main_process(role).has_value(), "锚点被完全删除后应为空");
-    CHECK(store.role(role).has_value(), "锚点被删不改变角色存在性");
+    store.on_process_exited(proc(200, 2000));
+    CHECK(!store.main_process(role).has_value(), "锚点退出后应为空");
+    CHECK(store.role(role).has_value(), "锚点退出不改变角色存在性");
 
     CHECK(store.main_process_change(mk_payload("a", 300, 3000),
                                     {proc(300, 3000)})

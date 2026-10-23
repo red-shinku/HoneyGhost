@@ -18,10 +18,10 @@ struct RoleStoreStats {
     uint64_t rejected         = 0;  ///< 累计：入口拒收，缺实例键或锚点
     uint64_t unknown_instance = 0;  ///< 累计：LEAVE 或锚点更换遇未知实例键
     uint64_t owner_conflict   = 0;  ///< 累计：成员写入时已归属另一个角色
-    /// 当前值非累计：锚点已被完全删除而角色未退出的角色数
+    /// 当前值非累计：锚点已退出而角色未退出的角色数
     /// @note 锚点退出到 LEAVE 到达之间必然经过该状态，故它不为零不是错态；
-    ///       持续为正、或增量长期不收敛才是。只按 on_process_removed 的到达
-    ///       记账，锚点在角色建立前就已被删的情形无从得知
+    ///       持续为正、或增量长期不收敛才是。只按 on_process_exited 的到达
+    ///       记账，锚点在角色建立前就已退出的情形无从得知
     uint64_t anchors_removed  = 0;
 };
 
