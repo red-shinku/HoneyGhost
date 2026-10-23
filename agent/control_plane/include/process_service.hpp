@@ -39,6 +39,17 @@ class ProcessJoinService {
     virtual void unregister_pid(hng::Process p)      = 0;
 };
 
+/// @brief 进程存活视图的只读接口
+/// @details 只回答“已知退出”，不要求证明存活；未知身份保持乐观。
+class ProcessLivenessService {
+   protected:
+    virtual ~ProcessLivenessService() = default;
+
+   public:
+    /// @brief 该身份是否已知退出；不要求证明存活
+    virtual bool is_exited(hng::Process p) const = 0;
+};
+
 /// @brief 进程信息的更新接口
 /// @details 运行期 exec 事件的通知写；ProcessManager 实现。
 class ProcessUpdateService {

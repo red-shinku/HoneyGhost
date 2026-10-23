@@ -7,6 +7,10 @@
  *  - 出口回调内反查：加入必命中、退出必失配；
  *  - 加入时重读补上「枚举 → 落地」窗口的 fork，锚点无条件并入，退出不重读；
  *  - bind_to_role 与 on_process_exited 经同一条队列落地，不产通知；
+ *  - bind 先于 JOIN 时暂存、JOIN 后应用；父已归属时直接应用；
+ *  - 锚点未变的周期 JOIN 补写成员，不产生命周期通知；
+ *  - 存活过滤：死锚点整条拒绝、死成员不进表、LEAVE 不过滤；
+ *  - 等待表容量与 TTL 降级；
  *  - members()：按记录的 cgroup 路径实时重枚举、角色不存在为空、
  *    路径不可读时返回已收集结果且不改动任何表；
  *  - 入口幂等重放与未知实例键不产通知；
@@ -129,10 +133,29 @@ class Runner {
     std::thread thread_;
 };
 
+/// 轮询等待条件成立；超时返回最后一次判定
+bool wait_until(const std::function<bool()>& predicate)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return predicate();
+}
+
 hng::Process proc(uint32_t pid, uint64_t start)
 {
     return hng::Process{pid, start};
 }
+
+/// 可控时钟：只随测试推进，供等待表与墓碑的寿命用例
+struct FakeClock {
+    hng::RelationTimePoint now{};
+};
 
 RoleEvent mk_join(const std::string& key, uint32_t pid, uint64_t start,
                   std::vector<hng::Process> members = {})
@@ -256,7 +279,7 @@ void run_main_process()
 
     manager.on_role_event(mk_join("a", 100, 1000));
     CHECK(sink.wait_calls(1), "加入应通知");
-    const uint32_t role = sink.calls()[0].roleID;
+    const uint32_t role              = sink.calls()[0].roleID;
 
     std::optional<hng::Process> main = manager.main_process(role);
     CHECK(main.has_value() && *main == proc(100, 1000), "应转发锚点");
@@ -373,13 +396,15 @@ void run_bind_and_removed()
     manager.add_lifecycle_sink(&sink);
     Runner runner(manager);
 
-    // 父未归属：丢弃
+    // 父未归属：bind 先暂存，父 JOIN 后子应被 adopt
     manager.bind_to_role(proc(101, 1001), proc(100, 1000));
     manager.on_role_event(mk_join("a", 100, 1000, {}));
     CHECK(sink.wait_calls(1), "加入应通知一次");
     const uint32_t role = sink.calls()[0].roleID;
-    CHECK(!manager.lookup(proc(101, 1001)).has_value(),
-          "父未归属的 fork 应被丢弃");
+    CHECK(manager.lookup(proc(101, 1001)).value_or(0) == role,
+          "父 JOIN 后暂存的 bind 应被应用");
+    CHECK(manager.stats().bind_deferred == 1, "暂存应计数");
+    CHECK(manager.stats().bind_resolved == 1, "应用暂存应计数");
 
     // 父已归属：继承；进程退出后条目清掉
     manager.bind_to_role(proc(102, 1002), proc(100, 1000));
@@ -602,6 +627,208 @@ void run_concurrent_producers()
     CHECK(manager.stats().store.owner_conflict == 0, "各角色的成员集不相交");
 }
 
+void run_bind_after_join()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.on_role_event(mk_join("a", 100, 1000, {}));
+    CHECK(sink.wait_calls(1), "加入应通知一次");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    manager.bind_to_role(proc(102, 1002), proc(100, 1000));
+    manager.on_role_event(mk_join("barrier", 900, 9000));
+    CHECK(sink.wait_calls(2), "屏障事件应通知");
+
+    CHECK(manager.lookup(proc(102, 1002)).value_or(0) == role,
+          "父已归属时 bind 应直接应用");
+    CHECK(
+        manager.stats().bind_deferred == 0 && manager.stats().bind_resolved == 0,
+        "直接应用不应计入等待表计数");
+}
+
+void run_periodic_join()
+{
+    RecordingSink sink;
+    RoleManager manager;
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.on_role_event(mk_join("a", 100, 1000, {proc(101, 1001)}));
+    CHECK(sink.wait_calls(1), "加入应通知一次");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    // 锚点未变、成员集变宽：补写新成员，不产生生命周期通知
+    manager.on_role_event(
+        mk_join("a", 100, 1000, {proc(101, 1001), proc(102, 1002)}));
+    manager.on_role_event(mk_join("barrier", 900, 9000));
+    CHECK(sink.wait_calls(2), "只有屏障事件应通知");
+
+    CHECK(sink.calls().size() == 2, "锚点未变的 JOIN 不得产生通知");
+    CHECK(sink.calls()[1].kind == RecordingSink::Kind::JOINED &&
+              sink.calls()[1].roleID != role,
+          "第二个通知应来自屏障事件");
+    CHECK(manager.lookup(proc(102, 1002)).value_or(0) == role,
+          "周期 JOIN 应补写新成员");
+}
+
+void run_dead_anchor_filter()
+{
+    RecordingSink sink;
+    RoleManagerProbe probe;
+    probe.is_exited = [](hng::Process p) { return p.pid == 100; };
+    RoleManager manager(probe);
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.on_role_event(mk_join("dead", 100, 1000));
+    manager.on_role_event(mk_join("alive", 200, 2000));
+    CHECK(sink.wait_calls(1), "存活锚点应通知");
+
+    CHECK(sink.calls().size() == 1, "已退出锚点不得产生通知");
+    CHECK(!manager.lookup(proc(100, 1000)).has_value(), "已退出锚点不得写入归属");
+    CHECK(manager.lookup(proc(200, 2000)).value_or(0) == sink.calls()[0].roleID,
+          "存活锚点应正常归属");
+    CHECK(manager.stats().dead_anchor_rejected == 1, "死锚点 JOIN 应计数");
+
+    // MAIN_PROCESS_CHANGE 同样过滤
+    manager.on_role_event(
+        mk_other(RoleAction::MAIN_PROCESS_CHANGE, "alive", 100, 1000));
+    manager.on_role_event(mk_join("barrier", 901, 9001));
+    CHECK(sink.wait_calls(2), "屏障事件应通知");
+
+    CHECK(sink.calls().size() == 2, "死锚点的锚点更换不得通知");
+    CHECK(manager.stats().dead_anchor_rejected == 2,
+          "死锚点 MAIN_PROCESS_CHANGE 应计数");
+    CHECK(manager.main_process(sink.calls()[0].roleID).value_or(proc(0, 0)) ==
+              proc(200, 2000),
+          "死锚点不得覆盖记录的锚点");
+
+    // store 墓碑同样拒绝迟到 JOIN
+    RecordingSink tombstone_sink;
+    RoleManager tombstone_manager;
+    tombstone_manager.add_lifecycle_sink(&tombstone_sink);
+    Runner tombstone_runner(tombstone_manager);
+
+    tombstone_manager.on_process_exited(proc(400, 4000));
+    tombstone_manager.on_role_event(mk_join("late", 400, 4000));
+    tombstone_manager.on_role_event(mk_join("barrier", 902, 9002));
+    CHECK(tombstone_sink.wait_calls(1), "屏障事件应通知");
+    CHECK(tombstone_sink.calls().size() == 1, "store 墓碑命中的 JOIN 不得通知");
+    CHECK(!tombstone_manager.lookup(proc(400, 4000)).has_value(),
+          "store 墓碑命中的锚点不得写入");
+    CHECK(tombstone_manager.stats().dead_anchor_rejected == 1,
+          "store 墓碑拒绝应计数");
+}
+
+void run_dead_member_filter()
+{
+    RecordingSink sink;
+    RoleManagerProbe probe;
+    probe.is_exited = [](hng::Process p) { return p.pid == 101 || p.pid == 103; };
+    probe.read_members = [](const std::string&) {
+        return std::vector<hng::Process>{proc(103, 1003), proc(104, 1004)};
+    };
+    RoleManager manager(probe);
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    RoleEvent event = mk_join("a", 100, 1000, {proc(101, 1001), proc(102, 1002)});
+    event.payload.cgroup_path = "/sys/fs/cgroup/system.slice/a.service";
+    manager.on_role_event(event);
+    CHECK(sink.wait_calls(1), "加入应通知一次");
+
+    const uint32_t role = sink.calls()[0].roleID;
+    CHECK(!manager.lookup(proc(101, 1001)).has_value(),
+          "已退出的载荷成员不得进入关系表");
+    CHECK(!manager.lookup(proc(103, 1003)).has_value(),
+          "已退出的重读成员不得进入关系表");
+    CHECK(manager.lookup(proc(102, 1002)).value_or(0) == role &&
+              manager.lookup(proc(104, 1004)).value_or(0) == role &&
+              manager.lookup(proc(100, 1000)).value_or(0) == role,
+          "存活成员与锚点应正常归属");
+    CHECK(manager.stats().dead_member_rejected == 2, "被过滤的成员应计数");
+}
+
+void run_leave_with_liveness()
+{
+    bool dead = false;
+    RoleManagerProbe probe;
+    probe.is_exited = [&dead](hng::Process) { return dead; };
+
+    RecordingSink sink;
+    RoleManager manager(probe);
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.on_role_event(mk_join("a", 100, 1000, {proc(101, 1001)}));
+    CHECK(sink.wait_calls(1), "加入应通知一次");
+    const uint32_t role = sink.calls()[0].roleID;
+
+    dead                = true;
+    manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
+    CHECK(sink.wait_calls(2), "LEAVE 应通知");
+    CHECK(sink.calls()[1].kind == RecordingSink::Kind::LEFT &&
+              sink.calls()[1].roleID == role,
+          "LEAVE 应正常退出");
+    CHECK(!manager.role(role).has_value(), "退出后角色记录应删除");
+    CHECK(manager.stats().dead_anchor_rejected == 0, "LEAVE 不做存活过滤");
+}
+
+void run_bind_capacity_and_expiry()
+{
+    // 容量为 0：bind 被拒，不产生归属
+    RoleRelationOptions no_capacity;
+    no_capacity.bind_pending.capacity = 0;
+    {
+        RecordingSink sink;
+        RoleManagerProbe probe;
+        RoleManager manager(probe, no_capacity);
+        manager.add_lifecycle_sink(&sink);
+        Runner runner(manager);
+
+        manager.bind_to_role(proc(101, 1001), proc(100, 1000));
+        manager.on_role_event(mk_join("a", 100, 1000, {}));
+        CHECK(sink.wait_calls(1), "加入应通知一次");
+
+        CHECK(manager.stats().bind_rejected == 1, "容量为 0 时 bind 应被拒绝");
+        CHECK(!manager.lookup(proc(101, 1001)).has_value(),
+              "被拒绝的 bind 不得产生归属");
+    }
+
+    // TTL 过期：过期等待项在锚点后续落地时不得被应用
+    FakeClock clock;
+    RoleRelationOptions ttl;
+    ttl.bind_pending.ttl = std::chrono::milliseconds(100);
+    ttl.now              = [&clock] { return clock.now; };
+
+    RecordingSink sink;
+    RoleManagerProbe probe;
+    RoleManager manager(probe, ttl);
+    manager.add_lifecycle_sink(&sink);
+    Runner runner(manager);
+
+    manager.bind_to_role(proc(102, 1002), proc(100, 1000));
+    manager.on_role_event(mk_join("a", 200, 2000));
+    CHECK(sink.wait_calls(1), "屏障事件应通知");
+    CHECK(wait_until([&] { return manager.stats().bind_deferred == 1; }),
+          "bind 应先暂存");
+
+    clock.now += std::chrono::milliseconds(101);
+    manager.on_role_event(mk_join("b", 300, 3000));
+    CHECK(sink.wait_calls(2), "屏障事件应通知");
+    CHECK(wait_until([&] { return manager.stats().bind_expired == 1; }),
+          "过期等待项应在落地末尾清理");
+
+    manager.on_role_event(mk_join("c", 100, 1000));
+    CHECK(sink.wait_calls(3), "加入应通知一次");
+    CHECK(!manager.lookup(proc(102, 1002)).has_value(),
+          "过期等待项不得在锚点落地时被应用");
+    CHECK(manager.lookup(proc(100, 1000)).has_value(), "锚点仍应归属");
+}
+
 }  // namespace
 
 int main()
@@ -618,6 +845,12 @@ int main()
     run_multiple_sinks();
     run_stop_semantics();
     run_concurrent_producers();
+    run_bind_after_join();
+    run_periodic_join();
+    run_dead_anchor_filter();
+    run_dead_member_filter();
+    run_leave_with_liveness();
+    run_bind_capacity_and_expiry();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

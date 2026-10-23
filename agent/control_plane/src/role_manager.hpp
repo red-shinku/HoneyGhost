@@ -37,6 +37,8 @@ struct RoleManagerProbe {
     /// 按 cgroup 路径枚举进程的实现，留空时用 RoleCgroupReader::read
     std::function<std::vector<hng::Process>(const std::string& cgroup_path)>
         read_members;
+    /// 进程存活视图，留空时不做存活过滤
+    std::function<bool(hng::Process)> is_exited;
 };
 
 class RoleManager : public hng::role::RoleEventSink,
@@ -46,7 +48,9 @@ class RoleManager : public hng::role::RoleEventSink,
                     public RoleSupervisionService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
-    explicit RoleManager(RoleManagerProbe probe = {});
+    /// @param options 关系修复配置：等待表、墓碑表与时钟
+    explicit RoleManager(RoleManagerProbe probe      = {},
+                         RoleRelationOptions options = {});
 
     /// @brief 注册一个下行出口
     /// @param sink 空指针忽略；同一实现重复注册会收到重复通知
@@ -136,9 +140,12 @@ class RoleManager : public hng::role::RoleEventSink,
     /// @brief 落地一个角色事件
     void land_event(const hng::role::RoleEvent& event);
 
-    /// @brief 算成员集：载荷的成员 ∪ cgroup 重读结果（见构造时注入的实现）
-    /// @note 锚点无条件并入：重读结果可能晚于锚点退出；cgroup 路径为空时不重读
+    /// @brief 算成员集：载荷的成员 ∪ cgroup 重读结果 ∪ {锚点}
+    /// @note cgroup 路径为空时不重读；已退出成员在此处过滤，不计入成员集
     std::vector<hng::Process> member_set(const hng::role::RolePayload& payload);
+
+    /// @brief 锚点是否已知退出：先查注入的存活视图，再查关系表的墓碑
+    bool anchor_exited(hng::Process p);
 
     /// @brief 按跃迁依次调全部下行出口；kind 为 NONE 或无出口时不动
     void notify(const RoleTransition& transition);
@@ -155,6 +162,8 @@ class RoleManager : public hng::role::RoleEventSink,
     /// 消费线程写、任意线程读，故为原子
     std::atomic<uint64_t> cgroup_read_empty_{0};
     std::atomic<uint64_t> queue_rejected_{0};
+    std::atomic<uint64_t> dead_member_rejected_{0};
+    std::atomic<uint64_t> dead_anchor_rejected_{0};
 };
 
 #endif  // HNG_ROLE_MANAGER_HPP_
