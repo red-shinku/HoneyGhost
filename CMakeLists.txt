@@ -213,6 +213,7 @@ target_include_directories(hng_process_manager PUBLIC
 # ============================================================
 add_library(hng_context_manager STATIC
     agent/control_plane/src/context_manager.cc
+    agent/control_plane/src/context_store.cc
 )
 target_include_directories(hng_context_manager PUBLIC
     ${HNG_SOURCE_DIR}

@@ -495,7 +495,7 @@ void run_ownership_conflict()
 
 void run_capacity_degrade()
 {
-    ContextManagerOptions options;
+    ContextStoreOptions options;
     options.link_pending.capacity = 0;
     options.bind_pending.capacity = 0;
     ContextManager manager(options);
@@ -521,7 +521,7 @@ void run_capacity_degrade()
 void run_ttl_expiry()
 {
     FakeClock clock;
-    ContextManagerOptions options;
+    ContextStoreOptions options;
     options.link_pending.ttl = std::chrono::milliseconds(100);
     options.bind_pending.ttl = std::chrono::milliseconds(100);
     options.tombstones.ttl   = std::chrono::milliseconds(100);

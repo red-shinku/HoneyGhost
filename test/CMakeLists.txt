@@ -46,6 +46,11 @@ add_executable(test_context_manager test_context_manager.cc)
 target_link_libraries(test_context_manager PRIVATE hng_context_manager)
 add_test(NAME test_context_manager COMMAND test_context_manager)
 
+# 控制平面的上下文关系存储层：单线程直调，无队列 / 无 IO / 无特权
+add_executable(test_context_store test_context_store.cc)
+target_link_libraries(test_context_store PRIVATE hng_context_manager)
+add_test(NAME test_context_store COMMAND test_context_store)
+
 # 控制平面的进程管理器：三个注入点走替身，无 IO / 无特权
 add_executable(test_process_manager test_process_manager.cc)
 target_link_libraries(test_process_manager PRIVATE hng_process_manager)
