@@ -18,6 +18,17 @@ bool acceptable(const hng::role::RolePayload& payload)
 
 }  // namespace
 
+void RoleMemberChanges::add(uint32_t role_id, hng::Process p)
+{
+    for (Entry& entry : entries) {
+        if (entry.role_id == role_id) {
+            entry.members.push_back(p);
+            return;
+        }
+    }
+    entries.push_back(Entry{role_id, {p}});
+}
+
 RoleRelationStore::RoleRelationStore(RoleRelationOptions options)
     : options_(std::move(options)),
       bind_pending_(options_.bind_pending),
@@ -44,18 +55,20 @@ RoleTransition RoleRelationStore::join(const hng::role::RolePayload& payload,
             return RoleTransition{};
         }
         RoleTransition transition{};
+        RoleMemberChanges changes;
         if (record->second.main_process == payload.main_process) {
-            adopt_all(role_id, record->second, payload.main_process, members,
-                      now);
+            adopt_all(role_id, record->second, payload.main_process, members, now,
+                      changes);
         }
         else {
-            transition =
-                rebind_anchor(role_id, record->second, payload, members, now);
+            transition = rebind_anchor(role_id, record->second, payload, members,
+                                       now, changes);
         }
-        drain_anchor(payload.main_process, now, 0);
+        drain_anchor(payload.main_process, now, 0, changes);
         for (const hng::Process& p : members) {
-            drain_anchor(p, now, 0);
+            drain_anchor(p, now, 0, changes);
         }
+        transition.members = std::move(changes);
         return transition;
     }
 
@@ -69,13 +82,16 @@ RoleTransition RoleRelationStore::join(const hng::role::RolePayload& payload,
     fresh.identity       = payload.identity;
     fresh.main_process   = payload.main_process;
     fresh.cgroup_path    = payload.cgroup_path;
-    adopt_all(role_id, fresh, payload.main_process, members, now);
-    drain_anchor(payload.main_process, now, 0);
+    RoleTransition transition{RoleTransition::Kind::JOINED, fresh.role, {}};
+    RoleMemberChanges changes;
+    adopt_all(role_id, fresh, payload.main_process, members, now, changes);
+    drain_anchor(payload.main_process, now, 0, changes);
     for (const hng::Process& p : members) {
-        drain_anchor(p, now, 0);
+        drain_anchor(p, now, 0, changes);
     }
+    transition.members = std::move(changes);
 
-    return RoleTransition{RoleTransition::Kind::JOINED, fresh.role};
+    return transition;
 }
 
 RoleTransition RoleRelationStore::main_process_change(
@@ -102,17 +118,20 @@ RoleTransition RoleRelationStore::main_process_change(
         return RoleTransition{};
     }
     RoleTransition transition{};
+    RoleMemberChanges changes;
     if (record->second.main_process == payload.main_process) {
-        adopt_all(role_id, record->second, payload.main_process, members, now);
+        adopt_all(role_id, record->second, payload.main_process, members, now,
+                  changes);
     }
     else {
-        transition =
-            rebind_anchor(role_id, record->second, payload, members, now);
+        transition = rebind_anchor(role_id, record->second, payload, members, now,
+                                   changes);
     }
-    drain_anchor(payload.main_process, now, 0);
+    drain_anchor(payload.main_process, now, 0, changes);
     for (const hng::Process& p : members) {
-        drain_anchor(p, now, 0);
+        drain_anchor(p, now, 0, changes);
     }
+    transition.members = std::move(changes);
     return transition;
 }
 
@@ -150,24 +169,26 @@ RoleTransition RoleRelationStore::leave(const std::string& instance_key)
     instance_to_role_.erase(instance);
     role_table_.erase(record);
 
-    return RoleTransition{RoleTransition::Kind::LEFT, role};
+    return RoleTransition{RoleTransition::Kind::LEFT, role, {}};
 }
 
-void RoleRelationStore::bind_to_role(hng::Process child, hng::Process parent)
+RoleMemberChanges RoleRelationStore::bind_to_role(hng::Process child,
+                                                  hng::Process parent)
 {
     std::unique_lock lock(mutex_);
     const hng::RelationTimePoint now = options_.now();
+    RoleMemberChanges changes;
 
     if (tombstones_.find(child, now).has_value()) {
         ++stats_.bind_rejected;
-        return;
+        return changes;
     }
 
     auto child_owned = process_to_role_.find(child);
     if (child_owned != process_to_role_.end()) {
         ++stats_.bind_ignored;
-        drain_anchor(child, now, 0);
-        return;
+        drain_anchor(child, now, 0, changes);
+        return changes;
     }
 
     auto parent_owned = process_to_role_.find(parent);
@@ -175,16 +196,21 @@ void RoleRelationStore::bind_to_role(hng::Process child, hng::Process parent)
         uint32_t role_id = parent_owned->second;
         auto record      = role_table_.find(role_id);
         if (record != role_table_.end()) {
-            if (adopt(role_id, record->second, child, now)) {
-                drain_anchor(child, now, 0);
+            const AdoptResult result = adopt(role_id, record->second, child, now);
+            if (result == AdoptResult::REJECTED) {
+                return changes;
             }
-            return;
+            if (result == AdoptResult::ADDED) {
+                changes.add(role_id, child);
+            }
+            drain_anchor(child, now, 0, changes);
+            return changes;
         }
     }
 
     if (tombstones_.find(parent, now).has_value()) {
         ++stats_.bind_rejected;
-        return;
+        return changes;
     }
 
     const decltype(bind_pending_)::Result result =
@@ -195,6 +221,7 @@ void RoleRelationStore::bind_to_role(hng::Process child, hng::Process parent)
     else {
         ++stats_.bind_rejected;
     }
+    return changes;
 }
 
 void RoleRelationStore::on_process_exited(hng::Process p)
@@ -350,42 +377,57 @@ RoleStoreStats RoleRelationStore::stats() const
     return snapshot;
 }
 
-bool RoleRelationStore::adopt(uint32_t role_id, RoleRecord& record,
-                              hng::Process p, hng::RelationTimePoint now)
+RoleRelationStore::AdoptResult RoleRelationStore::adopt(
+    uint32_t role_id, RoleRecord& record, hng::Process p,
+    hng::RelationTimePoint now)
 {
     if (tombstones_.find(p, now).has_value()) {
-        return false;
+        return AdoptResult::REJECTED;
     }
 
+    bool added = false;
     auto owned = process_to_role_.find(p);
     if (owned == process_to_role_.end()) {
         process_to_role_.emplace(p, role_id);
+        added = true;
     }
     else if (owned->second != role_id) {
         owned->second = role_id;
         ++stats_.owner_conflict;
+        added = true;
     }
     record.entries.insert(p);
-    return true;
+    return added ? AdoptResult::ADDED : AdoptResult::PRESENT;
 }
 
 void RoleRelationStore::adopt_all(uint32_t role_id, RoleRecord& record,
                                   hng::Process anchor,
                                   const std::vector<hng::Process>& members,
-                                  hng::RelationTimePoint now)
+                                  hng::RelationTimePoint now,
+                                  RoleMemberChanges& changes)
 {
-    if (!adopt(role_id, record, anchor, now)) {
-        ++stats_.late_adopt_rejected;
-    }
-    for (const hng::Process& p : members) {
-        if (!adopt(role_id, record, p, now)) {
-            ++stats_.late_adopt_rejected;
+    auto adopt_one = [&](const hng::Process& p) {
+        switch (adopt(role_id, record, p, now)) {
+            case AdoptResult::ADDED:
+                changes.add(role_id, p);
+                break;
+            case AdoptResult::PRESENT:
+                break;
+            case AdoptResult::REJECTED:
+                ++stats_.late_adopt_rejected;
+                break;
         }
+    };
+
+    adopt_one(anchor);
+    for (const hng::Process& p : members) {
+        adopt_one(p);
     }
 }
 
 void RoleRelationStore::drain_anchor(hng::Process anchor,
-                                     hng::RelationTimePoint now, int depth)
+                                     hng::RelationTimePoint now, int depth,
+                                     RoleMemberChanges& changes)
 {
     if (depth >= kMaxDrainDepth) {
         return;
@@ -409,14 +451,21 @@ void RoleRelationStore::drain_anchor(hng::Process anchor,
         }
         if (process_to_role_.find(child) == process_to_role_.end()) {
             auto record = role_table_.find(role_id);
-            if (record == role_table_.end() ||
-                !adopt(role_id, record->second, child, now)) {
+            if (record == role_table_.end()) {
                 ++stats_.bind_rejected;
                 continue;
             }
+            const AdoptResult result = adopt(role_id, record->second, child, now);
+            if (result == AdoptResult::REJECTED) {
+                ++stats_.bind_rejected;
+                continue;
+            }
+            if (result == AdoptResult::ADDED) {
+                changes.add(role_id, child);
+            }
         }
         ++stats_.bind_resolved;
-        drain_anchor(child, now, depth + 1);
+        drain_anchor(child, now, depth + 1, changes);
     }
 }
 
@@ -435,7 +484,8 @@ void RoleRelationStore::fail_anchor(hng::Process anchor, int depth)
 
 RoleTransition RoleRelationStore::rebind_anchor(
     uint32_t role_id, RoleRecord& record, const hng::role::RolePayload& payload,
-    const std::vector<hng::Process>& members, hng::RelationTimePoint now)
+    const std::vector<hng::Process>& members, hng::RelationTimePoint now,
+    RoleMemberChanges& changes)
 {
     // 锚点更换后不再是「锚点已删」：这里说的是旧锚点
     if (record.anchor_removed) {
@@ -444,13 +494,13 @@ RoleTransition RoleRelationStore::rebind_anchor(
     }
 
     // 并入而非覆盖 entries：覆盖会丢掉旧键，LEAVE 便漏删
-    adopt_all(role_id, record, payload.main_process, members, now);
+    adopt_all(role_id, record, payload.main_process, members, now, changes);
 
     record.identity       = payload.identity;
     record.main_process   = payload.main_process;
     record.cgroup_path    = payload.cgroup_path;
     record.role.roleLabel = RoleLabelBuilder::build(payload.identity);
 
-    return RoleTransition{RoleTransition::Kind::MAIN_PROCESS_CHANGED,
-                          record.role};
+    return RoleTransition{
+        RoleTransition::Kind::MAIN_PROCESS_CHANGED, record.role, {}};
 }

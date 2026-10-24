@@ -40,6 +40,11 @@ class Barrier final : public RoleLifecycleSink {
     void on_role_joined(const Role&) override { notify(); }
     void on_role_left(const Role&) override { notify(); }
     void on_role_main_process_changed(const Role&) override { notify(); }
+    void on_role_members_changed(const Role&,
+                                 const std::vector<Process>&) override
+    {
+        notify();
+    }
     void wait(int count)
     {
         std::unique_lock lock(mutex_);
@@ -68,10 +73,12 @@ int main()
         const Process first{501, 700}, second{502, 701}, child{503, 702};
         std::mutex probe_mutex;
         std::vector<Process> observed{first};
-        RoleManager manager({[&](const std::string&) {
+        RoleManagerProbe probe;
+        probe.read_members = [&](const std::string&) {
             std::lock_guard lock(probe_mutex);
             return observed;
-        }});
+        };
+        RoleManager manager(probe);
         auto map   = std::make_unique<Map>();
         auto* view = map.get();
         std::istringstream input(
@@ -106,7 +113,7 @@ int main()
         event.payload.main_process          = first;
         event.payload.cgroup_path           = "/test";
         manager.on_role_event(event);
-        barrier.wait(1);
+        barrier.wait(2);  // 加入 + 本次落地的新增成员
         filter.drain();
         require(manager.lookup(first).has_value());
         require(view->values.count(first));
@@ -115,6 +122,15 @@ int main()
         auto supervised = manager.supervised_roles();
         require(supervised.size() == 1 && supervised[0].roleID == *first_id,
                 "关注角色应登记监管");
+
+        // 周期 JOIN 携带 cgroup 重读看不到的成员：只有成员通知能把它带进名单
+        const Process notified{504, 704};
+        event.payload.member_processes = {first, notified};
+        manager.on_role_event(event);
+        barrier.wait(3);
+        filter.drain();
+        require(view->values.count(notified), "成员新增通知应更新名单");
+
         {
             std::lock_guard lock(probe_mutex);
             observed.push_back(child);
@@ -126,12 +142,13 @@ int main()
         event.payload.identity.source = role::RoleSource::CONTAINERD;
         event.payload.identity.attributes["image"] = "registry/app:v1";
         event.payload.main_process                 = second;
+        event.payload.member_processes.clear();
         {
             std::lock_guard lock(probe_mutex);
             observed = {second};
         }
         manager.on_role_event(event);
-        barrier.wait(2);
+        barrier.wait(5);  // 锚点更换 + 新锚点的成员通知
         filter.drain();
         require(view->values.count(second));
         auto id = manager.lookup(second);
@@ -148,7 +165,7 @@ int main()
         require(manager.supervised_roles().empty(), "策略清空应撤销监管");
         event.action = role::RoleAction::LEAVE;
         manager.on_role_event(event);
-        barrier.wait(3);
+        barrier.wait(6);
         filter.drain();
         require(view->values.empty() && filter.stats().roles == 0);
         require(!manager.lookup(second));

@@ -71,17 +71,30 @@ void RoleFilterState::run()
     while (true) {
         std::deque<FilterTask> batch;
         bool done;
+        bool due;
         {
             std::unique_lock lock(queue_mutex_);
             cv_.wait_until(lock, next,
                            [&] { return stopped_ || !queue_.empty(); });
             batch.swap(queue_);
             done = stopped_;
+            due  = std::chrono::steady_clock::now() >= next;
         }
-        for (const auto& task : batch) land(task);
-        refresh();
+        /** @note 只有成员新增任务时不必重查权威源：成员并入后直接重算差异，
+         * 周期刷新仍按原到点时刻执行，不被成员通知无限推迟。 */
+        bool rescan = done || due;
+        for (const auto& task : batch) {
+            land(task);
+            if (task.kind != FilterTask::Kind::MEMBERS) rescan = true;
+        }
+        if (rescan) {
+            refresh();
+            next = std::chrono::steady_clock::now() + options_.refresh_interval;
+        }
+        else {
+            apply();
+        }
         if (done) return;
-        next = std::chrono::steady_clock::now() + options_.refresh_interval;
     }
 }
 
@@ -112,6 +125,17 @@ void RoleFilterState::land(const FilterTask& task)
             break;
         case FilterTask::Kind::REFRESH:
             break;
+        case FilterTask::Kind::MEMBERS: {
+            auto tracked = roles_.find(task.role.roleID);
+            if (tracked == roles_.end() ||
+                !policy_.should_collect(tracked->second.roleLabel))
+                break;
+            /** @note 只并入不替换：枚举为空或偏少都不能当作成员离开。 */
+            auto& known = members_[task.role.roleID];
+            for (Process process : task.members)
+                if (process.pid && process.pid_start_time) known.insert(process);
+            break;
+        }
     }
 }
 
@@ -156,6 +180,11 @@ void RoleFilterState::refresh()
         }
         ++it;
     }
+    apply();
+}
+
+void RoleFilterState::apply()
+{
     ProcessSet desired;
     for (const auto& [id, known] : members_) {
         auto entry = roles_.find(id);
@@ -233,12 +262,12 @@ RoleFilter::~RoleFilter() = default;
 
 void RoleFilter::on_role_joined(const Role& role)
 {
-    state_->enqueue({detail::FilterTask::Kind::UPDATE, role, {}});
+    state_->enqueue({detail::FilterTask::Kind::UPDATE, role, {}, {}});
 }
 
 void RoleFilter::on_role_left(const Role& role)
 {
-    state_->enqueue({detail::FilterTask::Kind::LEAVE, role, {}});
+    state_->enqueue({detail::FilterTask::Kind::LEAVE, role, {}, {}});
 }
 
 void RoleFilter::on_role_main_process_changed(const Role& role)
@@ -246,16 +275,23 @@ void RoleFilter::on_role_main_process_changed(const Role& role)
     on_role_joined(role);
 }
 
+void RoleFilter::on_role_members_changed(const Role& role,
+                                         const std::vector<Process>& added)
+{
+    state_->enqueue({detail::FilterTask::Kind::MEMBERS, role, {}, added});
+}
+
 void RoleFilter::request_refresh()
 {
-    state_->enqueue({detail::FilterTask::Kind::REFRESH, {}, {}});
+    state_->enqueue({detail::FilterTask::Kind::REFRESH, {}, {}, {}});
 }
 
 void RoleFilter::replace_policy(RoleFilterPolicy policy)
 {
     state_->enqueue({detail::FilterTask::Kind::POLICY,
                      {},
-                     std::make_shared<RoleFilterPolicy>(std::move(policy))});
+                     std::make_shared<RoleFilterPolicy>(std::move(policy)),
+                     {}});
 }
 
 void RoleFilter::set_supervision_service(::RoleSupervisionService* service)

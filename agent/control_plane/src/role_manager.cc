@@ -56,7 +56,7 @@ void RoleManager::land(RoleTask& task)
         land_event(*event);
     }
     else if (auto* bind = std::get_if<BindMessage>(&task)) {
-        store_.bind_to_role(bind->child, bind->parent);
+        notify_members(store_.bind_to_role(bind->child, bind->parent));
     }
     else if (auto* exited = std::get_if<ExitedMessage>(&task)) {
         store_.on_process_exited(exited->process);
@@ -134,22 +134,41 @@ std::vector<hng::Process> RoleManager::member_set(
 
 void RoleManager::notify(const RoleTransition& transition)
 {
-    if (transition.kind == RoleTransition::Kind::NONE) {
-        return;  // 幂等重放、入口拒收、未知实例键：一次都不通知
+    // 生命周期通知先于本次落地的新增成员：订阅方先建立角色再收成员
+    if (transition.kind != RoleTransition::Kind::NONE) {
+        for (RoleLifecycleSink* sink : lifecycle_sinks_) {
+            switch (transition.kind) {
+                case RoleTransition::Kind::NONE:
+                    break;  // 上面已排除
+                case RoleTransition::Kind::JOINED:
+                    sink->on_role_joined(transition.role);
+                    break;
+                case RoleTransition::Kind::LEFT:
+                    sink->on_role_left(transition.role);
+                    break;
+                case RoleTransition::Kind::MAIN_PROCESS_CHANGED:
+                    sink->on_role_main_process_changed(transition.role);
+                    break;
+            }
+        }
     }
-    for (RoleLifecycleSink* sink : lifecycle_sinks_) {
-        switch (transition.kind) {
-            case RoleTransition::Kind::NONE:
-                break;  // 上面已排除
-            case RoleTransition::Kind::JOINED:
-                sink->on_role_joined(transition.role);
-                break;
-            case RoleTransition::Kind::LEFT:
-                sink->on_role_left(transition.role);
-                break;
-            case RoleTransition::Kind::MAIN_PROCESS_CHANGED:
-                sink->on_role_main_process_changed(transition.role);
-                break;
+    notify_members(transition.members);
+}
+
+void RoleManager::notify_members(const RoleMemberChanges& changes)
+{
+    for (const RoleMemberChanges::Entry& entry : changes.entries) {
+        if (entry.members.empty()) {
+            continue;
+        }
+        /** @note 落地已释放关系表锁，此处查角色视图可能拿到已被 LEAVE 删掉的
+         * 结果，跳过即可。 */
+        std::optional<hng::Role> role = store_.role(entry.role_id);
+        if (!role) {
+            continue;
+        }
+        for (RoleLifecycleSink* sink : lifecycle_sinks_) {
+            sink->on_role_members_changed(*role, entry.members);
         }
     }
 }

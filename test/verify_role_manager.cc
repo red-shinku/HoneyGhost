@@ -105,7 +105,7 @@ std::optional<hng::Process> read_self()
 
 /**
  * @brief 下游替身：按 roleID 维护基线集合，并在回调内反查查询接口
- * @note 三个回调都跑在消费线程上；跨线程读的计数是原子的
+ * @note 四个回调都跑在消费线程上；跨线程读的计数在锁内或为原子量
  */
 class BaselineSink : public RoleLifecycleSink {
    public:
@@ -144,6 +144,18 @@ class BaselineSink : public RoleLifecycleSink {
         cv_.notify_all();
     }
 
+    void on_role_members_changed(const hng::Role& role,
+                                 const std::vector<hng::Process>& added) override
+    {
+        // 成员通知到达时角色必须仍可查，否则下游增量维护的基线是错的
+        if (!lookups_.role(role.roleID).has_value() || added.empty()) {
+            ++errors_;
+        }
+        std::lock_guard lock(mutex_);
+        added_members_ += added.size();
+        cv_.notify_all();
+    }
+
     bool wait_counts(uint64_t joined, uint64_t left, uint64_t changed)
     {
         std::unique_lock lock(mutex_);
@@ -160,15 +172,22 @@ class BaselineSink : public RoleLifecycleSink {
 
     uint64_t errors() const { return errors_.load(); }
 
+    uint64_t added_members()
+    {
+        std::lock_guard lock(mutex_);
+        return added_members_;
+    }
+
    private:
     RoleLookupService& lookups_;
 
     std::mutex mutex_;
     std::condition_variable cv_;
     std::set<uint32_t> alive_;
-    uint64_t joined_  = 0;
-    uint64_t left_    = 0;
-    uint64_t changed_ = 0;
+    uint64_t joined_        = 0;
+    uint64_t left_          = 0;
+    uint64_t changed_       = 0;
+    uint64_t added_members_ = 0;
     std::atomic<uint64_t> errors_{0};
 };
 
@@ -231,6 +250,8 @@ int main()
     CHECK(sink.wait_counts(kRoles, 0, 0), "全部加入通知应在时限内到齐");
     CHECK(sink.alive_count() == static_cast<std::size_t>(kRoles),
           "下游基线应含全部角色");
+    CHECK(sink.added_members() >= static_cast<uint64_t>(kRoles),
+          "首次建表应报告每个角色的新增成员");
     CHECK(sink.errors() == 0, "出口回调内反查角色记录应全部命中");
 
     for (const RoleSpec& spec : specs) {

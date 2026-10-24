@@ -353,6 +353,65 @@ void periodic()
     require(fixture.map->wait(child), "无新角色通知也定时补齐成员");
 }
 
+void member_notifications()
+{
+    const Process first{301, 1300}, child{302, 1301}, orphan{303, 1302};
+    Fixture fixture;
+    fixture.joined({1, "nginx.service"}, {first});
+    require(fixture.map->contains(first), "加入后允许成员");
+    require(fixture.map->allow_calls == 1, "加入只写一次");
+
+    // 权威枚举仍只返回旧成员：新增项只能来自通知载荷
+    fixture.filter->on_role_members_changed({1, "nginx.service"}, {child});
+    fixture.filter->drain();
+    require(fixture.map->contains(child), "成员通知应即时允许新增进程");
+
+    fixture.filter->on_role_members_changed({99, "nginx.service"}, {orphan});
+    fixture.filter->drain();
+    require(!fixture.map->contains(orphan), "未跟踪角色的成员通知应忽略");
+
+    fixture.joined({2, "ignored.service"}, {});
+    fixture.filter->on_role_members_changed({2, "ignored.service"}, {orphan});
+    fixture.filter->drain();
+    require(!fixture.map->contains(orphan), "未关注角色的成员通知应忽略");
+
+    fixture.filter->on_role_members_changed({1, "nginx.service"}, {{0, 0}});
+    fixture.filter->drain();
+    require(fixture.map->allow_calls == 2, "空身份不应写入 map");
+}
+
+void member_prompt()
+{
+    const Process first{401, 1400}, child{402, 1401};
+    Lookup lookup;
+    lookup.set({1, "nginx.service"}, {first});
+    auto backend = std::make_unique<Map>();
+    Map* map     = backend.get();
+    RoleFilterOptions options;
+    options.refresh_interval = std::chrono::hours(1);
+    options.liveness         = [](Process) { return ProcessLiveness::ALIVE; };
+    RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+                      std::move(backend), options);
+    struct Runner {
+        RoleFilter& filter;
+        std::thread thread;
+        explicit Runner(RoleFilter& value)
+            : filter(value), thread([&value] { value.run(); })
+        {
+        }
+        ~Runner()
+        {
+            filter.stop();
+            thread.join();
+        }
+    } runner(filter);
+    filter.on_role_joined({1, "nginx.service"});
+    require(map->wait(first), "消费线程应处理加入");
+    // 周期刷新远未到点：名单更新只能由成员通知触发
+    filter.on_role_members_changed({1, "nginx.service"}, {child});
+    require(map->wait(child), "成员通知应即时更新名单，不必等周期刷新");
+}
+
 void liveness()
 {
     const auto parent =
@@ -424,6 +483,8 @@ int main()
         configuration();
         maintenance();
         periodic();
+        member_notifications();
+        member_prompt();
         liveness();
         std::printf("PASS: role_filter, %d checks\n", checks);
         return 0;

@@ -12,17 +12,19 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include "agent/role_filter/include/role_filter.hpp"
 
 namespace hng::detail {
 using ProcessSet = std::unordered_set<Process>;
 
-/** @brief 角色更新、退出、刷新或策略替换任务。 */
+/** @brief 角色更新、退出、成员新增、刷新或策略替换任务。 */
 struct FilterTask {
-    enum class Kind { UPDATE, LEAVE, REFRESH, POLICY };
+    enum class Kind { UPDATE, LEAVE, REFRESH, POLICY, MEMBERS };
     Kind kind;
     Role role{};
     std::shared_ptr<RoleFilterPolicy> policy;
+    std::vector<Process> members;  ///< MEMBERS：本次新归属该角色的进程
 };
 
 /** @brief 单消费线程持有缓存，短临界区仅保护任务队列。 */
@@ -43,6 +45,8 @@ class RoleFilterState {
    private:
     /** @brief 按状态变化登记或移除监管；未注入服务时为空操作。 */
     void sync_supervision(uint32_t role_id, bool supervised);
+    /** @brief 按成员缓存与策略重算名单差异并同步 map。 */
+    void apply();
     const ::RoleLookupService& lookup_;
     RoleFilterPolicy policy_;
     std::unique_ptr<ProcessFilterMap> map_;

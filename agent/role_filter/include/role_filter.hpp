@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_filter/include/process_filter_map.hpp"
@@ -44,7 +45,8 @@ struct RoleFilterStats {
 
 /**
  * @brief 由角色通知和周期刷新驱动的进程名单维护器。
- * @details 回调只入队，成员枚举、正则匹配、map 写入与监管登记由单消费线程执行。
+ * @details 回调只入队；成员枚举、正则匹配、map 写入与监管登记由单消费线程执行。
+ * 成员新增通知在消费线程上直接并入成员缓存并重算名单差异，不重查权威源。
  * 实现最新版全局 RoleLifecycleSink，借用全局 RoleLookupService；可通过
  * set_supervision_service 注入监管登记写入侧。
  * @pre 在 RoleManager::run() 前注册，lookup 必须活到本对象析构后。
@@ -91,6 +93,14 @@ class RoleFilter final : public ::RoleLifecycleSink {
      * @param[in] role 更新后的角色快照。
      */
     void on_role_main_process_changed(const Role& role) override;
+    /**
+     * @brief 将角色成员新增通知入队。
+     * @param[in] role 当前角色快照。
+     * @param[in] added 本次新归属该角色的进程。
+     * @note 只并入成员缓存；成员移除仍由周期刷新中的存活核对收敛。
+     */
+    void on_role_members_changed(const Role& role,
+                                 const std::vector<Process>& added) override;
     /** @brief 入队一次立即刷新请求。 */
     void request_refresh();
     /**

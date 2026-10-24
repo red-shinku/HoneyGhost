@@ -14,6 +14,8 @@
  *  - 容量为 0 与 TTL 过期降级，墓碑深度为当前值；
  *  - on_process_exited：归属条目消失而角色记录仍在；
  *  - 锚点 gauge：锚点退出时计入、重复上报不重复计入、换锚点与退出时退出计数；
+ *  - 成员新增报告：首次加入、成员漂移、锚点更换、bind 与父落地应用，只报告
+ *    真正新归属的进程；
  *  - 入口拒收与异常态计数；roleID 从 1 起单调递增、不复用；
  *  - roleLabel：按来源取 unit 名 / 镜像引用，缺镜像与未声明来源各退到类型键，
  *    锚点更换时随新身份重算。
@@ -584,6 +586,78 @@ void run_capacity_and_expiry()
     CHECK(expiring.stats().bind_resolved == 0, "过期等待项不计为已应用");
 }
 
+/// 谓词：changes 恰好是给定角色的这些新增成员
+bool only_role(const RoleMemberChanges& changes, uint32_t role_id,
+               const std::vector<hng::Process>& expected)
+{
+    return changes.entries.size() == 1 && changes.entries[0].role_id == role_id &&
+           changes.entries[0].members == expected;
+}
+
+void run_member_changes()
+{
+    RoleRelationStore store;
+
+    // 首次加入：锚点与成员都算新增
+    RoleTransition joined = store.join(mk_payload("a", 100, 1000),
+                                       {proc(100, 1000), proc(101, 1001)});
+    const uint32_t role   = joined.role.roleID;
+    CHECK(only_role(joined.members, role, {proc(100, 1000), proc(101, 1001)}),
+          "首次加入应报告锚点与载荷成员");
+
+    // 同锚点重放且成员集不变：无新增
+    RoleTransition replay = store.join(mk_payload("a", 100, 1000),
+                                       {proc(100, 1000), proc(101, 1001)});
+    CHECK(replay.kind == Kind::NONE && replay.members.entries.empty(),
+          "重复投递不得报告新增");
+
+    // 同锚点重放且成员集变宽：只报告新成员
+    RoleTransition drift =
+        store.join(mk_payload("a", 100, 1000),
+                   {proc(100, 1000), proc(101, 1001), proc(102, 1002)});
+    CHECK(drift.kind == Kind::NONE &&
+              only_role(drift.members, role, {proc(102, 1002)}),
+          "成员漂移只报告新增成员");
+
+    // 锚点更换：新锚点算新增
+    RoleTransition moved =
+        store.main_process_change(mk_payload("a", 200, 2000), {proc(200, 2000)});
+    CHECK(moved.kind == Kind::MAIN_PROCESS_CHANGED &&
+              only_role(moved.members, role, {proc(200, 2000)}),
+          "锚点更换应报告新锚点");
+
+    // 父已归属的 bind：立即报告子进程
+    RoleMemberChanges bound =
+        store.bind_to_role(proc(103, 1003), proc(100, 1000));
+    CHECK(only_role(bound, role, {proc(103, 1003)}), "bind 应报告继承的子进程");
+
+    // 已有归属的子进程：不报告
+    RoleMemberChanges again =
+        store.bind_to_role(proc(103, 1003), proc(100, 1000));
+    CHECK(again.entries.empty(), "已有归属的 bind 不得报告新增");
+    CHECK(store.stats().bind_ignored == 1, "已有归属应计数");
+
+    // 父未归属的暂存 bind：父落地时随该次落地报告
+    RoleMemberChanges deferred =
+        store.bind_to_role(proc(302, 3002), proc(300, 3000));
+    CHECK(deferred.entries.empty(), "暂存的 bind 落地前不得报告");
+    RoleTransition landed =
+        store.join(mk_payload("d", 300, 3000), {proc(300, 3000)});
+    CHECK(landed.kind == Kind::JOINED &&
+              only_role(landed.members, landed.role.roleID,
+                        {proc(300, 3000), proc(302, 3002)}),
+          "父落地应用暂存 bind 时应一并报告子进程");
+
+    // 墓碑拒绝的写入不得出现在报告里
+    RoleRelationStore blocked_store;
+    blocked_store.on_process_exited(proc(401, 4001));
+    RoleTransition blocked = blocked_store.join(
+        mk_payload("e", 400, 4000), {proc(400, 4000), proc(401, 4001)});
+    CHECK(blocked.kind == Kind::JOINED &&
+              only_role(blocked.members, blocked.role.roleID, {proc(400, 4000)}),
+          "墓碑拒绝的成员不得进入新增报告");
+}
+
 }  // namespace
 
 int main()
@@ -607,6 +681,7 @@ int main()
     run_late_adopt();
     run_store_tombstone();
     run_capacity_and_expiry();
+    run_member_changes();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

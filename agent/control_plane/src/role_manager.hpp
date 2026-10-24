@@ -147,8 +147,11 @@ class RoleManager : public hng::role::RoleEventSink,
     /// @brief 锚点是否已知退出：先查注入的存活视图，再查关系表的墓碑
     bool anchor_exited(hng::Process p);
 
-    /// @brief 按跃迁依次调全部下行出口；kind 为 NONE 或无出口时不动
+    /// @brief 按跃迁依次调全部下行出口；kind 为 NONE 时不产生生命周期通知
     void notify(const RoleTransition& transition);
+
+    /// @brief 按角色依次调全部下行出口的成员新增通知
+    void notify_members(const RoleMemberChanges& changes);
 
     RoleManagerProbe probe_;
     /// 注册的下行出口，不接管生命周期；run() 之后不再变更

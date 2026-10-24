@@ -32,6 +32,22 @@
 #include "agent/util/include/tombstone_table.hpp"
 
 /**
+ * @brief 一次落地新增的成员归属，按角色分组
+ * @details 供调用方在 store 之外对每个角色通知新增成员，store 自身不通知。
+ */
+struct RoleMemberChanges {
+    struct Entry {
+        uint32_t role_id = 0;               ///< 成员所属角色
+        std::vector<hng::Process> members;  ///< 新归属该角色的进程
+    };
+
+    std::vector<Entry> entries;  ///< 同一角色至多一项
+
+    /// @brief 记录 p 新归属 role_id；该角色无记录时新建一项
+    void add(uint32_t role_id, hng::Process p);
+};
+
+/**
  * @brief 一次落地产生的跃迁结果
  * @details 供调用方在 store 之外按下行出口通知，store 自身不通知。
  */
@@ -45,6 +61,8 @@ struct RoleTransition {
 
     Kind kind = Kind::NONE;
     hng::Role role;  ///< 跃迁后的对外视图，含重算过的 roleLabel；NONE 时无意义
+    /// 本次落地新增的成员归属；与 kind 无关，无新增时为空
+    RoleMemberChanges members;
 };
 
 /// @brief 一个存活角色的全部记录
@@ -103,9 +121,10 @@ class RoleRelationStore {
     /// @brief 子进程继承父进程的角色归属
     /// @param child 等待归属的进程
     /// @param parent 其父进程
+    /// @return 本次落地新增的成员归属；暂存或丢弃时为空
     /// @note 父进程尚未归属时暂存，待父所属角色落地后应用；子进程已有归属
     ///       或已有墓碑时丢弃本次 bind
-    void bind_to_role(hng::Process child, hng::Process parent);
+    RoleMemberChanges bind_to_role(hng::Process child, hng::Process parent);
 
     /// @brief 进程已退出：写墓碑，丢弃相关等待项，删其归属条目
     /// @note 不改变角色存在性；反向索引里的键留存，LEAVE 删时核对当前值即无副作用
@@ -154,26 +173,35 @@ class RoleRelationStore {
     /// @brief 等待子树的最大递归深度
     static constexpr int kMaxDrainDepth = 32;
 
+    /// @brief 单条成员写入的结果
+    enum class AdoptResult {
+        ADDED,    ///< 原本不归属该角色，本次写入
+        PRESENT,  ///< 已归属该角色，无变化
+        REJECTED  ///< 该身份已有墓碑，未写入
+    };
+
     /// @brief 把 p 记为 role_id 的成员：写归属表并并进反向索引
     /// @param now 查墓碑用的当前时间
-    /// @return 写入或已同角色为 true；p 已有墓碑而未写为 false
     /// @note p 已归属别的角色时改判并计数（成员集是当下的枚举结果，比旧归属新）
-    bool adopt(uint32_t role_id, RoleRecord& record, hng::Process p,
-               hng::RelationTimePoint now);
+    AdoptResult adopt(uint32_t role_id, RoleRecord& record, hng::Process p,
+                      hng::RelationTimePoint now);
 
     /// @brief 并入锚点与成员集
+    /// @param changes 本次新增的归属汇总
     /// @param now 查墓碑用的当前时间
     /// @note 锚点无条件尝试写入：成员集契约已含锚点，此处为「主进程自指」兜底
     /// @note 每条被墓碑拒绝的写入计入 late_adopt_rejected
     void adopt_all(uint32_t role_id, RoleRecord& record, hng::Process anchor,
                    const std::vector<hng::Process>& members,
-                   hng::RelationTimePoint now);
+                   hng::RelationTimePoint now, RoleMemberChanges& changes);
 
     /// @brief 应用以 anchor 为锚点的等待项，并递归收敛子的等待者
     /// @param now 查墓碑与递归共用的当前时间
     /// @param depth 当前递归深度
+    /// @param changes 本次新增的归属汇总
     /// @note 调用方须已持独占锁；anchor 无归属或其角色记录缺失时不做任何事
-    void drain_anchor(hng::Process anchor, hng::RelationTimePoint now, int depth);
+    void drain_anchor(hng::Process anchor, hng::RelationTimePoint now, int depth,
+                      RoleMemberChanges& changes);
 
     /// @brief 丢弃以 anchor 为锚点的等待子树
     /// @param depth 当前递归深度
@@ -181,10 +209,12 @@ class RoleRelationStore {
     void fail_anchor(hng::Process anchor, int depth);
 
     /// @brief 锚点更换的落地，调用方须已持独占锁
+    /// @param changes 本次新增的归属汇总
     RoleTransition rebind_anchor(uint32_t role_id, RoleRecord& record,
                                  const hng::role::RolePayload& payload,
                                  const std::vector<hng::Process>& members,
-                                 hng::RelationTimePoint now);
+                                 hng::RelationTimePoint now,
+                                 RoleMemberChanges& changes);
 
     mutable std::shared_mutex mutex_;
 
