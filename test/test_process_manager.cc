@@ -577,7 +577,7 @@ void run_pid_reuse_not_misfire()
 void run_is_exited_expiry()
 {
     FakeClock clock;
-    ProcessManagerOptions options;
+    ProcessStoreOptions options;
     options.tombstones.ttl = std::chrono::milliseconds(100);
     options.now            = [&clock] { return clock.now; };
 
@@ -599,7 +599,7 @@ void run_is_exited_expiry()
 void run_tombstone_depth()
 {
     FakeClock clock;
-    ProcessManagerOptions options;
+    ProcessStoreOptions options;
     options.tombstones.ttl = std::chrono::milliseconds(100);
     options.now            = [&clock] { return clock.now; };
 

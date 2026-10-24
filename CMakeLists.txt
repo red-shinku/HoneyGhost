@@ -200,6 +200,7 @@ target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
 # ============================================================
 add_library(hng_process_manager STATIC
     agent/control_plane/src/process_manager.cc
+    agent/control_plane/src/process_store.cc
 )
 target_include_directories(hng_process_manager PUBLIC
     ${HNG_SOURCE_DIR}

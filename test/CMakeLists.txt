@@ -56,6 +56,11 @@ add_executable(test_process_manager test_process_manager.cc)
 target_link_libraries(test_process_manager PRIVATE hng_process_manager)
 add_test(NAME test_process_manager COMMAND test_process_manager)
 
+# 控制平面的进程树存储层：单线程直调，无队列 / 无 IO / 无特权
+add_executable(test_process_store test_process_store.cc)
+target_link_libraries(test_process_store PRIVATE hng_process_manager)
+add_test(NAME test_process_store COMMAND test_process_store)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
