@@ -1,14 +1,15 @@
 /**
  * @file context_maintainer.cc
- * @brief ContextMaintainer 实现：派生决策、窗口推进与纯归属查询
+ * @brief ContextMaintainer 实现：派生决策、窗口推进与归属查询
  * @details
  * 输入事件 kind（exec / 诞生 / 退出 / 普通）由使用方识别并调用对应入口；本模块
- * 只维护窗口与进程→context 状态。派生发生时分配 contextID、判定 attr（decide_attr
- * 当前占位恒 UNKNOWN），并经 ContextService 注册到控制平面；KEEP 时经
- * ContextService 把进程挂靠到父进程所属 context 的根。
+ * 维护窗口与进程决策状态。每个进程只在首次 exec（或窗口耗尽）时决策一次：
+ * DERIVE 分配 contextID、判定 attr（decide_attr 当前占位恒 UNKNOWN）并经
+ * ContextService 注册；KEEP 不分配 contextID，仅当父已被观测时经 ContextService
+ * 把进程挂靠到父进程所属 context 的根，否则保持未归属并计数。
  *
  * "父是否解释器"采用近似：以父进程自身最近一次 exec 目标是否解释器家族判定
- * （exec_is_interpreter_），未知按非解释器 → 落入默认派生（安全侧）。
+ * （states_ 中的记录），未知按非解释器 → 落入默认派生（安全侧）。
  * @author red_shinku
  * @date 2026.9.6
  */
@@ -49,11 +50,11 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
     hng::Process p, hng::Process parent, const std::string& filename)
 {
     // 记录该进程最近一次 exec 目标是否解释器（含原地重 exec 的图像变化）
-    exec_is_interpreter_[ProcessKey{p}] =
-        hng::detail::is_interpreter_exec(filename);
+    ProcessContextState& state = states_[ProcessKey{p}];
+    state.exec_is_interpreter  = hng::detail::is_interpreter_exec(filename);
 
-    // 已具自身 context 的进程：原地重 exec，属同一执行实体，不派生
-    if (ctx_lookup_service_ && ctx_lookup_service_->lookup(p)) {
+    // 每个进程只决策一次：已决策的进程为原地重 exec，不再查询控制平面
+    if (state.decided) {
         return {};
     }
 
@@ -72,10 +73,22 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
         return {};  // 防御：判定入口未返回结果
     }
     if (!verdict->derive) {
-        // 留在父 context：把进程挂靠到父进程所属 context 的根
-        if (ctx_join_service_) {
-            ctx_join_service_->bind_to_ctxroot(verdict->child, verdict->parent);
+        // 留在父 context：记录 KEEP，父已被观测时才挂靠，否则保持未归属
+        ProcessContextState& kept = states_[ProcessKey{verdict->child}];
+        kept.decided              = true;
+        kept.kind                 = ContextDecisionKind::KEEP;
+
+        if (observed(verdict->parent, verdict->child)) {
+            if (ctx_join_service_) {
+                ctx_join_service_->bind_to_ctxroot(
+                    verdict->child,
+                    ContextParentRef{verdict->parent, /*expected=*/true});
+            }
         }
+        else {
+            keep_parent_unobserved_.fetch_add(1, std::memory_order_relaxed);
+        }
+
         ContextDeriveDecision d;
         d.kind = ContextDecisionKind::KEEP;
         return d;
@@ -85,12 +98,9 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
 
 void ContextMaintainer::on_birth(hng::Process child, hng::Process parent)
 {
-    if (pending_->is_pending(child)) {
-        return;  // 重复诞生事件，忽略
-    }
-    // 已见过该进程的 exec（乱序 exec 先到 / 重复事件）→ 无需再开窗口
-    if (exec_is_interpreter_.find(ProcessKey{child}) !=
-        exec_is_interpreter_.end()) {
+    // 已在窗口内或已产生决策（乱序 exec 先到 / 重复事件）→ 无需再开窗口
+    if (pending_->is_pending(child) ||
+        states_.count(ProcessKey{child}) != 0) {
         return;
     }
     pending_->on_fork(child, parent, parent_is_interpreter(parent), window_size_);
@@ -108,26 +118,66 @@ ContextDeriveDecision ContextMaintainer::on_event(hng::Process p)
 void ContextMaintainer::on_exit(hng::Process p)
 {
     pending_->on_exit(p);
-    exec_is_interpreter_.erase(ProcessKey{p});
+    states_.erase(ProcessKey{p});
 }
 
 std::optional<uint32_t> ContextMaintainer::lookup_contextID(hng::Process p) const
 {
+    return lookup_contextID_at(p, 0);
+}
+
+std::optional<uint32_t> ContextMaintainer::lookup_contextID_at(
+    hng::Process p, uint32_t depth) const
+{
+    if (depth > kLookupDepthLimit) {
+        lookup_depth_limited_.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+
+    // 决策窗口内：沿父链查询，用于事件的暂时归因
+    if (auto entry = pending_->lookup(p)) {
+        return lookup_contextID_at(entry->parent, depth + 1);
+    }
+
+    auto state = states_.find(ProcessKey{p});
+    if (state != states_.end() &&
+        state->second.kind == ContextDecisionKind::DERIVE) {
+        return state->second.contextID;  // 不等控制平面落地
+    }
+    return lookup_registered(p);
+}
+
+std::optional<uint32_t> ContextMaintainer::lookup_registered(
+    hng::Process p) const
+{
     if (!ctx_lookup_service_) {
         return std::nullopt;
     }
-    // 窗口期内的进程归属父 context（方案 B）
-    if (auto e = pending_->lookup(p)) {
-        return ctx_lookup_service_->lookup(e->parent);
-    }
-    // 其余：进程自身已登记的 context（未登记返回空）
     return ctx_lookup_service_->lookup(p);
+}
+
+ContextMaintainerStats ContextMaintainer::stats() const
+{
+    ContextMaintainerStats snapshot;
+    snapshot.keep_parent_unobserved =
+        keep_parent_unobserved_.load(std::memory_order_relaxed);
+    snapshot.lookup_depth_limited =
+        lookup_depth_limited_.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 bool ContextMaintainer::parent_is_interpreter(hng::Process parent) const
 {
-    auto it = exec_is_interpreter_.find(ProcessKey{parent});
-    return it != exec_is_interpreter_.end() && it->second;
+    auto it = states_.find(ProcessKey{parent});
+    return it != states_.end() && it->second.exec_is_interpreter;
+}
+
+bool ContextMaintainer::observed(hng::Process p, hng::Process self) const
+{
+    if (p == self) {
+        return false;  // 自指父不视为已观测
+    }
+    return pending_->is_pending(p) || states_.count(ProcessKey{p}) != 0;
 }
 
 hng::contextattr ContextMaintainer::decide_attr(hng::Process child,
@@ -148,9 +198,15 @@ ContextDeriveDecision ContextMaintainer::finalize_derive(
     d.contextID = allocate_context_id();
     d.attr      = decide_attr(v.child, v.parent);
 
+    ProcessContextState& state = states_[ProcessKey{v.child}];
+    state.decided              = true;
+    state.kind                 = ContextDecisionKind::DERIVE;
+    state.contextID            = d.contextID;
+
     if (ctx_join_service_) {
         // 父进程链接交给控制平面在落地时解析
-        ctx_join_service_->register_context(v.child, d, v.parent);
+        ctx_join_service_->register_context(
+            v.child, d, ContextParentRef{v.parent, observed(v.parent, v.child)});
     }
     return d;
 }

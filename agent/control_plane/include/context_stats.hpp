@@ -13,10 +13,37 @@
 
 /// @brief 上下文管理器的异常态观测快照
 struct ContextManagerStats {
-    /// 累计：挂靠时父进程的归属尚未落定
-    /// @details 登记竞态（见 docs/red_shinku_logs/控制平面context归属重构.md
-    /// §4）， 该次挂靠为空操作、由工作平面补调。持续增长说明补调未生效，
-    /// 这些进程会一直无归属
+    /// 累计：成功进入延迟关系表的父链接与挂靠条数
+    uint64_t pending_deferred         = 0;
+    /// 累计：从延迟关系表取出并成功应用的条数
+    uint64_t pending_resolved         = 0;
+    /// 累计：延迟关系表已满或同一等待方重复入表而拒绝的条数
+    uint64_t pending_rejected         = 0;
+    /// 累计：延迟关系超过寿命而被取出的条数
+    uint64_t pending_expired          = 0;
+    /// 累计：主动取消的延迟关系条数
+    uint64_t pending_cancelled        = 0;
+    /// 当前：延迟关系表中的条数
+    uint64_t pending_depth            = 0;
+    /// 累计：因父目标消失而无归属的挂靠条数
+    uint64_t bind_orphaned            = 0;
+    /// 累计：无主 context 的附属登记被丢弃的条数
+    uint64_t extra_orphaned           = 0;
+    /// 累计：父 contextID 无法解析、父链接按森林根处理的条数
+    uint64_t parent_missing           = 0;
+    /// 累计：注册命中墓碑而被拒绝的条数
+    uint64_t late_register            = 0;
+    /// 累计：挂靠命中墓碑而被拒绝的条数
+    uint64_t late_bind                = 0;
+    /// 累计：同一根进程重复注册主 context 的条数；保留首条
+    uint64_t duplicate_context        = 0;
+    /// 累计：进程已有不同 context 归属时的改绑尝试条数；保留首条
+    uint64_t ownership_conflict       = 0;
+    /// 累计：墓碑查询命中次数
+    uint64_t tombstone_hits           = 0;
+    /// 当前：墓碑表中的条数
+    uint64_t tombstone_depth          = 0;
+    /// 累计：因父未落定进入延迟表的条数
     uint64_t ctxroot_parent_unsettled = 0;
     /// 累计：注销了未注册的 context 根
     /// @details 注销先于注册到达，该次注销被丢弃，随后的注册会留下一个

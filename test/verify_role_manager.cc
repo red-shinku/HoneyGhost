@@ -313,6 +313,14 @@ int main()
     CHECK(stats.store.owner_conflict == 0, "成员集不应冲突");
     CHECK(stats.store.anchors_removed == 0, "全部退出后锚点 gauge 应归零");
     CHECK(stats.queue_rejected == 0, "运行期不应出现入队被拒");
+    CHECK(stats.bind_deferred == 0 && stats.bind_resolved == 0 &&
+              stats.bind_rejected == 0 && stats.bind_expired == 0 &&
+              stats.bind_ignored == 0,
+          "正常路径不应出现 bind 暂存或丢弃");
+    CHECK(stats.late_adopt_rejected == 0, "正常路径不应出现迟到 adopt");
+    CHECK(stats.dead_member_rejected == 0 && stats.dead_anchor_rejected == 0,
+          "未接存活视图时不应出现死亡过滤");
+    CHECK(stats.tombstone_depth >= 2, "已退出进程应留墓碑");
 
     const uint64_t expected_empty =
         (self && !own_members.empty()) ? kRoles - 1 : kRoles;

@@ -4,7 +4,10 @@
 
 #include "agent/role_discovery/src/role_cgroup_reader.hpp"
 
-RoleManager::RoleManager(RoleManagerProbe probe) : probe_(std::move(probe)) {}
+RoleManager::RoleManager(RoleManagerProbe probe, RoleRelationOptions options)
+    : probe_(std::move(probe)), store_(std::move(options))
+{
+}
 
 void RoleManager::add_lifecycle_sink(RoleLifecycleSink* sink)
 {
@@ -58,15 +61,25 @@ void RoleManager::land(RoleTask& task)
     else if (auto* exited = std::get_if<ExitedMessage>(&task)) {
         store_.on_process_exited(exited->process);
     }
+
+    store_.expire();
 }
 
 void RoleManager::land_event(const hng::role::RoleEvent& event)
 {
     switch (event.action) {
         case hng::role::RoleAction::JOIN:
+            if (anchor_exited(event.payload.main_process)) {
+                dead_anchor_rejected_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
             notify(store_.join(event.payload, member_set(event.payload)));
             break;
         case hng::role::RoleAction::MAIN_PROCESS_CHANGE:
+            if (anchor_exited(event.payload.main_process)) {
+                dead_anchor_rejected_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
             notify(store_.main_process_change(event.payload,
                                               member_set(event.payload)));
             break;
@@ -77,10 +90,30 @@ void RoleManager::land_event(const hng::role::RoleEvent& event)
     }
 }
 
+bool RoleManager::anchor_exited(hng::Process p)
+{
+    if (probe_.is_exited && probe_.is_exited(p)) {
+        return true;
+    }
+    return store_.is_dead(p);
+}
+
 std::vector<hng::Process> RoleManager::member_set(
     const hng::role::RolePayload& payload)
 {
-    std::vector<hng::Process> members = payload.member_processes;
+    std::vector<hng::Process> members;
+
+    auto append = [this, &members](const hng::Process& p) {
+        if (probe_.is_exited && probe_.is_exited(p)) {
+            dead_member_rejected_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        members.push_back(p);
+    };
+
+    for (const hng::Process& p : payload.member_processes) {
+        append(p);
+    }
 
     if (!payload.cgroup_path.empty()) {
         std::vector<hng::Process> reread =
@@ -90,10 +123,12 @@ std::vector<hng::Process> RoleManager::member_set(
         if (reread.empty()) {
             cgroup_read_empty_.fetch_add(1, std::memory_order_relaxed);
         }
-        members.insert(members.end(), reread.begin(), reread.end());
+        for (const hng::Process& p : reread) {
+            append(p);
+        }
     }
 
-    members.push_back(payload.main_process);
+    append(payload.main_process);
     return members;
 }
 
@@ -167,9 +202,20 @@ std::vector<hng::Process> RoleManager::members(uint32_t role_id) const
 RoleManagerStats RoleManager::stats() const
 {
     RoleManagerStats snapshot;
-    snapshot.store = store_.stats();
+    snapshot.store               = store_.stats();
+    snapshot.bind_deferred       = snapshot.store.bind_deferred;
+    snapshot.bind_resolved       = snapshot.store.bind_resolved;
+    snapshot.bind_rejected       = snapshot.store.bind_rejected;
+    snapshot.bind_expired        = snapshot.store.bind_expired;
+    snapshot.bind_ignored        = snapshot.store.bind_ignored;
+    snapshot.late_adopt_rejected = snapshot.store.late_adopt_rejected;
+    snapshot.tombstone_depth     = snapshot.store.tombstone_depth;
     snapshot.cgroup_read_empty =
         cgroup_read_empty_.load(std::memory_order_relaxed);
     snapshot.queue_rejected = queue_rejected_.load(std::memory_order_relaxed);
+    snapshot.dead_member_rejected =
+        dead_member_rejected_.load(std::memory_order_relaxed);
+    snapshot.dead_anchor_rejected =
+        dead_anchor_rejected_.load(std::memory_order_relaxed);
     return snapshot;
 }

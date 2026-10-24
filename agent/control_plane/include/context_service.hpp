@@ -25,6 +25,20 @@ struct ContextProcessSet {
 };
 
 /**
+ * @brief 注册或挂靠时携带的父进程引用
+ * @details
+ * expected 表示工作平面自启动以来观测到该父进程诞生或 exec、且尚未收到其退出；
+ * 它不表示控制平面已经落地该父进程。expected 为 true 时等待方可暂存到关系落地；
+ * 为 false 时只做一次最优解析，解析失败即降级，不暂存。
+ * @see ContextJoinService::register_context
+ * @see ContextJoinService::bind_to_ctxroot
+ */
+struct ContextParentRef {
+    hng::Process process{};  ///< 父进程；pid 为 0 表示森林根
+    bool expected = false;   ///< 工作平面观测到该父且尚未收到其退出
+};
+
+/**
  * @brief 查询 Context 的接口
  * 1) 查询 contextID
  * 2) 查询 extra_contextID
@@ -75,12 +89,15 @@ class ContextJoinService {
     /// @param p context代表进程的唯一性表示
     /// @param newcontext 新的 context 及其信息，由工作平面 context 维护工具生成；
     ///        kind 须为 DERIVE
-    /// @param parent 父进程；实现方在落地时解析其 contextID，未落定时按森林根
+    /// @param parent 父进程引用；实现方在落地时解析其 contextID。expected 为
+    ///        true 且父尚未落定时暂存父链接，父落地后回填；expected 为 false
+    ///        时解析失败即按森林根处理，不暂存
     /// @note 主 context 键唯一；同键的重复注册不产生附属 context，附属 context
     ///       须经 register_extra_context 登记
+    /// @see ContextParentRef
     virtual void register_context(hng::Process p,
                                   ContextDeriveDecision newcontext,
-                                  hng::Process parent)                = 0;
+                                  ContextParentRef parent)                = 0;
 
     /// @brief 其他组件通知注册附属 context
     /// @param p context代表进程的唯一性表示；须已有主 context
@@ -96,9 +113,11 @@ class ContextJoinService {
 
     /// @brief 归属落定：不派生的进程挂靠到其父进程所属的 context
     /// @details 派生决策为 KEEP（留在父 context）时由工作平面调用。实现方把 p
-    /// 归入父进程所属的 context 根，使后续 lookup(p) 直接命中。父进程尚未落定
-    /// 归属时（登记竞态）本调用为空操作，归属保持待定。
-    virtual void bind_to_ctxroot(hng::Process p, hng::Process parent) = 0;
+    /// 归入父进程所属的 context 根，使后续 lookup(p) 直接命中。
+    /// expected 为 true 且父尚未落定时暂存挂靠，父落地或退出时收敛；expected
+    /// 为 false 时直接丢弃并保持未归属，不解析父也不新建 context。
+    /// @see ContextParentRef
+    virtual void bind_to_ctxroot(hng::Process p, ContextParentRef parent) = 0;
 };
 
 /**
