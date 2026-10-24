@@ -20,7 +20,9 @@
 #include "agent/control_plane/src/context_manager.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <future>
@@ -119,9 +121,19 @@ void barrier(ContextManager& manager, uint32_t pid)
           "屏障应落地");
 }
 
-/// 可控时钟：只随测试推进，供延迟表与墓碑的寿命用例
+/// 可控时钟：主线程推进、消费线程读取，故用原子量
 struct FakeClock {
-    hng::RelationTimePoint now{};
+    std::atomic<int64_t> ticks{0};
+
+    hng::RelationTimePoint now() const
+    {
+        return hng::RelationTimePoint(std::chrono::nanoseconds(ticks.load()));
+    }
+
+    void advance(std::chrono::milliseconds delta)
+    {
+        ticks.fetch_add(delta.count() * 1'000'000);
+    }
 };
 
 void run_register_and_lookup()
@@ -495,7 +507,7 @@ void run_ownership_conflict()
 
 void run_capacity_degrade()
 {
-    ContextManagerOptions options;
+    ContextStoreOptions options;
     options.link_pending.capacity = 0;
     options.bind_pending.capacity = 0;
     ContextManager manager(options);
@@ -521,11 +533,11 @@ void run_capacity_degrade()
 void run_ttl_expiry()
 {
     FakeClock clock;
-    ContextManagerOptions options;
+    ContextStoreOptions options;
     options.link_pending.ttl = std::chrono::milliseconds(100);
     options.bind_pending.ttl = std::chrono::milliseconds(100);
     options.tombstones.ttl   = std::chrono::milliseconds(100);
-    options.now              = [&clock] { return clock.now; };
+    options.now              = [&clock] { return clock.now(); };
     ContextManager manager(options);
     Runner runner(manager);
 
@@ -538,7 +550,7 @@ void run_ttl_expiry()
     CHECK(wait_until([&] { return manager.stats().pending_depth == 2; }),
           "两条关系应先暂存");
 
-    clock.now += std::chrono::milliseconds(101);
+    clock.advance(std::chrono::milliseconds(101));
     barrier(manager, 999);
     CHECK(wait_until([&] { return manager.stats().pending_expired == 2; }),
           "过期任务应在下次落地时清理");
@@ -553,7 +565,7 @@ void run_ttl_expiry()
     manager.on_process_exited(dead);
     CHECK(wait_until([&] { return manager.stats().tombstone_depth == 1; }),
           "退出应写墓碑");
-    clock.now += std::chrono::milliseconds(101);
+    clock.advance(std::chrono::milliseconds(101));
     manager.register_context(dead, decision(94, contextattr::UNKNOWN), {});
     CHECK(wait_until([&] { return manager.lookup(dead).value_or(0) == 94; }),
           "墓碑过期后迟到注册应可落地");

@@ -24,8 +24,10 @@
 
 #include "agent/control_plane/src/role_manager.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <future>
 #include <mutex>
@@ -152,9 +154,19 @@ hng::Process proc(uint32_t pid, uint64_t start)
     return hng::Process{pid, start};
 }
 
-/// 可控时钟：只随测试推进，供等待表与墓碑的寿命用例
+/// 可控时钟：主线程推进、消费线程读取，故用原子量
 struct FakeClock {
-    hng::RelationTimePoint now{};
+    std::atomic<int64_t> ticks{0};
+
+    hng::RelationTimePoint now() const
+    {
+        return hng::RelationTimePoint(std::chrono::nanoseconds(ticks.load()));
+    }
+
+    void advance(std::chrono::milliseconds delta)
+    {
+        ticks.fetch_add(delta.count() * 1'000'000);
+    }
 };
 
 RoleEvent mk_join(const std::string& key, uint32_t pid, uint64_t start,
@@ -825,7 +837,7 @@ void run_bind_capacity_and_expiry()
     FakeClock clock;
     RoleRelationOptions ttl;
     ttl.bind_pending.ttl = std::chrono::milliseconds(100);
-    ttl.now              = [&clock] { return clock.now; };
+    ttl.now              = [&clock] { return clock.now(); };
 
     RecordingSink sink;
     RoleManagerProbe probe;
@@ -839,7 +851,7 @@ void run_bind_capacity_and_expiry()
     CHECK(wait_until([&] { return manager.stats().bind_deferred == 1; }),
           "bind 应先暂存");
 
-    clock.now += std::chrono::milliseconds(101);
+    clock.advance(std::chrono::milliseconds(101));
     manager.on_role_event(mk_join("b", 300, 3000));
     CHECK(sink.wait_calls(2), "屏障事件应通知");
     CHECK(wait_until([&] { return manager.stats().bind_expired == 1; }),
