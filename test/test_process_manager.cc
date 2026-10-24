@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <future>
@@ -75,9 +76,19 @@ bool wait_until(const std::function<bool()>& pred, int timeout_ms = 5000)
     return pred();
 }
 
-/// 可控时钟：只随测试推进，供墓碑寿命用例
+/// 可控时钟：主线程推进、消费线程读取，故用原子量
 struct FakeClock {
-    hng::RelationTimePoint now{};
+    std::atomic<int64_t> ticks{0};
+
+    hng::RelationTimePoint now() const
+    {
+        return hng::RelationTimePoint(std::chrono::nanoseconds(ticks.load()));
+    }
+
+    void advance(std::chrono::milliseconds delta)
+    {
+        ticks.fetch_add(delta.count() * 1'000'000);
+    }
 };
 
 /// 三个注入点的记录：计数为原子（消费线程写、用例线程读），明细只在停止后读
@@ -579,7 +590,7 @@ void run_is_exited_expiry()
     FakeClock clock;
     ProcessStoreOptions options;
     options.tombstones.ttl = std::chrono::milliseconds(100);
-    options.now            = [&clock] { return clock.now; };
+    options.now            = [&clock] { return clock.now(); };
 
     ProcessManager manager(options);
     Runner runner(manager);
@@ -591,7 +602,7 @@ void run_is_exited_expiry()
     CHECK(!manager.is_exited(proc(101, 1000)), "未记录的身份不应命中");
     CHECK(!manager.is_exited(proc(100, 1001)), "同 pid 不同 start_time 不应命中");
 
-    clock.now += std::chrono::milliseconds(101);
+    clock.advance(std::chrono::milliseconds(101));
     CHECK(!manager.is_exited(proc(100, 1000)), "过期墓碑不应命中");
     CHECK(manager.stats().tombstone_depth == 0, "过期墓碑应退出深度");
 }
@@ -601,7 +612,7 @@ void run_tombstone_depth()
     FakeClock clock;
     ProcessStoreOptions options;
     options.tombstones.ttl = std::chrono::milliseconds(100);
-    options.now            = [&clock] { return clock.now; };
+    options.now            = [&clock] { return clock.now(); };
 
     ProcessManager manager(options);
     Runner runner(manager);
@@ -617,7 +628,7 @@ void run_tombstone_depth()
           "屏障应落地");
     CHECK(manager.stats().tombstone_depth == 2, "重复退出不得新增墓碑");
 
-    clock.now += std::chrono::milliseconds(101);
+    clock.advance(std::chrono::milliseconds(101));
     manager.register_pid(head(901, 9010, 0, 0));  // 屏障：落地末尾清理过期墓碑
     CHECK(wait_until([&] { return manager.lookup(proc(901, 9010)).has_value(); }),
           "第二个屏障应落地");
