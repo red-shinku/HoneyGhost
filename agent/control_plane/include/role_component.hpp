@@ -10,16 +10,32 @@
 #define HNG_ROLE_COMPONENT_HPP_
 
 #include <chrono>
+#include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_seed_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/control_plane/include/role_stats.hpp"
+#include "agent/role_discovery/include/role_event_sink.hpp"
 #include "agent/util/include/component.hpp"
 
 namespace hng {
+
+/**
+ * @brief 角色组件的注入点
+ * @details 留空的字段使用真实实现；单元测试可注入替身以免依赖 cgroup 与
+ *          /proc。
+ */
+struct RoleComponentOptions {
+    /// @brief 按 cgroup 路径枚举成员；留空时读真实 cgroup
+    std::function<std::vector<hng::Process>(const std::string&)> read_members;
+    /// @brief 进程存活视图；留空表示存活未知，对账按未知保留
+    std::function<bool(hng::Process)> is_exited;
+};
 
 /**
  * @brief 角色管理组件
@@ -64,6 +80,11 @@ class RoleComponent final : public hng::Component {
     /// @note 供进程管理组件的装配者登记，须存活到 run() 返回之后
     ProcessLifecycleSink& lifecycle_sink() noexcept;
 
+    /// @brief 角色事件的入口
+    /// @note 供发现器在 run() 之前同步投递初始角色事件；事件仍只入队，落地
+    ///       须经 drain() 或 run()
+    hng::role::RoleEventSink& event_sink() noexcept;
+
     /// @brief 注册角色生命周期订阅者
     /// @param sink 空指针忽略；同一实现重复注册会收到重复通知
     /// @note 只可在 run() 之前调用，此后不再变更
@@ -90,14 +111,17 @@ class RoleComponent final : public hng::Component {
 
     explicit RoleComponent(std::unique_ptr<Impl> impl);
 
-    friend std::unique_ptr<RoleComponent> make_role_component();
+    friend std::unique_ptr<RoleComponent> make_role_component(
+        RoleComponentOptions options);
 
     std::unique_ptr<Impl> impl_;
 };
 
 /// @brief 构造角色管理组件
+/// @param options cgroup 读取与存活核对的外部 IO 注入点
 /// @return 状态为 CONSTRUCTED 的组件；服务接口可直接取用
-std::unique_ptr<RoleComponent> make_role_component();
+std::unique_ptr<RoleComponent> make_role_component(
+    RoleComponentOptions options = {});
 
 }  // namespace hng
 

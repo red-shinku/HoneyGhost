@@ -77,6 +77,12 @@ add_executable(test_proc_snapshot test_proc_snapshot.cc)
 target_link_libraries(test_proc_snapshot PRIVATE hng_assembly hng_process_manager)
 add_test(NAME test_proc_snapshot COMMAND test_proc_snapshot)
 
+# 初始化协调器：真实控制面组件 + 手工快照与假 map/probe，不启动组件线程
+add_executable(test_init_coordinator test_init_coordinator.cc)
+target_link_libraries(test_init_coordinator PRIVATE
+    hng_assembly hng_role_filter)
+add_test(NAME test_init_coordinator COMMAND test_init_coordinator)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})

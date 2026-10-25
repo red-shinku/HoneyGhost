@@ -7,6 +7,8 @@
 namespace hng {
 
 struct RoleComponent::Impl {
+    explicit Impl(RoleManagerProbe probe) : manager(std::move(probe)) {}
+
     RoleManager manager;
 };
 
@@ -48,6 +50,11 @@ ProcessLifecycleSink& RoleComponent::lifecycle_sink() noexcept
     return static_cast<ProcessLifecycleSink&>(impl_->manager);
 }
 
+hng::role::RoleEventSink& RoleComponent::event_sink() noexcept
+{
+    return static_cast<hng::role::RoleEventSink&>(impl_->manager);
+}
+
 void RoleComponent::add_lifecycle_sink(RoleLifecycleSink* sink)
 {
     impl_->manager.add_lifecycle_sink(sink);
@@ -64,9 +71,12 @@ void RoleComponent::run() { impl_->manager.run(); }
 
 void RoleComponent::stop() { impl_->manager.stop(); }
 
-std::unique_ptr<RoleComponent> make_role_component()
+std::unique_ptr<RoleComponent> make_role_component(RoleComponentOptions options)
 {
-    auto impl = std::make_unique<RoleComponent::Impl>();
+    RoleManagerProbe probe;
+    probe.read_members = std::move(options.read_members);
+    probe.is_exited    = std::move(options.is_exited);
+    auto impl          = std::make_unique<RoleComponent::Impl>(std::move(probe));
     return std::unique_ptr<RoleComponent>(new RoleComponent(std::move(impl)));
 }
 
