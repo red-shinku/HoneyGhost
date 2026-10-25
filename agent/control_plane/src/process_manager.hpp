@@ -8,12 +8,14 @@
 #ifndef _CONTROL_PLANE_PROCESSMANAGER_HPP
 #define _CONTROL_PLANE_PROCESSMANAGER_HPP
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_service.hpp"
+#include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/process_stats.hpp"
@@ -61,6 +63,11 @@ class ProcessManager : public ProcessLookupService,
     /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
     void stop();
 
+    /// @brief 当前生命周期状态
+    /// @note 可从任意线程读取
+    /// @see hng::Component
+    hng::ComponentState state() const;
+
     /// @brief 该身份是否已有未过期的墓碑
     /// @note 命中但已过期的墓碑会被就地清除
     /// @note 只回答“已知退出”，不要求证明存活；未知身份返回 false
@@ -98,6 +105,9 @@ class ProcessManager : public ProcessLookupService,
     /// @note 按身份转发；订阅方自行决定清理哪些内部关系，并须容忍重复投递
     /// @note 调用方不得持有墓碑锁或进程树分片锁
     void notify_process_exited(hng::Process p);
+
+    /// 消费线程与任意线程都读，故为原子
+    std::atomic<hng::ComponentState> state_{hng::ComponentState::CONSTRUCTED};
 
     /// 注册的订阅者，不接管生命周期；run() 之后不再变更
     std::vector<ProcessLifecycleSink*> lifecycle_sinks_;

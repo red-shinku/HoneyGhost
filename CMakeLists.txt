@@ -178,12 +178,14 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
 endif()
 
 # ============================================================
-# 控制平面（角色关系表 + 角色管理器）
+# 控制平面（角色关系表 + 角色管理器 + 角色组件句柄）
 #
 # 依赖角色发现公共骨架（RoleEvent / RolePayload 类型与 RoleCgroupReader）。
-# 目前只纳入本组件的两个 .cc，ProcessManager / ContextManager 尚未进 CMake。
+# 本目标纳入角色关系表、角色管理器与角色组件句柄；ProcessManager /
+# ContextManager 在各自目标中。
 # ============================================================
 add_library(hng_control_plane STATIC
+    agent/control_plane/src/role_component.cc
     agent/control_plane/src/role_label_builder.cc
     agent/control_plane/src/role_manager.cc
     agent/control_plane/src/role_relation_store.cc
@@ -199,6 +201,7 @@ target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
 # 只依赖 event_data 与两个服务接口（均 header-only），不含 ContextManager。
 # ============================================================
 add_library(hng_process_manager STATIC
+    agent/control_plane/src/process_component.cc
     agent/control_plane/src/process_manager.cc
     agent/control_plane/src/process_store.cc
 )
@@ -213,12 +216,20 @@ target_include_directories(hng_process_manager PUBLIC
 # 工作平面的 ContextMaintainer 不在本目标内。
 # ============================================================
 add_library(hng_context_manager STATIC
+    agent/control_plane/src/context_component.cc
     agent/control_plane/src/context_manager.cc
     agent/control_plane/src/context_store.cc
 )
 target_include_directories(hng_context_manager PUBLIC
     ${HNG_SOURCE_DIR}
 )
+
+# ============================================================
+# 用户态角色过滤
+#
+# 只依赖公共头与线程库；本阶段只纳入构建目标，组件接口在后续阶段接入。
+# ============================================================
+add_subdirectory(agent/role_filter)
 
 # ============================================================
 # 运行时引擎（语义事件流的分发中枢）
@@ -240,6 +251,14 @@ target_link_libraries(hng_runtime_engine PUBLIC
     hng_context_maintainer
     hng_event_data
 )
+
+# ============================================================
+# 装配层
+#
+# 阶段 0 只建立构建目标；初始化协调器与各组件初始化器在后续阶段接入。
+# 放在运行时引擎之后，供后续阶段链接各模块目标。
+# ============================================================
+add_subdirectory(agent/assembly)
 
 # ============================================================
 # CLI 服务端

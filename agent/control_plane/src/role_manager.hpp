@@ -27,6 +27,7 @@
 #include "agent/control_plane/src/role_relation_store.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
+#include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
 
 /**
@@ -75,6 +76,11 @@ class RoleManager : public hng::role::RoleEventSink,
     /// @note 已入队的事件仍会被落地，队列取空后 run() 返回；此后的入队一律
     ///       被拒绝并计入 queue_rejected
     void stop();
+
+    /// @brief 当前生命周期状态
+    /// @note 可从任意线程读取
+    /// @see hng::Component
+    hng::ComponentState state() const;
 
     /**
      * \defgroup Rolemanager_lookup_service
@@ -161,6 +167,9 @@ class RoleManager : public hng::role::RoleEventSink,
 
     /// 无界队列，入队不因容量而阻塞
     hng::NotificationQueue<RoleTask> queue_;
+
+    /// 消费线程与任意线程都读，故为原子
+    std::atomic<hng::ComponentState> state_{hng::ComponentState::CONSTRUCTED};
 
     /// 消费线程写、任意线程读，故为原子
     std::atomic<uint64_t> cgroup_read_empty_{0};

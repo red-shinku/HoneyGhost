@@ -80,6 +80,11 @@ void ContextManager::run()
 
 void ContextManager::stop() { task.stop(); }
 
+hng::ComponentState ContextManager::state() const
+{
+    return state_.load(std::memory_order_relaxed);
+}
+
 void ContextManager::land(Task& t)
 {
     if (auto* add = std::get_if<AddTask>(&t)) {

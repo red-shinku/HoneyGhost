@@ -70,6 +70,11 @@ void ProcessManager::run()
 
 void ProcessManager::stop() { task.stop(); }
 
+hng::ComponentState ProcessManager::state() const
+{
+    return state_.load(std::memory_order_relaxed);
+}
+
 void ProcessManager::land(Task& t)
 {
     ProcessChange change;

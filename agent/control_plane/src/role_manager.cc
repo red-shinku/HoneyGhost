@@ -50,6 +50,11 @@ void RoleManager::run()
 
 void RoleManager::stop() { queue_.stop(); }
 
+hng::ComponentState RoleManager::state() const
+{
+    return state_.load(std::memory_order_relaxed);
+}
+
 void RoleManager::land(RoleTask& task)
 {
     if (auto* event = std::get_if<hng::role::RoleEvent>(&task)) {

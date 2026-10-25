@@ -8,11 +8,13 @@
 #ifndef _CONTROL_PLANE_CONTEXTMANAGER_HPP
 #define _CONTROL_PLANE_CONTEXTMANAGER_HPP
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <variant>
 #include <vector>
 
+#include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
@@ -103,6 +105,11 @@ class ContextManager : public ContextLookupService,
     /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
     void stop();
 
+    /// @brief 当前生命周期状态
+    /// @note 可从任意线程读取
+    /// @see hng::Component
+    hng::ComponentState state() const;
+
     /// @brief 异常态观测快照
     ContextManagerStats stats() const override;
 
@@ -157,6 +164,9 @@ class ContextManager : public ContextLookupService,
     /// @param attr 变更后的属性
     /// @note 当前为空实现，是向 eBPF map 注册 ATTACK/EXTRA_ATTACK 的挂点
     void apply_attr_hook_(hng::contextattr attr);
+
+    /// 消费线程与任意线程都读，故为原子
+    std::atomic<hng::ComponentState> state_{hng::ComponentState::CONSTRUCTED};
 
     ContextStore store_;
 };

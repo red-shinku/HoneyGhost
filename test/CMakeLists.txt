@@ -151,6 +151,12 @@ add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
 add_test(NAME test_role_relation_store COMMAND test_role_relation_store)
 
+# 控制面组件句柄：经公共头构造、状态初值、服务访问器身份，无 IO / 无特权
+add_executable(test_component_handles test_component_handles.cc)
+target_link_libraries(test_component_handles PRIVATE
+    hng_process_manager hng_context_manager hng_control_plane)
+add_test(NAME test_component_handles COMMAND test_component_handles)
+
 # 控制平面的角色管理器：队列与消费线程，cgroup 读取走注入点，无特权
 add_executable(test_role_manager test_role_manager.cc)
 target_link_libraries(test_role_manager PRIVATE hng_control_plane)
