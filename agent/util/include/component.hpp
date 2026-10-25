@@ -21,7 +21,7 @@ enum class ComponentState : uint8_t {
     CONSTRUCTED,  ///< 已构造，初始化尚未完成
     READY,        ///< 初始化写入已落地，可接受运行期写入与 run()
     RUNNING,      ///< run() 已进入
-    STOPPED       ///< stop() 后 run() 已返回
+    STOPPED       ///< 已停止：run() 已返回，或 run() 之前已调用 stop()
 };
 
 /**
@@ -47,7 +47,7 @@ class Component {
     }
 
     /// @brief 组件线程入口：阻塞直到 stop() 且已入队工作落地
-    /// @pre ready() 为 true；违反是装配错误，Debug 断言，Release 立即返回
+    /// @pre ready() 为 true；未就绪时立即返回，不消费队列
     /// @note 不创建线程；线程由装配层创建，析构前须已返回
     virtual void run()  = 0;
 

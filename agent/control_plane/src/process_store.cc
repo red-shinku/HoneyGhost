@@ -1,9 +1,13 @@
 #include "agent/control_plane/src/process_store.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 // 进程树与墓碑存储
 
@@ -30,6 +34,102 @@ void ProcessStore::update_image(hng::Process p, std::string exe)
 {
     update_exe_image_(p, std::move(exe));
     expire_tombstones_();
+}
+
+ProcessSeedReport ProcessStore::seed(const hng::ProcessSeedBatch& batch)
+{
+    ProcessSeedReport report;
+
+    // 每个 pid 只记 start_time 最大的身份；与批次顺序无关
+    std::unordered_map<uint32_t, uint64_t> latest;
+    latest.reserve(batch.entries.size());
+    for (const auto& entry : batch.entries) {
+        if (entry.process.pid == 0 || entry.process.pid_start_time == 0) {
+            ++report.invalid;
+            continue;
+        }
+        auto it = latest.find(entry.process.pid);
+        if (it == latest.end()) {
+            latest.emplace(entry.process.pid, entry.process.pid_start_time);
+        }
+        else if (entry.process.pid_start_time > it->second) {
+            it->second = entry.process.pid_start_time;
+        }
+    }
+
+    // 被顶掉的每个身份计 pid_reused；保留者中同一身份只有首条落地
+    std::vector<hng::ProcessSeedEntry> kept;
+    kept.reserve(batch.entries.size());
+    std::unordered_set<hng::Process> retained;
+    retained.reserve(batch.entries.size());
+    for (const auto& entry : batch.entries) {
+        if (entry.process.pid == 0 || entry.process.pid_start_time == 0) {
+            continue;
+        }
+        if (latest.find(entry.process.pid)->second !=
+            entry.process.pid_start_time) {
+            ++report.pid_reused;
+            continue;
+        }
+        if (!retained.insert(entry.process).second) {
+            ++report.duplicate;
+            continue;
+        }
+        kept.push_back(entry);
+    }
+
+    // 批次内计算父计数；父身份不在保留集合内时只计缺失
+    std::unordered_map<hng::Process, std::size_t> position;
+    position.reserve(kept.size());
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        position.emplace(kept[i].process, i);
+    }
+    std::vector<uint32_t> child_count(kept.size(), 0);
+    for (const auto& entry : kept) {
+        if (entry.ppid == 0) {
+            continue;
+        }
+        if (entry.ppid_start_time == 0) {
+            ++report.parent_missing;
+            continue;
+        }
+        auto it = position.find(hng::Process{entry.ppid, entry.ppid_start_time});
+        if (it == position.end()) {
+            ++report.parent_missing;
+            continue;
+        }
+        child_count[it->second] += 1;
+    }
+
+    // 逐分片加锁写入；pid 槽位本应为空，真正插入的才计数
+    std::array<std::vector<std::size_t>, kShardCount> by_shard;
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        by_shard[shard_index(kept[i].process.pid)].push_back(i);
+    }
+    for (std::size_t s = 0; s < kShardCount; ++s) {
+        if (by_shard[s].empty()) {
+            continue;
+        }
+        auto& shard_ref = ptree_shard[s];
+        std::unique_lock lock(shard_ref.smtx);
+        for (std::size_t i : by_shard[s]) {
+            const hng::ProcessSeedEntry& entry = kept[i];
+            hng::ProcessMessage msg;
+            msg.pid             = entry.process.pid;
+            msg.pid_start_time  = entry.process.pid_start_time;
+            msg.ppid            = entry.ppid;
+            msg.ppid_start_time = entry.ppid_start_time;
+            msg.exe             = entry.exe;
+            msg.kind            = hng::ProcessKind::REAL;
+            msg.child_count     = child_count[i];
+            if (shard_ref.process.try_emplace(entry.process.pid, std::move(msg))
+                    .second) {
+                ++report.inserted;
+            }
+        }
+    }
+
+    return report;
 }
 
 std::optional<hng::ProcessMessage> ProcessStore::lookup(hng::Process p) const

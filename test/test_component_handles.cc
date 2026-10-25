@@ -45,6 +45,7 @@ void run_process_component()
         ProcessJoinService* join         = &component->join_service();
         ProcessUpdateService* update     = &component->update_service();
         ProcessLivenessService* liveness = &component->liveness_service();
+        ProcessSeedService* seed         = &component->seed_service();
         CHECK(lookup == &component->lookup_service(),
               "进程查询服务访问器应稳定返回同一地址");
         CHECK(join == &component->join_service(),
@@ -53,6 +54,8 @@ void run_process_component()
               "进程更新服务访问器应稳定返回同一地址");
         CHECK(liveness == &component->liveness_service(),
               "进程存活服务访问器应稳定返回同一地址");
+        CHECK(seed == &component->seed_service(),
+              "进程 seed 服务访问器应稳定返回同一地址");
 
         const ProcessManagerStats stats = component->stats();
         CHECK(stats.pid_reused == 0, "pid_reused 初值应为零");

@@ -37,6 +37,11 @@ ProcessLivenessService& ProcessComponent::liveness_service() noexcept
     return static_cast<ProcessLivenessService&>(impl_->manager);
 }
 
+ProcessSeedService& ProcessComponent::seed_service() noexcept
+{
+    return static_cast<ProcessSeedService&>(impl_->manager);
+}
+
 void ProcessComponent::add_process_lifecycle_sink(ProcessLifecycleSink* sink)
 {
     impl_->manager.add_process_lifecycle_sink(sink);

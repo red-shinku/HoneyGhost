@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
+#include "agent/control_plane/include/process_seed_service.hpp"
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/process_stats.hpp"
 #include "agent/control_plane/include/role_service.hpp"
@@ -47,6 +48,10 @@ class ProcessComponent final : public hng::Component {
     /// @brief 进程存活视图
     /// @see ProcessLivenessService
     ProcessLivenessService& liveness_service() noexcept;
+
+    /// @brief 进程树初始化写入服务
+    /// @see ProcessSeedService
+    ProcessSeedService& seed_service() noexcept;
 
     /// @brief 注册进程生命周期订阅者
     /// @param sink 空指针忽略；须存活到 run() 返回之后

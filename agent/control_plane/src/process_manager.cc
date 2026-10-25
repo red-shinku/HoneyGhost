@@ -59,16 +59,43 @@ void ProcessManager::update_exe_image(hng::Process p, std::string exe)
     task.push(std::move(t));
 }
 
+ProcessSeedReport ProcessManager::seed(const hng::ProcessSeedBatch& batch)
+{
+    ProcessSeedReport report;
+    if (state_.load(std::memory_order_acquire) !=
+        hng::ComponentState::CONSTRUCTED) {
+        report.rejected_state = 1;
+        return report;
+    }
+
+    report = store_.seed(batch);
+    state_.store(hng::ComponentState::READY, std::memory_order_release);
+    return report;
+}
+
 void ProcessManager::run()
 {
+    if (state_.load(std::memory_order_acquire) != hng::ComponentState::READY) {
+        return;
+    }
+    state_.store(hng::ComponentState::RUNNING, std::memory_order_release);
+
     Task t;
     // 取与处理分离：队列临界区内没有进程树操作，也没有对外通知
     while (task.wait_pop(t)) {
         land(t);
     }
+
+    state_.store(hng::ComponentState::STOPPED, std::memory_order_release);
 }
 
-void ProcessManager::stop() { task.stop(); }
+void ProcessManager::stop()
+{
+    task.stop();
+    if (state_.load(std::memory_order_acquire) != hng::ComponentState::RUNNING) {
+        state_.store(hng::ComponentState::STOPPED, std::memory_order_release);
+    }
+}
 
 hng::ComponentState ProcessManager::state() const
 {

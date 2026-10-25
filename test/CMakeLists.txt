@@ -61,6 +61,16 @@ add_executable(test_process_store test_process_store.cc)
 target_link_libraries(test_process_store PRIVATE hng_process_manager)
 add_test(NAME test_process_store COMMAND test_process_store)
 
+# 进程树初始化 seed：单线程直调与临时消费线程，无 IO / 无特权
+add_executable(test_process_seed test_process_seed.cc)
+target_link_libraries(test_process_seed PRIVATE hng_process_manager)
+add_test(NAME test_process_seed COMMAND test_process_seed)
+
+# /proc 快照读取器：注入伪造的 /proc 根目录，并验证快照直接喂给 PM seed，无特权
+add_executable(test_proc_snapshot test_proc_snapshot.cc)
+target_link_libraries(test_proc_snapshot PRIVATE hng_assembly hng_process_manager)
+add_test(NAME test_proc_snapshot COMMAND test_proc_snapshot)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
