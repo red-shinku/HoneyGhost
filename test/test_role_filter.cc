@@ -49,6 +49,7 @@ class Lookup final : public RoleLookupService {
     mutable std::mutex mutex;
     std::unordered_map<uint32_t, Role> role_map;
     std::unordered_map<uint32_t, std::vector<Process>> processes;
+    std::unordered_map<uint32_t, Process> anchors;
     std::unordered_map<Process, uint32_t> owners;
     bool fail         = false;
     mutable int reads = 0;
@@ -76,9 +77,22 @@ class Lookup final : public RoleLookupService {
     {
         return {};
     }
-    std::vector<Role> roles() const override { return {}; }
+    std::vector<Role> roles() const override
+    {
+        std::lock_guard lock(mutex);
+        std::vector<Role> result;
+        result.reserve(role_map.size());
+        for (const auto& [id, role] : role_map) result.push_back(role);
+        return result;
+    }
     std::vector<Role> supervised_roles() const override { return {}; }
-    std::optional<Process> main_process(uint32_t) const override { return {}; }
+    std::optional<Process> main_process(uint32_t id) const override
+    {
+        std::lock_guard lock(mutex);
+        auto it = anchors.find(id);
+        return it == anchors.end() ? std::nullopt
+                                   : std::optional<Process>(it->second);
+    }
     RoleManagerStats stats() const override { return {}; }
     std::vector<Process> members(uint32_t id) const override
     {
@@ -329,12 +343,96 @@ void maintenance()
         "必须为正");
 }
 
+void initial_roles()
+{
+    const Process first{501, 1500}, ignored{502, 1501}, anchor{503, 1502};
+    {
+        Fixture fixture;
+        fixture.lookup.set({1, "nginx.service"}, {first});
+        fixture.lookup.set({2, "ignored.service"}, {ignored});
+        require(fixture.filter->state() == ComponentState::CONSTRUCTED,
+                "构造后状态应为 CONSTRUCTED");
+        require(!fixture.filter->ready(), "未 seed 不应就绪");
+        fixture.filter->run();
+        require(fixture.filter->state() == ComponentState::CONSTRUCTED,
+                "未 seed 的 run 立即返回且不改状态");
+        fixture.filter->stop();
+        require(fixture.filter->state() == ComponentState::STOPPED,
+                "未运行时 stop 直接置 STOPPED");
+    }
+    {
+        Fixture fixture;
+        fixture.lookup.set({1, "nginx.service"}, {first});
+        fixture.lookup.set({2, "ignored.service"}, {ignored});
+        fixture.filter->seed_initial_roles();
+        require(fixture.filter->state() == ComponentState::READY,
+                "seed 后状态应为 READY");
+        require(fixture.filter->ready(), "seed 后应就绪");
+        require(fixture.map->contains(first), "seed 只写入策略命中的成员");
+        require(!fixture.map->contains(ignored), "seed 不写入未命中策略的角色");
+        require(fixture.filter->stats().roles == 2, "seed 应记录当前角色全集");
+        const int allows = fixture.map->allow_calls;
+        fixture.filter->seed_initial_roles();
+        require(fixture.map->allow_calls == allows, "重复 seed 为空操作");
+        require(fixture.filter->state() == ComponentState::READY,
+                "重复 seed 不改变状态");
+    }
+    {
+        Fixture fixture;
+        fixture.lookup.set({3, "nginx.service"}, {});
+        fixture.lookup.anchors[3] = anchor;
+        fixture.filter->seed_initial_roles();
+        require(fixture.map->contains(anchor), "members() 为空时仍应写入锚点");
+        require(fixture.filter->stats().empty_members > 0, "空成员枚举应可观测");
+    }
+    {
+        const Process dead{504, 1503};
+        Lookup lookup;
+        lookup.set({4, "nginx.service"}, {first, dead});
+        auto backend = std::make_unique<Map>();
+        Map* map     = backend.get();
+        RoleFilterOptions options;
+        options.liveness = [&](Process process) {
+            return process == dead ? ProcessLiveness::DEAD
+                                   : ProcessLiveness::ALIVE;
+        };
+        RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+                          std::move(backend), options);
+        filter.seed_initial_roles();
+        require(map->contains(first) && !map->contains(dead),
+                "seed 应经存活核对移除死成员");
+    }
+    {
+        Lookup lookup;
+        lookup.set({5, "nginx.service"}, {first});
+        auto backend    = std::make_unique<Map>();
+        Map* map        = backend.get();
+        map->fail_allow = 1;
+        RoleFilterOptions options;
+        options.liveness = [](Process) { return ProcessLiveness::ALIVE; };
+        RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+                          std::move(backend), options);
+        filter.seed_initial_roles();
+        require(filter.state() == ComponentState::READY,
+                "map 写入失败不阻止 READY");
+        require(filter.stats().map_errors == 1 &&
+                    filter.stats().applied_processes == 0,
+                "map 写入失败应保留不确定状态");
+        require(!map->contains(first), "失败时未写入 map");
+        filter.request_refresh();
+        filter.drain();
+        require(map->contains(first), "清掉失败后刷新应补写");
+        require(filter.state() == ComponentState::READY, "补写后状态不变");
+    }
+}
+
 void periodic()
 {
     Fixture fixture;
     const Process first{201, 1000}, child{202, 1001};
     fixture.lookup.set({1, "nginx.service"}, {first});
     fixture.filter->on_role_joined({1, "nginx.service"});
+    fixture.filter->seed_initial_roles();
     struct Runner {
         RoleFilter& filter;
         std::thread thread;
@@ -392,6 +490,7 @@ void member_prompt()
     options.liveness         = [](Process) { return ProcessLiveness::ALIVE; };
     RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
                       std::move(backend), options);
+    filter.seed_initial_roles();
     struct Runner {
         RoleFilter& filter;
         std::thread thread;
@@ -482,6 +581,7 @@ int main()
     try {
         configuration();
         maintenance();
+        initial_roles();
         periodic();
         member_notifications();
         member_prompt();

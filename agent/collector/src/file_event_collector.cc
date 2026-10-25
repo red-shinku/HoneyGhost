@@ -16,22 +16,26 @@ namespace hng::detail {
 struct FileCollectorState {
     std::unique_ptr<::files_collector, decltype(&::files_collector__destroy)>
         skeleton{nullptr, &::files_collector__destroy};
-    std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)>
-        buffer{nullptr, &::ring_buffer__free};
+    std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)> buffer{
+        nullptr, &::ring_buffer__free};
+    bool attached = false;  ///< attach() 已成功挂载探针
 };
 }  // namespace hng::detail
 
 FileEventCollector::FileEventCollector(hng::SPSC_Queue<file_access_data>& queue)
-    : file_rawevent_queue(queue) {}
+    : file_rawevent_queue(queue)
+{
+}
 
 FileEventCollector::~FileEventCollector() = default;
 
 /**
  * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
- * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以 NUL 结束。
- *       队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
+ * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以 NUL
+ * 结束。 队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
  */
-int FileEventCollector::handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept
+int FileEventCollector::handle_rb_event(void* ctx, void* data,
+                                        std::size_t data_sz) noexcept
 {
     static_assert(std::is_trivially_copyable_v<file_access_data>);
     if (!ctx || !data || data_sz < sizeof(file_access_data)) {
@@ -44,12 +48,12 @@ int FileEventCollector::handle_rb_event(void* ctx, void* data, std::size_t data_
     return 0;
 }
 
-bool FileEventCollector::init()
+bool FileEventCollector::prepare()
 {
     if (state_) {
         return false;
     }
-    // 只在初始化时分配私有状态；失败路径由局部拥有者自动回收。
+    // 只在准备时分配私有状态；失败路径由局部拥有者自动回收。
     std::unique_ptr<hng::detail::FileCollectorState> candidate(
         new (std::nothrow) hng::detail::FileCollectorState);
     if (!candidate) {
@@ -59,14 +63,14 @@ bool FileEventCollector::init()
     if (!candidate->skeleton) {
         return false;
     }
-    const int events_fd = bpf_map__fd(candidate->skeleton->maps.file_access_events);
-    if (events_fd < 0 || bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
+    const int events_fd =
+        bpf_map__fd(candidate->skeleton->maps.file_access_events);
+    if (events_fd < 0 ||
+        bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
         return false;
     }
-    if (files_collector__attach(candidate->skeleton.get())) {
-        return false;
-    }
-    candidate->buffer.reset(ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
+    candidate->buffer.reset(
+        ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
     if (!candidate->buffer) {
         return false;
     }
@@ -74,12 +78,37 @@ bool FileEventCollector::init()
     return true;
 }
 
+bool FileEventCollector::attach()
+{
+    if (!state_ || state_->attached) {
+        return false;
+    }
+    if (files_collector__attach(state_->skeleton.get())) {
+        return false;
+    }
+    state_->attached = true;
+    return true;
+}
+
+bool FileEventCollector::init()
+{
+    if (!prepare()) {
+        return false;
+    }
+    if (!attach()) {
+        state_.reset();
+        return false;
+    }
+    return true;
+}
+
 void FileEventCollector::collect()
 {
-    if (!state_) {
+    if (!state_ || !state_->attached) {
         return;
     }
-    while (ring_buffer__poll(state_->buffer.get(), 300) >= 0) {}
+    while (ring_buffer__poll(state_->buffer.get(), 300) >= 0) {
+    }
 }
 
 int FileEventCollector::role_filter_map_fd() const noexcept

@@ -5,6 +5,7 @@
  */
 #ifndef HNG_ROLE_FILTER_HPP_
 #define HNG_ROLE_FILTER_HPP_
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -14,6 +15,7 @@
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_filter/include/process_filter_map.hpp"
 #include "agent/role_filter/include/role_filter_policy.hpp"
+#include "agent/util/include/component.hpp"
 
 namespace hng {
 
@@ -51,8 +53,10 @@ struct RoleFilterStats {
  * set_supervision_service 注入监管登记写入侧。
  * @pre 在 RoleManager::run() 前注册，lookup 必须活到本对象析构后。
  * @note 不负责反向创建或删除 RoleManager 记录；消费线程由装配方创建。
+ *       生命周期只沿 CONSTRUCTED → READY → RUNNING → STOPPED 前进。
+ * @see hng::Component
  */
-class RoleFilter final : public ::RoleLifecycleSink {
+class RoleFilter final : public ::RoleLifecycleSink, public hng::Component {
    public:
     /**
      * @brief 创建维护器并接管 map 后端。
@@ -78,6 +82,24 @@ class RoleFilter final : public ::RoleLifecycleSink {
      * @pre 须在 run() / drain() 之前调用；service 须活到本对象析构后。
      */
     void set_supervision_service(::RoleSupervisionService* service);
+    /**
+     * @brief 用 RoleManager 当前角色全集播种第一份名单，并置 READY。
+     * @pre 尚未 run()；RoleManager 已完成初始角色落地（drain 与 reconcile）
+     * @pre map 后端已由采集器 prepare() 后的空 map fd 创建
+     * @note 只调用一次；状态不是 CONSTRUCTED 时为空操作。
+     * @note 对每个角色投递 UPDATE 任务、对可取得的锚点投递 MEMBERS 任务，
+     *       再同步 drain()；不启动线程。成员仍由 refresh() 经
+     *       members(roleID) 重新枚举，不复制 RoleManager 内部表。
+     *       map 写入失败保留 uncertain_ 并计数，不阻止 READY，后续刷新重试。
+     * @see RoleFilter::run
+     */
+    void seed_initial_roles();
+    /**
+     * @brief 当前生命周期状态。
+     * @note 可从任意线程读取。
+     * @see hng::Component::state
+     */
+    hng::ComponentState state() const override;
     /**
      * @brief 将角色加入通知入队。
      * @param[in] role 当前角色快照。
@@ -110,12 +132,19 @@ class RoleFilter final : public ::RoleLifecycleSink {
     void replace_policy(RoleFilterPolicy policy);
     /**
      * @brief 阻塞消费直到 stop()，退出前排空已接收任务并刷新一次。
-     * @pre 不得与另一个 run() 或 drain() 并发；停止后不可重启。
+     * @pre state() 为 READY；否则立即返回且不改状态
+     * @pre 不得与另一个 run() 或 drain() 并发；停止后不可重启
      */
-    void run();
-    /** @brief 拒绝新任务并唤醒消费线程，不等待线程退出。 */
-    void stop();
-    /** @brief 同步处理当前任务并刷新一次；不得与其他消费者并发。 */
+    void run() override;
+    /**
+     * @brief 拒绝新任务并唤醒消费线程，不等待线程退出。
+     * @note 当前不是 RUNNING 时立即置 STOPPED。
+     */
+    void stop() override;
+    /**
+     * @brief 同步处理当前任务并刷新一次；不得与其他消费者并发。
+     * @note 可在 seed_initial_roles() 与 run() 之前使用。
+     */
     void drain();
     /**
      * @brief 读取统计值。
@@ -125,6 +154,7 @@ class RoleFilter final : public ::RoleLifecycleSink {
 
    private:
     std::unique_ptr<detail::RoleFilterState> state_;
+    std::atomic<hng::ComponentState> lifecycle_{hng::ComponentState::CONSTRUCTED};
 };
 }  // namespace hng
 #endif

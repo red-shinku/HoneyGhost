@@ -188,6 +188,38 @@ add_executable(verify_role_manager verify_role_manager.cc)
 target_link_libraries(verify_role_manager PRIVATE hng_control_plane)
 add_test(NAME verify_role_manager COMMAND verify_role_manager)
 
+# 用户态角色过滤：策略、成员刷新、初始名单与消费线程，无 IO / 无特权
+add_executable(test_role_filter test_role_filter.cc)
+target_link_libraries(test_role_filter PRIVATE hng_role_filter)
+add_test(NAME test_role_filter COMMAND test_role_filter)
+# 用例按 scripts/test-role-filter.sh 的方式从仓库根读取 config/ 并用 build-agent/
+set_tests_properties(test_role_filter PROPERTIES
+    WORKING_DIRECTORY ${HNG_SOURCE_DIR})
+
+# 真实 RoleManager → RoleFilter：成员枚举与 map 走替身，无 IO / 无特权
+add_executable(test_role_filter_integration test_role_filter_integration.cc)
+target_link_libraries(test_role_filter_integration PRIVATE
+    hng_role_filter hng_control_plane)
+add_test(NAME test_role_filter_integration COMMAND test_role_filter_integration)
+
+# 名单 map 的 BPF 后端：仅本测试程序用 --wrap 替换 syscall，无 IO / 无特权
+add_executable(test_process_filter_map_backend
+    test_process_filter_map_backend.cc
+    ${HNG_SOURCE_DIR}/agent/role_filter/src/process_filter_map.cc)
+target_include_directories(test_process_filter_map_backend PRIVATE
+    ${HNG_SOURCE_DIR})
+target_link_libraries(test_process_filter_map_backend PRIVATE Threads::Threads)
+target_link_options(test_process_filter_map_backend PRIVATE
+    "LINKER:--wrap=syscall")
+add_test(NAME test_process_filter_map_backend
+    COMMAND test_process_filter_map_backend)
+
+# 内核侧角色过滤：包含真实过滤头与探针源码，主机模拟 bpf 辅助函数
+add_executable(test_kernel_role_filter test_kernel_role_filter.cc)
+target_include_directories(test_kernel_role_filter PRIVATE
+    ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_filter)
+add_test(NAME test_kernel_role_filter COMMAND test_kernel_role_filter)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)

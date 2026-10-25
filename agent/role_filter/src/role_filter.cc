@@ -53,6 +53,8 @@ void RoleFilterState::set_supervision_service(::RoleSupervisionService* service)
     supervision_ = service;
 }
 
+const ::RoleLookupService& RoleFilterState::lookup() const { return lookup_; }
+
 void RoleFilterState::sync_supervision(uint32_t role_id, bool supervised)
 {
     if (supervision_ == nullptr) return;
@@ -299,9 +301,40 @@ void RoleFilter::set_supervision_service(::RoleSupervisionService* service)
     state_->set_supervision_service(service);
 }
 
-void RoleFilter::run() { state_->run(); }
+void RoleFilter::seed_initial_roles()
+{
+    if (lifecycle_.load() != hng::ComponentState::CONSTRUCTED) return;
+    const auto roles = state_->lookup().roles();
+    for (const Role& role : roles) {
+        state_->enqueue({detail::FilterTask::Kind::UPDATE, role, {}, {}});
+        auto anchor = state_->lookup().main_process(role.roleID);
+        if (anchor)
+            state_->enqueue(
+                {detail::FilterTask::Kind::MEMBERS, role, {}, {*anchor}});
+    }
+    state_->drain();
+    lifecycle_.store(hng::ComponentState::READY);
+}
 
-void RoleFilter::stop() { state_->stop(); }
+hng::ComponentState RoleFilter::state() const { return lifecycle_.load(); }
+
+void RoleFilter::run()
+{
+    if (lifecycle_.load() != hng::ComponentState::READY) return;
+    lifecycle_.store(hng::ComponentState::RUNNING);
+    state_->run();
+    lifecycle_.store(hng::ComponentState::STOPPED);
+}
+
+void RoleFilter::stop()
+{
+    state_->stop();
+    hng::ComponentState current = lifecycle_.load();
+    while (current != hng::ComponentState::RUNNING &&
+           !lifecycle_.compare_exchange_weak(current,
+                                             hng::ComponentState::STOPPED)) {
+    }
+}
 
 void RoleFilter::drain() { state_->drain(); }
 
