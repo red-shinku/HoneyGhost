@@ -172,6 +172,102 @@ ContextManagerStats ContextStore::stats() const
     return snapshot;
 }
 
+ContextSeedReport ContextStore::seed(const ContextSeedPlan& plan)
+{
+    ContextSeedReport report;
+    for (const ContextSeedEntry& entry : plan.entries) {
+        const hng::Process process        = entry.process;
+        const hng::Process parent_process = entry.parent;
+
+        // 身份非法或父与自身相同：整条丢弃
+        if (process.pid == 0 || process.pid_start_time == 0 ||
+            parent_process == process) {
+            ++report.rejected_invalid;
+            continue;
+        }
+
+        if (entry.kind == ContextSeedKind::DERIVE) {
+            if (entry.contextID == 0) {
+                ++report.rejected_invalid;
+                continue;
+            }
+
+            const ContextKey key{process.pid, process.pid_start_time};
+            bool duplicate = false;
+            bool id_taken  = false;
+            {
+                std::shared_lock lock(contexts.smtx);
+                duplicate     = contexts.map.find(key) != contexts.map.end();
+                const auto it = contexts.id_to_key.find(entry.contextID);
+                id_taken = it != contexts.id_to_key.end() && !(it->second == key);
+            }
+            if (duplicate) {
+                ++report.duplicate;  // 同键保留首条
+                continue;
+            }
+            if (id_taken) {
+                ++report.rejected_invalid;  // contextID 已被别的根占用
+                continue;
+            }
+
+            // 父 contextID 由父进程已落地的归属解析；解析不到说明计划乱序
+            uint32_t parent_context = 0;
+            if (parent_process.pid != 0) {
+                const auto root = root_of(to_context_root, parent_process);
+                const auto id =
+                    root.has_value() ? context_id_of(*root) : std::nullopt;
+                if (!id.has_value()) {
+                    ++report.rejected_out_of_order;
+                    continue;
+                }
+                parent_context = *id;
+            }
+
+            // 主 context 与归属索引同锁写入；锁序沿用 addContextID
+            {
+                std::unique_lock lock(contexts.smtx);
+                contexts.map.emplace(
+                    key, ContextMessage{entry.contextID,
+                                        hng::contextattr::UNKNOWN, false});
+                contexts.by_attr[hng::contextattr::UNKNOWN].insert(
+                    entry.contextID);
+                contexts.id_to_key[entry.contextID] = key;
+                std::unique_lock tlock(to_context_root.smtx);
+                to_context_root.map[process] = key;
+                to_context_root.processes_by_root[key].insert(process);
+            }
+            if (parent_context != 0) {
+                std::unique_lock lock(parent.smtx);
+                parent.map.emplace(entry.contextID, parent_context);
+            }
+            ++report.inserted;
+            continue;
+        }
+
+        // BIND：并入父进程所属 context 的成员集，不新建 context
+        if (entry.contextID != 0 || parent_process.pid == 0) {
+            ++report.rejected_invalid;
+            continue;
+        }
+        const auto root = root_of(to_context_root, parent_process);
+        if (!root.has_value()) {
+            ++report.rejected_out_of_order;  // 父尚未落地
+            continue;
+        }
+        {
+            std::unique_lock lock(to_context_root.smtx);
+            if (to_context_root.map.find(process) != to_context_root.map.end()) {
+                ++report.duplicate;  // 已归属，保留首条
+                continue;
+            }
+            to_context_root.map[process] = *root;
+            to_context_root.processes_by_root[*root].insert(process);
+        }
+        ++report.bound;
+    }
+    return report;
+}
+
 void ContextStore::add_context(hng::Process p, uint32_t contextID,
                                hng::contextattr attr, ContextParentRef parent)
 {

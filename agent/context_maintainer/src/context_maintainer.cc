@@ -16,10 +16,15 @@
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <queue>
+#include <unordered_map>
+#include <vector>
 
 #include "agent/context_maintainer/src/rule/derive_types.hpp"
 #include "agent/context_maintainer/src/rule/pending_table.hpp"
@@ -99,8 +104,7 @@ ContextDeriveDecision ContextMaintainer::should_derive_context(
 void ContextMaintainer::on_birth(hng::Process child, hng::Process parent)
 {
     // 已在窗口内或已产生决策（乱序 exec 先到 / 重复事件）→ 无需再开窗口
-    if (pending_->is_pending(child) ||
-        states_.count(ProcessKey{child}) != 0) {
+    if (pending_->is_pending(child) || states_.count(ProcessKey{child}) != 0) {
         return;
     }
     pending_->on_fork(child, parent, parent_is_interpreter(parent), window_size_);
@@ -147,8 +151,7 @@ std::optional<uint32_t> ContextMaintainer::lookup_contextID_at(
     return lookup_registered(p);
 }
 
-std::optional<uint32_t> ContextMaintainer::lookup_registered(
-    hng::Process p) const
+std::optional<uint32_t> ContextMaintainer::lookup_registered(hng::Process p) const
 {
     if (!ctx_lookup_service_) {
         return std::nullopt;
@@ -164,6 +167,145 @@ ContextMaintainerStats ContextMaintainer::stats() const
     snapshot.lookup_depth_limited =
         lookup_depth_limited_.load(std::memory_order_relaxed);
     return snapshot;
+}
+
+ContextSeedPlan ContextMaintainer::build_seed_plan(
+    const hng::ProcessSeedBatch& batch)
+{
+    // 有效条目：忽略非法身份；同一身份只保留首条
+    std::vector<const hng::ProcessSeedEntry*> entries;
+    entries.reserve(batch.entries.size());
+    std::unordered_map<hng::Process, std::size_t> position;
+    position.reserve(batch.entries.size());
+    for (const auto& entry : batch.entries) {
+        if (entry.process.pid == 0 || entry.process.pid_start_time == 0) {
+            continue;
+        }
+        const auto inserted = position.emplace(entry.process, entries.size());
+        if (!inserted.second) {
+            continue;
+        }
+        entries.push_back(&entry);
+    }
+
+    constexpr std::size_t kNoParent = static_cast<std::size_t>(-1);
+    const std::size_t count         = entries.size();
+
+    // 父边：只有父身份也在批内才建立，其余进程按根处理
+    std::vector<std::size_t> parent_index(count, kNoParent);
+    std::vector<std::vector<std::size_t>> children(count);
+    std::vector<std::size_t> indegree(count, 0);
+    for (std::size_t i = 0; i < count; ++i) {
+        const hng::ProcessSeedEntry& entry = *entries[i];
+        if (entry.ppid == 0 || entry.ppid_start_time == 0) {
+            continue;
+        }
+        const auto it =
+            position.find(hng::Process{entry.ppid, entry.ppid_start_time});
+        if (it == position.end()) {
+            continue;
+        }
+        parent_index[i] = it->second;
+        children[it->second].push_back(i);
+        indegree[i] = 1;
+    }
+
+    // 确定性拓扑序：就绪集合按 pid 升序取
+    struct Ready {
+        uint32_t pid      = 0;
+        std::size_t index = 0;
+    };
+    struct ReadyLater {
+        bool operator()(const Ready& lhs, const Ready& rhs) const
+        {
+            if (lhs.pid != rhs.pid) {
+                return lhs.pid > rhs.pid;
+            }
+            return lhs.index > rhs.index;
+        }
+    };
+    std::priority_queue<Ready, std::vector<Ready>, ReadyLater> ready;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (indegree[i] == 0) {
+            ready.push(Ready{entries[i]->process.pid, i});
+        }
+    }
+
+    std::vector<std::size_t> order;
+    order.reserve(count);
+    while (!ready.empty()) {
+        const std::size_t i = ready.top().index;
+        ready.pop();
+        order.push_back(i);
+        for (std::size_t child : children[i]) {
+            if (--indegree[child] == 0) {
+                ready.push(Ready{entries[child]->process.pid, child});
+            }
+        }
+    }
+
+    // 防御：父边理论上无环；残留条目按 pid 升序当作根补在末尾
+    if (order.size() != count) {
+        std::vector<std::size_t> rest;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (indegree[i] != 0) {
+                rest.push_back(i);
+            }
+        }
+        std::sort(rest.begin(), rest.end(),
+                  [&entries](std::size_t lhs, std::size_t rhs) {
+                      const uint32_t lpid = entries[lhs]->process.pid;
+                      const uint32_t rpid = entries[rhs]->process.pid;
+                      if (lpid != rpid) {
+                          return lpid < rpid;
+                      }
+                      return lhs < rhs;
+                  });
+        for (std::size_t i : rest) {
+            parent_index[i] = kNoParent;
+        }
+        order.insert(order.end(), rest.begin(), rest.end());
+    }
+
+    // 逐条决策并填充本地状态；父先子后保证父的解释器标记已就绪
+    ContextSeedPlan plan;
+    plan.entries.reserve(count);
+    for (std::size_t i : order) {
+        const hng::ProcessSeedEntry& entry = *entries[i];
+        const hng::Process p               = entry.process;
+
+        ProcessContextState& s             = states_[ProcessKey{p}];
+        s.exec_is_interpreter =
+            !entry.exe.empty() && hng::detail::is_interpreter_exec(entry.exe);
+
+        ContextSeedEntry out;
+        out.process = p;
+        out.attr    = hng::contextattr::UNKNOWN;
+        if (parent_index[i] == kNoParent) {
+            out.kind      = ContextSeedKind::DERIVE;
+            out.contextID = allocate_context_id();
+        }
+        else {
+            const hng::Process parent = entries[parent_index[i]]->process;
+            out.parent                = parent;
+            const hng::detail::DeriveVerdict verdict = hng::detail::decide_exec(
+                p, parent, parent_is_interpreter(parent), entry.exe);
+            if (verdict.derive) {
+                out.kind      = ContextSeedKind::DERIVE;
+                out.contextID = allocate_context_id();
+            }
+            else {
+                out.kind = ContextSeedKind::BIND;  // contextID 为 0
+            }
+        }
+
+        s.decided = true;
+        s.kind = out.kind == ContextSeedKind::DERIVE ? ContextDecisionKind::DERIVE
+                                                     : ContextDecisionKind::KEEP;
+        s.contextID = out.contextID;
+        plan.entries.push_back(out);
+    }
+    return plan;
 }
 
 bool ContextMaintainer::parent_is_interpreter(hng::Process parent) const
@@ -194,9 +336,9 @@ ContextDeriveDecision ContextMaintainer::finalize_derive(
     const hng::detail::DeriveVerdict& v)
 {
     ContextDeriveDecision d;
-    d.kind      = ContextDecisionKind::DERIVE;
-    d.contextID = allocate_context_id();
-    d.attr      = decide_attr(v.child, v.parent);
+    d.kind                     = ContextDecisionKind::DERIVE;
+    d.contextID                = allocate_context_id();
+    d.attr                     = decide_attr(v.child, v.parent);
 
     ProcessContextState& state = states_[ProcessKey{v.child}];
     state.decided              = true;

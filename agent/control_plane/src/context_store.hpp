@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "agent/control_plane/include/context_stats.hpp"
+#include "agent/control_plane/include/context_seed_service.hpp"
 #include "agent/event_data/include/process.hpp"
 #include "agent/util/include/deferred_relation_table.hpp"
 #include "agent/util/include/tombstone_table.hpp"
@@ -143,9 +144,10 @@ struct ContextTombstone {
  * 持有四张表、两张延迟表、墓碑表与落地计数，负责注册、注销、归属挂靠、
  * 父 context 解析与延迟关系、墓碑的收敛。
  *
- * 写入口只由 ContextManager 的消费线程调用，一次落地对应一个写方法：取一次
- * 当前时间，写表并计数，返回前清理过期关系与墓碑；未产生结果的拒收与幂等
- * 路径同样清理。查询入口可被任意线程并发调用。
+ * 运行期写入口只由 ContextManager 的消费线程调用，一次落地对应一个写方法：
+ * 取一次当前时间，写表并计数，返回前清理过期关系与墓碑；未产生结果的拒收与
+ * 幂等路径同样清理。查询入口可被任意线程并发调用。初始化期 seed 是例外：在
+ * run() 之前同步直写，不取当前时间、不碰延迟关系与墓碑。
  *
  * Store 不发通知、不碰队列；需要调用方处理的结果经返回值交出。
  *
@@ -221,6 +223,21 @@ class ContextStore {
     /// @brief 异常态观测快照
     /// @note 只读原子量，不读延迟表与墓碑表
     ContextManagerStats stats() const;
+
+    /**
+     * @brief 用一次初始计划批量构造 context 树
+     * @details
+     *  逐条按计划顺序落地，父先子后由计划保证：DERIVE 插入主 context 与归属
+     *  索引，父 contextID 由父进程已落地的记录解析；BIND 把进程并入父进程所属
+     *  context 的成员集。只登记主 context，属性一律 UNKNOWN。
+     *
+     *  不使用延迟表、不写墓碑、不发通知，也不改动任何运行期统计计数。父未
+     *  落地、字段非法或同键重复的条目按条拒绝并计数，不影响后续条目。
+     * @param plan 初始计划
+     * @return 落地统计；rejected_state 恒为 0
+     * @pre 主表为空，且只调用一次
+     */
+    ContextSeedReport seed(const ContextSeedPlan& plan);
 
    private:
     ContextStoreOptions options_;

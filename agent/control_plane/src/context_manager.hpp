@@ -16,6 +16,7 @@
 
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
+#include "agent/control_plane/include/context_seed_service.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
 
@@ -30,8 +31,10 @@
  * 工作平面本地也会维护每个角色的 Context 树关系，并且是第一手的。
  * 控制平面这里则是权威的，所有离散无状态事件的归属标准。
  *
- * 六个写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队之后
- * 不得立即依赖查询结果，见 docs/red_shinku_logs/控制平面context归属重构.md §3.3。
+ * 六个运行期写接口都是通知写：入队即返回，落地在 run() 的消费线程上。故入队
+ * 之后不得立即依赖查询结果，见
+ * docs/red_shinku_logs/控制平面context归属重构.md §3.3。初始化期的 seed 是例外：
+ * 在 run() 之前同步直写，不经队列。
  *
  * 表结构、延迟关系、墓碑与落地计数由 ContextStore 持有；本类只负责队列、
  * 消费线程、属性变更钩子与查询面转发。
@@ -39,6 +42,7 @@
 class ContextManager : public ContextLookupService,
                        public ContextJoinService,
                        public ContextUpdateService,
+                       public ContextSeedService,
                        public ProcessLifecycleSink {
    public:
     /// @brief 构造管理器
@@ -97,12 +101,22 @@ class ContextManager : public ContextLookupService,
     ///          根进程退出而其他成员仍在时，context 保留，键仍指向已退出的根
     void on_process_exited(hng::Process p) override;
 
+    /// @brief 用一次初始计划批量构造 context 树
+    /// @details 同步写入，不经通知队列；成功后状态迁移到 READY。
+    /// @param plan 初始计划，entries 须父先子后
+    /// @return 落地统计；状态不是 CONSTRUCTED 时 rejected_state 为 1，不写表
+    /// @pre 状态为 CONSTRUCTED；只调用一次
+    /// @see ContextSeedService::seed
+    ContextSeedReport seed(const ContextSeedPlan& plan) override;
+
     /// @brief 消费线程入口：取队列、按到达顺序串行落地，阻塞直到 stop()
-    /// @note 不持线程，线程由装配方创建；析构前须已返回
+    /// @note 状态不是 READY 时立即返回，不消费队列；不持线程，线程由装配方
+    ///       创建；析构前须已返回
     void run();
 
     /// @brief 停止消费；幂等，可从任意线程调用
     /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
+    /// @note 未处于 RUNNING 时直接置 STOPPED，供 run() 之前与构造失败的清理
     void stop();
 
     /// @brief 当前生命周期状态

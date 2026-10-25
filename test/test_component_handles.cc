@@ -80,12 +80,15 @@ void run_context_component()
         ContextLookupService* lookup = &component->lookup_service();
         ContextJoinService* join     = &component->join_service();
         ContextUpdateService* update = &component->update_service();
+        ContextSeedService* seed     = &component->seed_service();
         CHECK(lookup == &component->lookup_service(),
               "上下文查询服务访问器应稳定返回同一地址");
         CHECK(join == &component->join_service(),
               "上下文注册服务访问器应稳定返回同一地址");
         CHECK(update == &component->update_service(),
               "上下文更新服务访问器应稳定返回同一地址");
+        CHECK(seed == &component->seed_service(),
+              "上下文 seed 服务访问器应稳定返回同一地址");
 
         ProcessLifecycleSink* sink = &component->lifecycle_sink();
         CHECK(sink == &component->lifecycle_sink(),

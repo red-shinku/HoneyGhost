@@ -11,6 +11,7 @@
 
 #include <memory>
 
+#include "agent/control_plane/include/context_seed_service.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
@@ -42,6 +43,10 @@ class ContextComponent final : public hng::Component {
     /// @brief context 属性更新服务
     /// @see ContextUpdateService
     ContextUpdateService& update_service() noexcept;
+
+    /// @brief context 树初始化写入服务
+    /// @see ContextSeedService
+    ContextSeedService& seed_service() noexcept;
 
     /// @brief 进程退出的下游接收方
     /// @note 供进程管理组件的装配者登记，须存活到 run() 返回之后

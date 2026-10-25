@@ -69,16 +69,43 @@ void ContextManager::on_process_exited(hng::Process p)
     task.push(Task{ExitedTask{p}});
 }
 
+ContextSeedReport ContextManager::seed(const ContextSeedPlan& plan)
+{
+    ContextSeedReport report;
+    if (state_.load(std::memory_order_acquire) !=
+        hng::ComponentState::CONSTRUCTED) {
+        report.rejected_state = 1;
+        return report;
+    }
+
+    report = store_.seed(plan);
+    state_.store(hng::ComponentState::READY, std::memory_order_release);
+    return report;
+}
+
 void ContextManager::run()
 {
+    if (state_.load(std::memory_order_acquire) != hng::ComponentState::READY) {
+        return;
+    }
+    state_.store(hng::ComponentState::RUNNING, std::memory_order_release);
+
     Task t;
     // 取与处理分离：队列临界区内没有任何表的读写
     while (task.wait_pop(t)) {
         land(t);
     }
+
+    state_.store(hng::ComponentState::STOPPED, std::memory_order_release);
 }
 
-void ContextManager::stop() { task.stop(); }
+void ContextManager::stop()
+{
+    task.stop();
+    if (state_.load(std::memory_order_acquire) != hng::ComponentState::RUNNING) {
+        state_.store(hng::ComponentState::STOPPED, std::memory_order_release);
+    }
+}
 
 hng::ComponentState ContextManager::state() const
 {

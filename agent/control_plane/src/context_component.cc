@@ -32,6 +32,11 @@ ContextUpdateService& ContextComponent::update_service() noexcept
     return static_cast<ContextUpdateService&>(impl_->manager);
 }
 
+ContextSeedService& ContextComponent::seed_service() noexcept
+{
+    return static_cast<ContextSeedService&>(impl_->manager);
+}
+
 ProcessLifecycleSink& ContextComponent::lifecycle_sink() noexcept
 {
     return static_cast<ProcessLifecycleSink&>(impl_->manager);

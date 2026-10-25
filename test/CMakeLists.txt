@@ -51,6 +51,12 @@ add_executable(test_context_store test_context_store.cc)
 target_link_libraries(test_context_store PRIVATE hng_context_manager)
 add_test(NAME test_context_store COMMAND test_context_store)
 
+# context 初始计划与 CM seed：计划生成 + 落地，无 IO / 无特权
+add_executable(test_context_seed test_context_seed.cc)
+target_link_libraries(test_context_seed PRIVATE
+    hng_context_maintainer hng_context_manager)
+add_test(NAME test_context_seed COMMAND test_context_seed)
+
 # 控制平面的进程管理器：三个注入点走替身，无 IO / 无特权
 add_executable(test_process_manager test_process_manager.cc)
 target_link_libraries(test_process_manager PRIVATE hng_process_manager)

@@ -25,8 +25,10 @@
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/detector/include/score.hpp"
 #include "agent/event_data/include/process.hpp"
+#include "agent/event_data/include/process_seed.hpp"
 #include "agent/event_data/include/event_type.hpp"
 #include "agent/context_maintainer/include/context_maintainer_decision.hpp"
+#include "agent/context_maintainer/include/context_seed.hpp"
 
 // rule 派生规则是本模块的实现细节（src/rule/），此处只前置声明其类型，
 // 不得改为包含定义——公共头一旦引入 src 头，该细节就随之外泄。
@@ -122,6 +124,17 @@ class ContextMaintainer {
     /// @return 当前累计计数器，读取不改变统计
     ContextMaintainerStats stats() const;
 
+    /// @brief 用一次进程快照生成初始 context 计划，并填充本地决策状态
+    /// @details 父先子后排序，父不在批内的进程按根处理；根与判定为派生的进程
+    /// 分配本地 contextID，判定为留在父 context 的进程生成 BIND 条目。每个
+    /// 进程的决策状态同时落定，故此后的首次 exec 不再派生。不调用
+    /// ContextJoinService、不产生注册与通知，也不改动待决策窗口。
+    /// @param batch 初始进程批次
+    /// @return 计划；entries 按父先子后排列，同一进程只出现一次
+    /// @pre 本模块尚无任何消费方线程：states_ 无锁保护
+    /// @pre 只调用一次，此后不得再经 on_birth/on_event 开窗
+    ContextSeedPlan build_seed_plan(const hng::ProcessSeedBatch& batch);
+
    private:
     /// 默认事件窗口配额
     static constexpr uint32_t kDefaultWindow = 8;
@@ -194,9 +207,10 @@ class ContextMaintainer {
     ///< 待决策进程观察窗口；指向不完整类型，定义见 src/rule/pending_table.hpp
     std::unique_ptr<hng::detail::PendingTable> pending_;
 
-    // 进程 → 决策状态；键含 pid_start_time，KEEP 判定的"父是否解释器"亦取自此表
+    // 进程 → 决策状态；键含 pid_start_time，KEEP 判定的"父是否解释器"亦取自此表。
+    // 无锁：写只发生在消费线程与 build_seed_plan 中，后者须在任何消费线程启动前
+    // 调用。
     std::unordered_map<ProcessKey, ProcessContextState, KeyHash> states_;
-    //TODO: 初始化 seed 落地时在 run() 前填充 states_，入口由初始化任务定义。
 
     mutable std::atomic<uint64_t> keep_parent_unobserved_{0};
     mutable std::atomic<uint64_t> lookup_depth_limited_{0};
