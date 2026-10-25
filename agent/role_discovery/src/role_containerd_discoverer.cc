@@ -450,6 +450,15 @@ void ContainerdRoleDiscoverer::publish(const RoleEvent& event)
 
 void ContainerdRoleDiscoverer::emit(const RoleEvent& event) { publish(event); }
 
+void ContainerdRoleDiscoverer::report_source_barrier(bool available)
+{
+    if (config_.barrier == nullptr || barrier_reported_) {
+        return;
+    }
+    barrier_reported_ = true;
+    config_.barrier->ready(RoleSource::CONTAINERD, available);
+}
+
 SettlementStats ContainerdRoleDiscoverer::settlement_stats() const
 {
     SettlementStats stats;
@@ -638,6 +647,10 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
                 const bool was_open = segment_open_;
                 segment_open_       = false;
 
+                // 只要有过开场就说明源已给出过一段完整枚举，与能否结算无关
+                if (was_open) {
+                    report_source_barrier(true);
+                }
                 if (!was_open) {
                     // 没有开场的收场：不该发生，且绝不能当成一次成功结算——那会
                     // 把「距上次成功结算的时长」这个唯一的健康度信号刷新掉
@@ -672,6 +685,8 @@ void ContainerdRoleDiscoverer::loop()
     while (!stop_requested_.load()) {
         if (fd_ < 0) {
             if (!connect()) {
+                // 首次连不上即上报不可用；后续重试不改写结论
+                report_source_barrier(false);
                 backoff_wait(attempt);
                 continue;
             }

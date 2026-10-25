@@ -36,6 +36,7 @@
 #include <thread>
 #include <vector>
 
+#include "agent/role_discovery/include/role_source_barrier.hpp"
 #include "agent/role_discovery/src/role_cgroup_reader.hpp"
 #include "role_containerd_bridge.pb.h"
 
@@ -718,12 +719,15 @@ void run_wiring()
     fake.processes[7]    = Process{7, 111};
 
     EventSink sink;
+    RoleSourceBarrier barrier;
+    barrier.expect(hng::role::RoleSource::CONTAINERD);
     ContainerdRoleDiscoverer::Config config;
     config.socket_path           = socket_path;
     config.probe                 = fake.probe();
     config.anchor_retry_interval = std::chrono::milliseconds(20);
     config.backoff_base          = std::chrono::milliseconds(10);
     config.backoff_max           = std::chrono::milliseconds(50);
+    config.barrier               = &barrier;
 
     ContainerdRoleDiscoverer discoverer(sink, config);
     std::thread::id run_thread;
@@ -741,6 +745,11 @@ void run_wiring()
     CHECK(sink.actions()[0] == RoleAction::JOIN, "应为加入");
     CHECK(sink.keys()[0] == "a1" && sink.pids()[0] == 4242,
           "应为 a1 且锚点 4242");
+
+    // ① 源屏障：首个快照段收场后应上报就绪
+    CHECK(barrier.wait(std::chrono::milliseconds(1000)),
+          "首个快照段后应上报源就绪");
+    CHECK(!barrier.timed_out(), "上报应发生在等待超时之前");
 
     // ② 流内事件：同一容器重复观察不产出，另一个容器加入产出
     bridge.send(make_upsert(k8s_attributes("a1", "nginx"), 4242, false));

@@ -34,6 +34,7 @@
 #include "agent/role_discovery/src/role_discoverer.hpp"
 #include "agent/role_discovery/include/role_event.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
+#include "agent/role_discovery/include/role_source_barrier.hpp"
 #include "agent/role_discovery/src/role_observation.hpp"
 #include "agent/role_discovery/src/role_signal_table.hpp"
 #include "agent/event_data/include/process.hpp"
@@ -338,6 +339,10 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
         /// 存活期以到下一次 (重)连为止，可能是天级。周期快照给它设上界，代价是
         /// 每次 O(纳入发现的 unit 数) 次取数，故频率须有界。
         std::chrono::milliseconds snapshot_interval{600000};
+
+        /// 初始快照结论的上报点，空表示不上报
+        /// @see RoleSourceBarrier
+        RoleSourceBarrier* barrier = nullptr;
     };
 
     /// @param sink 事件出口，须比本对象活得久
@@ -407,6 +412,10 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
     /// publish 只被这一处调用，end_snapshot 的产出不另立通路
     void emit(const RoleEvent& event);
 
+    /// @brief 上报初始快照结论；已上报过或未配置屏障时不做任何事
+    /// @note 只在 run 线程上调用，barrier_reported_ 因此无需原子
+    void report_source_barrier(bool available);
+
     /// 距下次周期快照的毫秒数，用于 poll 超时
     /// @return 未启用周期快照时为 -1（无限等待）
     int next_snapshot_timeout_ms() const;
@@ -435,6 +444,9 @@ class SystemdRoleDiscoverer : public RoleDiscoverer {
 
     /// stop() 置位，run() 与循环各处据此返回
     std::atomic<bool> stop_requested_{false};
+
+    /// 是否已向屏障上报过首个快照结论；只在 run 线程上读写
+    bool barrier_reported_ = false;
 
     /// 结算健康度，由 settlement_stats() 从任意线程读取；各字段的含义与
     /// 用途见 SystemdSettlementStats

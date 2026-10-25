@@ -178,6 +178,11 @@ add_executable(test_role_manager test_role_manager.cc)
 target_link_libraries(test_role_manager PRIVATE hng_control_plane)
 add_test(NAME test_role_manager COMMAND test_role_manager)
 
+# 角色初始化期：源屏障、drain、状态机与对账，无 IO / 无特权
+add_executable(test_role_init test_role_init.cc)
+target_link_libraries(test_role_init PRIVATE hng_control_plane hng_role_discovery)
+add_test(NAME test_role_init COMMAND test_role_init)
+
 # 角色管理器端到端校验：装配形态 + 假发现器 + 真实 cgroup 读取，无特权
 add_executable(verify_role_manager verify_role_manager.cc)
 target_link_libraries(verify_role_manager PRIVATE hng_control_plane)

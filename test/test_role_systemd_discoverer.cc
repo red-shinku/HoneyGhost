@@ -33,6 +33,7 @@
  * @date 2026.9.12
  */
 
+#include "agent/role_discovery/include/role_source_barrier.hpp"
 #include "agent/role_discovery/src/role_cgroup_reader.hpp"
 #include "agent/role_discovery/src/role_systemd_discoverer.hpp"
 
@@ -982,6 +983,27 @@ void test_run_stop_contract()
     }
 }
 
+/// 源屏障：无 system bus 时首个快照结论为不可用，且不是超时
+void test_source_barrier_unavailable()
+{
+    RecordingSink sink;
+    RoleSourceBarrier barrier;
+    barrier.expect(hng::role::RoleSource::SYSTEMD);
+
+    SystemdRoleDiscoverer::Config config;
+    config.barrier = &barrier;
+
+    SystemdRoleDiscoverer discoverer(sink, config);
+    std::thread runner([&discoverer] { discoverer.run(); });
+    CHECK(!barrier.wait(std::chrono::milliseconds(1000)),
+          "无 system bus 时角色源应上报不可用");
+    CHECK(!barrier.timed_out(), "不可用应由 ready() 给出，不是超时");
+    CHECK(sink.count() == 0, "源不可用期间不产出事件");
+
+    discoverer.stop();
+    runner.join();
+}
+
 }  // namespace
 
 int main()
@@ -1008,6 +1030,7 @@ int main()
     test_stale_delta_is_dropped_by_cookie();
     test_reload_does_not_look_like_restart();
     test_run_stop_contract();
+    test_source_barrier_unavailable();
 
     if (g_fail == 0) {
         std::printf("test_role_systemd_discoverer：全部通过\n");

@@ -34,6 +34,7 @@
 #include "agent/role_discovery/src/role_discoverer.hpp"
 #include "agent/role_discovery/include/role_event.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
+#include "agent/role_discovery/include/role_source_barrier.hpp"
 #include "agent/role_discovery/src/role_observation.hpp"
 #include "agent/role_discovery/src/role_signal_table.hpp"
 #include "agent/event_data/include/process.hpp"
@@ -259,6 +260,10 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
         std::chrono::milliseconds backoff_max{30000};
         /// 待补锚点队列的重试周期
         std::chrono::milliseconds anchor_retry_interval{200};
+
+        /// 初始快照结论的上报点，空表示不上报
+        /// @see RoleSourceBarrier
+        RoleSourceBarrier* barrier = nullptr;
     };
 
     /// @param sink 事件出口，须比本对象活得久
@@ -304,6 +309,11 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
     /// @details 发现器内的产出（submit 与 end_snapshot 的结算）一律经此转发，
     /// publish 只被这一处调用，end_snapshot 的产出不另立通路
     void emit(const RoleEvent& event);
+
+    /// @brief 上报初始快照结论；已上报过或未配置屏障时不做任何事
+    /// @note 只在 run 线程上调用，barrier_reported_ 因此无需原子
+    void report_source_barrier(bool available);
+
     /// 退避等待，可被 stop() 打断
     void backoff_wait(int& attempt);
     /// 从连接的 socket 读满 n 字节
@@ -320,6 +330,8 @@ class ContainerdRoleDiscoverer : public RoleDiscoverer {
     /// 当前是否有未结算的段
     bool segment_open_   = false;
     std::atomic<bool> stop_requested_{false};
+    /// 是否已向屏障上报过首个快照结论；只在 run 线程上读写
+    bool barrier_reported_ = false;
     std::atomic<uint64_t> settlements_{0};
     std::atomic<uint64_t> voids_{0};
     std::atomic<uint64_t> anomalies_{0};

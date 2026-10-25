@@ -15,6 +15,7 @@
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
 
+#include <chrono>
 #include <cstdio>
 
 namespace {
@@ -117,16 +118,26 @@ void run_role_component()
         RoleLookupService* lookup           = &component->lookup_service();
         RoleJoinService* join               = &component->join_service();
         RoleSupervisionService* supervision = &component->supervision_service();
+        RoleSeedService* seed               = &component->seed_service();
         CHECK(lookup == &component->lookup_service(),
               "角色查询服务访问器应稳定返回同一地址");
         CHECK(join == &component->join_service(),
               "角色继承服务访问器应稳定返回同一地址");
         CHECK(supervision == &component->supervision_service(),
               "角色监管服务访问器应稳定返回同一地址");
+        CHECK(seed == &component->seed_service(),
+              "角色对账服务访问器应稳定返回同一地址");
 
         ProcessLifecycleSink* sink = &component->lifecycle_sink();
         CHECK(sink == &component->lifecycle_sink(),
               "角色生命周期 sink 应稳定返回同一地址");
+
+        // 未运行：drain 无任务可落地且不改状态，barrier 一律失败
+        component->drain();
+        CHECK(component->state() == hng::ComponentState::CONSTRUCTED,
+              "drain 不应改变状态");
+        CHECK(!component->barrier(std::chrono::milliseconds(1)),
+              "未运行时 barrier 应返回 false");
 
         const RoleManagerStats stats = component->stats();
         CHECK(stats.store.rejected == 0, "关系表 rejected 初值应为零");

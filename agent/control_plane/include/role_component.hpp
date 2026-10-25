@@ -9,10 +9,12 @@
 #ifndef HNG_ROLE_COMPONENT_HPP_
 #define HNG_ROLE_COMPONENT_HPP_
 
+#include <chrono>
 #include <memory>
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
+#include "agent/control_plane/include/role_seed_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/control_plane/include/role_stats.hpp"
 #include "agent/util/include/component.hpp"
@@ -21,8 +23,8 @@ namespace hng {
 
 /**
  * @brief 角色管理组件
- * @details 提供角色查询、归属继承与监管名单服务，并转发组件的生命周期。
- *          组件自身不持线程。
+ * @details 提供角色查询、归属继承、监管名单与初始化对账服务，并转发组件的
+ *          生命周期。组件自身不持线程。
  * @see hng::Component
  */
 class RoleComponent final : public hng::Component {
@@ -43,6 +45,20 @@ class RoleComponent final : public hng::Component {
     /// @brief 监管名单写入服务
     /// @see RoleSupervisionService
     RoleSupervisionService& supervision_service() noexcept;
+
+    /// @brief 角色初始落地后的对账服务
+    /// @see RoleSeedService
+    RoleSeedService& seed_service() noexcept;
+
+    /// @brief 同步取空已入队的角色事件并落地
+    /// @note 只在 run() 之前调用
+    /// @see RoleManager::drain
+    void drain();
+
+    /// @brief 等待此前入队的角色事件全部落地
+    /// @return 屏障任务已落地为 true；未运行、入队被拒或超时为 false
+    /// @see RoleManager::barrier
+    bool barrier(std::chrono::milliseconds timeout);
 
     /// @brief 进程退出的下游接收方
     /// @note 供进程管理组件的装配者登记，须存活到 run() 返回之后

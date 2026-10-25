@@ -126,6 +126,26 @@ class RoleRelationStore {
     ///       或已有墓碑时丢弃本次 bind
     RoleMemberChanges bind_to_role(hng::Process child, hng::Process parent);
 
+    /// @brief 初始化期的子进程继承：父已有归属时直接 adopt，否则丢弃
+    /// @param child 待归属的进程
+    /// @param parent 其父进程
+    /// @return 本次新增的成员归属；父未归属、子已有归属或已有墓碑时为空
+    /// @note 不写等待表、不动运行期 bind_* 计数：初始化结束后不会再有父角色
+    ///       事件补做，暂存只会留下永不应用的等待项
+    /// @see bind_to_role
+    RoleMemberChanges bind_to_role_initial(hng::Process child,
+                                           hng::Process parent);
+
+    /// @brief 按当下的枚举结果改写角色的成员归属
+    /// @param role_id 目标角色
+    /// @param members 本次枚举到的进程
+    /// @return 本次新增的成员归属；角色不存在时为空
+    /// @note 墓碑命中的进程跳过；已归属同一角色无变化；已归属别的角色按
+    ///       adopt 的规则改判
+    /// @note 不写等待表、不清理过期项
+    RoleMemberChanges adopt_members(uint32_t role_id,
+                                    const std::vector<hng::Process>& members);
+
     /// @brief 进程已退出：写墓碑，丢弃相关等待项，删其归属条目
     /// @note 不改变角色存在性；反向索引里的键留存，LEAVE 删时核对当前值即无副作用
     /// @note p 是该角色的锚点时把它计入 anchors_removed，
@@ -143,6 +163,10 @@ class RoleRelationStore {
     /// @brief 进程 → roleID；未归属时为空
     /// @note 归属条目与角色记录同生共死，命中即是在册角色
     std::optional<uint32_t> lookup(hng::Process p) const;
+
+    /// @brief 归属表的全部键，顺序不限
+    /// @note 供初始化对账遍历归属条目用，不属于对外查询面
+    std::vector<hng::Process> ownership_processes() const;
 
     /// @brief 角色的对外视图
     std::optional<hng::Role> role(uint32_t role_id) const;

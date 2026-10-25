@@ -31,6 +31,18 @@ RoleSupervisionService& RoleComponent::supervision_service() noexcept
     return static_cast<RoleSupervisionService&>(impl_->manager);
 }
 
+RoleSeedService& RoleComponent::seed_service() noexcept
+{
+    return static_cast<RoleSeedService&>(impl_->manager);
+}
+
+void RoleComponent::drain() { impl_->manager.drain(); }
+
+bool RoleComponent::barrier(std::chrono::milliseconds timeout)
+{
+    return impl_->manager.barrier(timeout);
+}
+
 ProcessLifecycleSink& RoleComponent::lifecycle_sink() noexcept
 {
     return static_cast<ProcessLifecycleSink&>(impl_->manager);
