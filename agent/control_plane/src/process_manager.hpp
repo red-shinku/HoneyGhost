@@ -8,15 +8,19 @@
 #ifndef _CONTROL_PLANE_PROCESSMANAGER_HPP
 #define _CONTROL_PLANE_PROCESSMANAGER_HPP
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
+#include "agent/control_plane/include/process_seed_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
+#include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/process_stats.hpp"
+#include "agent/event_data/include/process_seed.hpp"
 
 #include "agent/control_plane/src/process_store.hpp"
 
@@ -26,7 +30,8 @@
 class ProcessManager : public ProcessLookupService,
                        public ProcessJoinService,
                        public ProcessUpdateService,
-                       public ProcessLivenessService {
+                       public ProcessLivenessService,
+                       public ProcessSeedService {
    public:
     /// @param options 墓碑表与时钟
     explicit ProcessManager(ProcessStoreOptions options = {});
@@ -53,13 +58,28 @@ class ProcessManager : public ProcessLookupService,
     /// @note 可被任意采集线程调用
     void update_exe_image(hng::Process p, std::string exe) override;
 
+    /// @brief 用一次快照批量构造初始进程树
+    /// @details 同步写入，不经通知队列；成功后状态迁移到 READY。
+    /// @param batch 初始进程批次
+    /// @return 落地统计；状态不是 CONSTRUCTED 时 rejected_state 为 1，不写表
+    /// @pre 状态为 CONSTRUCTED；只调用一次
+    /// @see ProcessSeedService::seed
+    ProcessSeedReport seed(const hng::ProcessSeedBatch& batch) override;
+
     /// @brief 消费线程入口：取队列、落地、推送进程退出通知，阻塞直到 stop()
-    /// @note 不持线程，线程由装配方创建；析构前须已返回
+    /// @note 状态不是 READY 时立即返回，不消费队列；不持线程，线程由装配方
+    ///       创建；析构前须已返回
     void run();
 
     /// @brief 停止消费；幂等，可从任意线程调用
     /// @note 已入队的任务仍会被落地，队列取空后 run() 返回；此后的入队被拒绝
+    /// @note 未处于 RUNNING 时直接置 STOPPED，供 run() 之前与构造失败的清理
     void stop();
+
+    /// @brief 当前生命周期状态
+    /// @note 可从任意线程读取
+    /// @see hng::Component
+    hng::ComponentState state() const;
 
     /// @brief 该身份是否已有未过期的墓碑
     /// @note 命中但已过期的墓碑会被就地清除
@@ -98,6 +118,9 @@ class ProcessManager : public ProcessLookupService,
     /// @note 按身份转发；订阅方自行决定清理哪些内部关系，并须容忍重复投递
     /// @note 调用方不得持有墓碑锁或进程树分片锁
     void notify_process_exited(hng::Process p);
+
+    /// 消费线程与任意线程都读，故为原子
+    std::atomic<hng::ComponentState> state_{hng::ComponentState::CONSTRUCTED};
 
     /// 注册的订阅者，不接管生命周期；run() 之后不再变更
     std::vector<ProcessLifecycleSink*> lifecycle_sinks_;

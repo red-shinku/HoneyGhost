@@ -229,6 +229,12 @@ int main()
     ProcessLifecycleSink& exits      = manager;
     RoleLookupService& lookups       = manager;
 
+    // ---- 初始化期入口：先落地已入队事件（此刻为空），再以不完整空批对账 ----
+    manager.drain();
+    hng::ProcessSeedBatch batch;
+    batch.complete = false;
+    manager.reconcile(batch);
+
     // ---- 启动：先起消费线程，再起发现器 ----
     std::thread consumer([&manager] { manager.run(); });
 

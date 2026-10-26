@@ -553,8 +553,19 @@ void SystemdRoleDiscoverer::run()
     }
     attach_stream();        // ① 先建流
     prime_from_snapshot();  // ② 后快照
-    loop();                 // ③ 循环，直到 stop()
+    // 首个快照结论：首次失败即不可用，后续重连不改写
+    report_source_barrier(bus_ != nullptr);
+    loop();  // ③ 循环，直到 stop()
     detach_stream();
+}
+
+void SystemdRoleDiscoverer::report_source_barrier(bool available)
+{
+    if (config_.barrier == nullptr || barrier_reported_) {
+        return;
+    }
+    barrier_reported_ = true;
+    config_.barrier->ready(RoleSource::SYSTEMD, available);
 }
 
 void SystemdRoleDiscoverer::stop()

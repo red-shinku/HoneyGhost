@@ -14,8 +14,11 @@
 #define HNG_ROLE_MANAGER_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -23,10 +26,12 @@
 
 #include "agent/control_plane/include/process_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
+#include "agent/control_plane/include/role_seed_service.hpp"
 #include "agent/control_plane/include/role_stats.hpp"
 #include "agent/control_plane/src/role_relation_store.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/role_discovery/include/role_event_sink.hpp"
+#include "agent/util/include/component.hpp"
 #include "agent/util/include/notification_queue.hpp"
 
 /**
@@ -37,7 +42,9 @@ struct RoleManagerProbe {
     /// 按 cgroup 路径枚举进程的实现，留空时用 RoleCgroupReader::read
     std::function<std::vector<hng::Process>(const std::string& cgroup_path)>
         read_members;
-    /// 进程存活视图，留空时不做存活过滤
+    /// 进程存活视图；留空表示存活未知
+    /// @note 初始对账期间由装配层注入 /proc 存活核对；留空时对账按 UNKNOWN
+    ///       保留
     std::function<bool(hng::Process)> is_exited;
 };
 
@@ -45,7 +52,8 @@ class RoleManager : public hng::role::RoleEventSink,
                     public RoleLookupService,
                     public RoleJoinService,
                     public ProcessLifecycleSink,
-                    public RoleSupervisionService {
+                    public RoleSupervisionService,
+                    public RoleSeedService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
     /// @param options 关系修复配置：等待表、墓碑表与时钟
@@ -75,6 +83,31 @@ class RoleManager : public hng::role::RoleEventSink,
     /// @note 已入队的事件仍会被落地，队列取空后 run() 返回；此后的入队一律
     ///       被拒绝并计入 queue_rejected
     void stop();
+
+    /// @brief 当前生命周期状态
+    /// @note 可从任意线程读取
+    /// @see hng::Component
+    hng::ComponentState state() const;
+
+    /// @brief 同步取空此刻已入队的任务并落地
+    /// @note 只在 run() 之前调用；不改状态。调用期间新到的任务留给 run()
+    /// @see reconcile
+    void drain();
+
+    /// @brief 等待此前入队的任务全部落地
+    /// @param timeout 最长等待时长
+    /// @return 屏障任务已落地为 true；非 RUNNING 或入队被拒、超时为 false
+    /// @note 只等到调用时刻之前入队的任务：屏障任务排在其后
+    bool barrier(std::chrono::milliseconds timeout);
+
+    /// @brief 清理幽灵成员、补绑定并重读角色成员
+    /// @details 同步写入，不经通知队列；成员新增仍经下行出口通知。
+    ///          完成后状态迁移到 READY。
+    /// @param batch 初始进程批次
+    /// @return 对账统计；状态不是 CONSTRUCTED 时 rejected_state 为 1，不写表
+    /// @pre 在 drain() 之后、run() 之前调用；只调用一次
+    /// @see RoleSeedService::reconcile
+    RoleReconcileReport reconcile(const hng::ProcessSeedBatch& batch) override;
 
     /**
      * \defgroup Rolemanager_lookup_service
@@ -126,13 +159,19 @@ class RoleManager : public hng::role::RoleEventSink,
         hng::Process parent;
     };
 
-    /// 三类入口共用一个队列，按到达顺序串行落地
-    using RoleTask =
-        std::variant<hng::role::RoleEvent, BindMessage, ExitedMessage>;
+    /// @brief 入队消息：等待此前任务全部落地
+    struct BarrierMessage {
+        /// 屏障任务落地时置位；调用方持其 future 等待
+        std::shared_ptr<std::promise<void>> done;
+    };
+
+    /// 四类入口共用一个队列，按到达顺序串行落地
+    using RoleTask = std::variant<hng::role::RoleEvent, BindMessage,
+                                  ExitedMessage, BarrierMessage>;
 
     /// @brief 入队；生产者线程上只做这一次拷贝
-    /// @note 被拒绝（已停止）时计数，不入队
-    void enqueue(RoleTask task);
+    /// @return 已入队为 true；被拒绝（已停止）时计数并返回 false
+    bool enqueue(RoleTask task);
 
     /// @brief 落地一条队列消息
     void land(RoleTask& task);
@@ -161,6 +200,9 @@ class RoleManager : public hng::role::RoleEventSink,
 
     /// 无界队列，入队不因容量而阻塞
     hng::NotificationQueue<RoleTask> queue_;
+
+    /// 消费线程与任意线程都读，故为原子
+    std::atomic<hng::ComponentState> state_{hng::ComponentState::CONSTRUCTED};
 
     /// 消费线程写、任意线程读，故为原子
     std::atomic<uint64_t> cgroup_read_empty_{0};

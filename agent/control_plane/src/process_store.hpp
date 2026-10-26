@@ -24,8 +24,10 @@
 #include <unordered_map>
 #include <variant>
 
+#include "agent/control_plane/include/process_seed_service.hpp"
 #include "agent/control_plane/include/process_stats.hpp"
 #include "agent/event_data/include/process.hpp"
+#include "agent/event_data/include/process_seed.hpp"
 #include "agent/util/include/tombstone_table.hpp"
 
 /**
@@ -154,6 +156,21 @@ class ProcessStore {
     /// @brief 异常态观测快照
     /// @note 计数只读原子量；tombstone_depth 另取墓碑表锁
     ProcessManagerStats stats() const;
+
+    /**
+     * @brief 用一次快照批量构造初始进程树
+     * @details
+     *  先做与批次顺序无关的选取：同一 pid 只保留 start_time 最大的身份，同
+     *  一身份只落地批次中的首条；再在保留集合内计算每个父进程的孩子计数。
+     *  逐分片加锁写入实进程树，kind 一律为 REAL，exe 取自条目。
+     *
+     *  不经过 addPID、不发通知、不写墓碑，也不改动运行期统计计数。
+     * @param batch 初始进程批次
+     * @return 落地统计；rejected_state 恒为 0
+     * @pre 实进程树的 pid 槽位为空，且只调用一次
+     * @note 父身份缺失的条目照常插入，不建立虚拟根，也不更新任何孩子计数
+     */
+    ProcessSeedReport seed(const hng::ProcessSeedBatch& batch);
 
    private:
     // 进程树分片数量

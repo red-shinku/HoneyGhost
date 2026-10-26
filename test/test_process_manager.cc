@@ -15,6 +15,9 @@
  *  - 父计数：父身份缺失时只计 parent_missing，不虚增计数；森林根不计；
  *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
  *  - 多线程并发注册 / 注销后状态自洽（供 TSAN 构建复验）。
+ *
+ * 所有用例在 run() 之前先 seed 空批：生命周期要求 CONSTRUCTED → READY 之后才
+ * 能进入消费循环。
  * @author red_shinku
  * @date 2026.9.18
  */
@@ -204,6 +207,8 @@ class Runner {
 void run_register_and_lookup()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(100, 1000, 1, 10));
@@ -229,6 +234,8 @@ void run_bind_transfer()
     FakeRoleJoin join(rec);
     ProcessManager manager;
     manager.set_role_join_service(&join);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(100, 1000, 1, 10));
@@ -265,6 +272,8 @@ void run_pid_reuse()
     manager.add_process_lifecycle_sink(&ctx);
     manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     // 覆盖的旧实例无存活子进程：替换时即报退出
@@ -346,6 +355,8 @@ void run_pid_reuse()
 void run_image_update()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     // 存活进程：更新落地后镜像可见，性质仍是 REAL
@@ -406,6 +417,8 @@ void run_image_update()
 void run_resolve()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     CHECK(!manager.resolve(0).has_value(), "pid 0 应返回空");
@@ -458,6 +471,8 @@ void run_exit_paths()
     manager.add_process_lifecycle_sink(&ctx);
     manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     // 路径一：无存活子进程 → 退出即通知
@@ -520,6 +535,8 @@ void run_unknown_and_duplicate()
     ProcessManager manager;
     manager.add_process_lifecycle_sink(&ctx);
     manager.add_process_lifecycle_sink(&roles);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     // 未登记的退出：仍按身份转发，供下游清理陈旧归属
@@ -548,6 +565,8 @@ void run_exit_before_add()
     FakeRoleJoin join(rec);
     ProcessManager manager;
     manager.set_role_join_service(&join);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(50, 5000, 0, 0));  // 父进程，森林根
@@ -571,6 +590,8 @@ void run_exit_before_add()
 void run_pid_reuse_not_misfire()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(100, 1000, 0, 0));
@@ -593,6 +614,8 @@ void run_is_exited_expiry()
     options.now            = [&clock] { return clock.now(); };
 
     ProcessManager manager(options);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.unregister_pid(proc(100, 1000));
@@ -615,6 +638,8 @@ void run_tombstone_depth()
     options.now            = [&clock] { return clock.now(); };
 
     ProcessManager manager(options);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.unregister_pid(proc(800, 8000));
@@ -642,6 +667,8 @@ void run_tombstone_before_notify()
     TombstoneProbeSink probe;
     probe.attach(&manager);
     manager.add_process_lifecycle_sink(&probe);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     // 有记录退出
@@ -666,6 +693,8 @@ void run_pid_reuse_retire_tombstone()
     TombstoneProbeSink probe;
     probe.attach(&manager);
     manager.add_process_lifecycle_sink(&probe);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(200, 2000, 0, 0));
@@ -685,6 +714,8 @@ void run_pid_reuse_retire_tombstone()
 void run_parent_missing()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(100, 1000, 50, 5000));  // 父未注册
@@ -704,6 +735,8 @@ void run_parent_missing()
 void run_root_not_parent_missing()
 {
     ProcessManager manager;
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     manager.register_pid(head(10, 100, 0, 0));
@@ -714,11 +747,14 @@ void run_root_not_parent_missing()
 
 void run_stop_semantics()
 {
-    // run() 之前 stop()：run() 立即返回
+    // seed 之后、run() 之前 stop()：run() 立即返回
     {
         ProcessManager manager;
+        manager.seed(hng::ProcessSeedBatch{});
         manager.stop();
         manager.stop();  // 幂等
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "未运行时 stop() 应直接置 STOPPED");
 
         std::packaged_task<void()> task([&manager] { manager.run(); });
         std::future<void> done = task.get_future();
@@ -734,22 +770,32 @@ void run_stop_semantics()
         }
     }
 
-    // 已入队的任务在 stop() 之后仍被落地
+    // 已在消费时 stop()：已入队的任务仍被落地
     {
         ProcessManager manager;
+        manager.seed(hng::ProcessSeedBatch{});
+        std::thread worker([&manager] { manager.run(); });
+        CHECK(wait_until([&] {
+                  return manager.state() == hng::ComponentState::RUNNING;
+              }),
+              "run() 应进入 RUNNING");
+
         manager.register_pid(head(100, 1000, 1, 10));
         manager.stop();
-        manager.run();
+        worker.join();
         CHECK(manager.lookup(proc(100, 1000)).has_value(),
               "stop() 之后已入队的任务应被落地");
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "run() 返回后应为 STOPPED");
     }
 
     // stop() 之后的入队被拒（队列契约），不落地
     {
         ProcessManager manager;
+        manager.seed(hng::ProcessSeedBatch{});
         manager.stop();
         manager.register_pid(head(200, 2000, 1, 10));
-        manager.run();  // 队列为空，应直接返回
+        manager.run();  // 状态已 STOPPED，应立即返回
         CHECK(!manager.lookup(proc(200, 2000)).has_value(),
               "停止后的入队不得落地");
     }
@@ -765,6 +811,8 @@ void run_concurrent_producers()
     manager.add_process_lifecycle_sink(&ctx);
     manager.add_process_lifecycle_sink(&roles);
     manager.set_role_join_service(&join);
+    manager.seed(hng::ProcessSeedBatch{});
+
     Runner runner(manager);
 
     constexpr int kThreads = 4;

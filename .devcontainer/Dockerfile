@@ -91,6 +91,7 @@ RUN set -eux; \
         liblzma-dev \
         libnghttp2-dev \
         libre2-dev \
+        libspdlog-dev \
         libssl-dev \
         liburing-dev \
         libyaml-cpp-dev \

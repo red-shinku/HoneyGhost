@@ -41,6 +41,8 @@ class RoleFilterState {
     void refresh();
     RoleFilterStats stats() const;
     void set_supervision_service(::RoleSupervisionService* service);
+    /// @brief 借用的角色查询服务；供组件层播种时枚举角色全集
+    const ::RoleLookupService& lookup() const;
 
    private:
     /** @brief 按状态变化登记或移除监管；未注入服务时为空操作。 */

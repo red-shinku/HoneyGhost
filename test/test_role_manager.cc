@@ -122,12 +122,23 @@ class RecordingSink : public RoleLifecycleSink {
     std::vector<Call> calls_;
 };
 
+/// 走完初始化期入口：先落地已入队事件（此刻为空），再以不完整空批对账
+/// @note 只为推进到 READY；空批不清理幽灵、不补绑定、不重读成员
+void prepare(RoleManager& manager)
+{
+    manager.drain();
+    hng::ProcessSeedBatch batch;
+    batch.complete = false;
+    manager.reconcile(batch);
+}
+
 /// 起 run() 线程，析构时停止并 join
 class Runner {
    public:
-    explicit Runner(RoleManager& manager)
-        : manager_(manager), thread_([this] { manager_.run(); })
+    explicit Runner(RoleManager& manager) : manager_(manager)
     {
+        prepare(manager_);
+        thread_ = std::thread([this] { manager_.run(); });
     }
 
     ~Runner()
@@ -575,11 +586,14 @@ void run_multiple_sinks()
 
 void run_stop_semantics()
 {
-    // run() 之前 stop()：run() 立即返回
+    // run() 之前 stop()：状态直接置 STOPPED，run() 立即返回
     {
         RoleManager manager;
+        prepare(manager);
         manager.stop();
         manager.stop();  // 幂等
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "未 RUNNING 时 stop() 应直接置 STOPPED");
 
         std::packaged_task<void()> task([&manager] { manager.run(); });
         std::future<void> done = task.get_future();
@@ -600,15 +614,25 @@ void run_stop_semantics()
         RecordingSink sink;
         RoleManager manager;
         manager.add_lifecycle_sink(&sink);
+        prepare(manager);
+        std::thread consumer([&manager] { manager.run(); });
+        CHECK(wait_until([&] {
+                  return manager.state() == hng::ComponentState::RUNNING;
+              }),
+              "消费线程应进入 RUNNING");
+
         manager.on_role_event(mk_join("a", 100, 1000, {}));
         manager.stop();
-        manager.run();
+        consumer.join();
         CHECK(sink.calls().size() == 2, "stop() 之后已入队的事件应被落地");
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "run() 返回后应置 STOPPED");
     }
 
     // stop() 之后的三类入队都被拒并计数，且不进入落地
     {
         RoleManager manager;
+        prepare(manager);
         manager.stop();
         manager.on_role_event(mk_join("a", 100, 1000, {}));
         manager.bind_to_role(proc(1, 1), proc(2, 2));

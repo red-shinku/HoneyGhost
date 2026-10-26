@@ -92,6 +92,13 @@ int main()
         Barrier barrier;
         manager.add_lifecycle_sink(&filter);
         manager.add_lifecycle_sink(&barrier);
+        // 阶段 3/4：消费线程启动前先落地初始事件并对账，再播种初始名单。
+        ProcessSeedBatch initial;
+        initial.complete = false;
+        manager.drain();
+        manager.reconcile(initial);
+        filter.seed_initial_roles();
+        require(filter.state() == ComponentState::READY, "seed 后过滤组件应就绪");
         struct Runner {
             RoleManager& manager;
             std::thread thread;

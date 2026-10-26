@@ -9,7 +9,8 @@
  *  - 延迟表容量、TTL 过期与墓碑过期；
  *  - 清理：进程退出时移出成员集，成员集清空才删 context；注销仍强制删除；
  *  - 幂等重放与未知注销：不改变表状态，后者计数；
- *  - stop() 语义：run() 之前 stop() 立即返回、已入队任务仍落地、此后入队被拒；
+ *  - 生命周期：每个管理器在 run() 之前先 seed 空计划；run() 之前 stop() 立即
+ *    返回、已入队任务仍落地、此后入队被拒，状态迁移到 STOPPED；
  *  - 多线程并发写入后状态自洽（供 TSAN 构建复验）。
  *
  * @note set_attr 覆盖属性索引的同步；ATTACK/EXTRA_ATTACK 的预留钩子仍无从断言。
@@ -18,6 +19,8 @@
  */
 
 #include "agent/control_plane/src/context_manager.hpp"
+
+#include "agent/context_maintainer/include/context_seed.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -111,6 +114,13 @@ void register_root(ContextManager& manager, hng::Process root,
           what);
 }
 
+/// 初始化：空计划 seed，使管理器进入 READY（run() 的前置状态）
+void seed_empty(ContextManager& manager)
+{
+    CHECK(manager.seed(ContextSeedPlan{}).rejected_state == 0,
+          "空计划 seed 应被接受");
+}
+
 /// 用一个新根的注册当屏障：它落地即说明此前的写都已落地
 void barrier(ContextManager& manager, uint32_t pid)
 {
@@ -139,6 +149,7 @@ struct FakeClock {
 void run_register_and_lookup()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     register_root(manager, proc(100, 1000), 7, "注册后应能查到该 context");
@@ -163,6 +174,7 @@ void run_register_and_lookup()
 void run_extra_context()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     register_root(manager, proc(100, 1000), 7, "注册后应能查到该 context");
@@ -203,6 +215,7 @@ void run_extra_context()
 void run_bind_to_ctxroot()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     // 父已落定：子继承父的 context 根
@@ -241,6 +254,7 @@ void run_bind_to_ctxroot()
 void run_derive_child_before_parent()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process child  = proc(500, 5000);
@@ -268,6 +282,7 @@ void run_derive_child_before_parent()
 void run_keep_child_before_parent()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process child  = proc(510, 5100);
@@ -290,6 +305,7 @@ void run_keep_child_before_parent()
 void run_chained_keep()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process grand  = proc(520, 5200);
@@ -315,6 +331,7 @@ void run_chained_keep()
 void run_parent_exit_context_alive()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process root   = proc(530, 5300);
@@ -339,6 +356,7 @@ void run_parent_exit_context_alive()
 void run_parent_gone_orphans_child()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process child  = proc(540, 5400);
@@ -359,6 +377,7 @@ void run_parent_gone_orphans_child()
 void run_exit_before_register()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process dead = proc(550, 5500);
@@ -391,6 +410,7 @@ void run_exit_before_register()
 void run_tombstone_hits()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process dead = proc(950, 9500);
@@ -409,6 +429,7 @@ void run_tombstone_hits()
 void run_explicit_unregister_parent()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process parent = proc(600, 6000);
@@ -436,6 +457,7 @@ void run_explicit_unregister_parent()
 void run_register_cancels_bind_wait()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process child = proc(553, 5530);
@@ -456,6 +478,7 @@ void run_register_cancels_bind_wait()
 void run_exit_cancels_and_fails_waiters()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process grand  = proc(560, 5600);
@@ -479,6 +502,7 @@ void run_exit_cancels_and_fails_waiters()
 void run_ownership_conflict()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process root_a = proc(570, 5700);
@@ -511,6 +535,7 @@ void run_capacity_degrade()
     options.link_pending.capacity = 0;
     options.bind_pending.capacity = 0;
     ContextManager manager(options);
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process derived = proc(580, 5800);
@@ -539,6 +564,7 @@ void run_ttl_expiry()
     options.tombstones.ttl   = std::chrono::milliseconds(100);
     options.now              = [&clock] { return clock.now(); };
     ContextManager manager(options);
+    seed_empty(manager);
     Runner runner(manager);
 
     const hng::Process derived = proc(590, 5900);
@@ -577,6 +603,7 @@ void run_ttl_expiry()
 void run_cleanup()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     // 根退出但成员仍在：context 保留，根不再属于成员集
@@ -630,6 +657,7 @@ void run_cleanup()
 void run_set_attr()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     register_root(manager, proc(100, 1000), 7, "根进程应注册成功");
@@ -658,6 +686,7 @@ void run_set_attr()
 void run_contexts_by_attr()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     register_root(manager, proc(100, 1000), 7, "根进程应注册成功");
@@ -699,6 +728,7 @@ void run_contexts_by_attr()
 void run_members_by_context()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     CHECK(!manager.members(7).has_value(), "未知 contextID 应返回空");
@@ -769,11 +799,14 @@ void run_members_by_context()
 
 void run_stop_semantics()
 {
-    // run() 之前 stop()：run() 立即返回
+    // 初始化完成后、run() 之前 stop()：run() 立即返回
     {
         ContextManager manager;
+        seed_empty(manager);
         manager.stop();
         manager.stop();  // 幂等
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "未 run() 时 stop() 应直接置 STOPPED");
 
         std::packaged_task<void()> task([&manager] { manager.run(); });
         std::future<void> done = task.get_future();
@@ -792,17 +825,28 @@ void run_stop_semantics()
     // 已入队的任务在 stop() 之后仍被落地
     {
         ContextManager manager;
+        seed_empty(manager);
+
+        std::thread worker([&manager] { manager.run(); });
+        const bool running = wait_until([&manager] {
+            return manager.state() == hng::ComponentState::RUNNING;
+        });
+        CHECK(running, "run() 应进入 RUNNING");
+
         manager.register_context(proc(100, 1000),
                                  decision(7, contextattr::UNKNOWN), {});
         manager.stop();
-        manager.run();
+        worker.join();
         CHECK(manager.lookup(proc(100, 1000)).value_or(0) == 7,
               "stop() 之后已入队的任务应被落地");
+        CHECK(manager.state() == hng::ComponentState::STOPPED,
+              "run() 返回后应置 STOPPED");
     }
 
     // stop() 之后的入队被拒（队列契约），不落地
     {
         ContextManager manager;
+        seed_empty(manager);
         manager.stop();
         manager.register_context(proc(200, 2000),
                                  decision(9, contextattr::UNKNOWN), {});
@@ -815,6 +859,7 @@ void run_stop_semantics()
 void run_concurrent_writers()
 {
     ContextManager manager;
+    seed_empty(manager);
     Runner runner(manager);
 
     constexpr int kThreads = 4;

@@ -51,6 +51,12 @@ add_executable(test_context_store test_context_store.cc)
 target_link_libraries(test_context_store PRIVATE hng_context_manager)
 add_test(NAME test_context_store COMMAND test_context_store)
 
+# context 初始计划与 CM seed：计划生成 + 落地，无 IO / 无特权
+add_executable(test_context_seed test_context_seed.cc)
+target_link_libraries(test_context_seed PRIVATE
+    hng_context_maintainer hng_context_manager)
+add_test(NAME test_context_seed COMMAND test_context_seed)
+
 # 控制平面的进程管理器：三个注入点走替身，无 IO / 无特权
 add_executable(test_process_manager test_process_manager.cc)
 target_link_libraries(test_process_manager PRIVATE hng_process_manager)
@@ -60,6 +66,22 @@ add_test(NAME test_process_manager COMMAND test_process_manager)
 add_executable(test_process_store test_process_store.cc)
 target_link_libraries(test_process_store PRIVATE hng_process_manager)
 add_test(NAME test_process_store COMMAND test_process_store)
+
+# 进程树初始化 seed：单线程直调与临时消费线程，无 IO / 无特权
+add_executable(test_process_seed test_process_seed.cc)
+target_link_libraries(test_process_seed PRIVATE hng_process_manager)
+add_test(NAME test_process_seed COMMAND test_process_seed)
+
+# /proc 快照读取器：注入伪造的 /proc 根目录，并验证快照直接喂给 PM seed，无特权
+add_executable(test_proc_snapshot test_proc_snapshot.cc)
+target_link_libraries(test_proc_snapshot PRIVATE hng_assembly hng_process_manager)
+add_test(NAME test_proc_snapshot COMMAND test_proc_snapshot)
+
+# 初始化协调器：真实控制面组件 + 手工快照与假 map/probe，不启动组件线程
+add_executable(test_init_coordinator test_init_coordinator.cc)
+target_link_libraries(test_init_coordinator PRIVATE
+    hng_assembly hng_role_filter)
+add_test(NAME test_init_coordinator COMMAND test_init_coordinator)
 
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
@@ -80,6 +102,12 @@ add_test(NAME test_tombstone_table COMMAND test_tombstone_table)
 add_executable(test_spsc_queue test_spsc_queue.cc)
 target_include_directories(test_spsc_queue PRIVATE ${HNG_SOURCE_DIR})
 add_test(NAME test_spsc_queue COMMAND test_spsc_queue)
+
+# 统一日志（公共件，spdlog 后端）：重定向 stderr 断言输出，无 IO / 无特权
+add_executable(test_log test_log.cc)
+target_link_libraries(test_log PRIVATE hng_log)
+target_compile_definitions(test_log PRIVATE HNG_LOG_TAG="test")
+add_test(NAME test_log COMMAND test_log)
 
 # 运行时信息过滤器（公共件，header-only；经 event_data 头传递需要 proto 生成物）
 add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
@@ -151,15 +179,58 @@ add_executable(test_role_relation_store test_role_relation_store.cc)
 target_link_libraries(test_role_relation_store PRIVATE hng_control_plane)
 add_test(NAME test_role_relation_store COMMAND test_role_relation_store)
 
+# 控制面组件句柄：经公共头构造、状态初值、服务访问器身份，无 IO / 无特权
+add_executable(test_component_handles test_component_handles.cc)
+target_link_libraries(test_component_handles PRIVATE
+    hng_process_manager hng_context_manager hng_control_plane)
+add_test(NAME test_component_handles COMMAND test_component_handles)
+
 # 控制平面的角色管理器：队列与消费线程，cgroup 读取走注入点，无特权
 add_executable(test_role_manager test_role_manager.cc)
 target_link_libraries(test_role_manager PRIVATE hng_control_plane)
 add_test(NAME test_role_manager COMMAND test_role_manager)
 
+# 角色初始化期：源屏障、drain、状态机与对账，无 IO / 无特权
+add_executable(test_role_init test_role_init.cc)
+target_link_libraries(test_role_init PRIVATE hng_control_plane hng_role_discovery)
+add_test(NAME test_role_init COMMAND test_role_init)
+
 # 角色管理器端到端校验：装配形态 + 假发现器 + 真实 cgroup 读取，无特权
 add_executable(verify_role_manager verify_role_manager.cc)
 target_link_libraries(verify_role_manager PRIVATE hng_control_plane)
 add_test(NAME verify_role_manager COMMAND verify_role_manager)
+
+# 用户态角色过滤：策略、成员刷新、初始名单与消费线程，无 IO / 无特权
+add_executable(test_role_filter test_role_filter.cc)
+target_link_libraries(test_role_filter PRIVATE hng_role_filter)
+add_test(NAME test_role_filter COMMAND test_role_filter)
+# 用例按 scripts/test-role-filter.sh 的方式从仓库根读取 config/ 并用 build-agent/
+set_tests_properties(test_role_filter PROPERTIES
+    WORKING_DIRECTORY ${HNG_SOURCE_DIR})
+
+# 真实 RoleManager → RoleFilter：成员枚举与 map 走替身，无 IO / 无特权
+add_executable(test_role_filter_integration test_role_filter_integration.cc)
+target_link_libraries(test_role_filter_integration PRIVATE
+    hng_role_filter hng_control_plane)
+add_test(NAME test_role_filter_integration COMMAND test_role_filter_integration)
+
+# 名单 map 的 BPF 后端：仅本测试程序用 --wrap 替换 syscall，无 IO / 无特权
+add_executable(test_process_filter_map_backend
+    test_process_filter_map_backend.cc
+    ${HNG_SOURCE_DIR}/agent/role_filter/src/process_filter_map.cc)
+target_include_directories(test_process_filter_map_backend PRIVATE
+    ${HNG_SOURCE_DIR})
+target_link_libraries(test_process_filter_map_backend PRIVATE Threads::Threads)
+target_link_options(test_process_filter_map_backend PRIVATE
+    "LINKER:--wrap=syscall")
+add_test(NAME test_process_filter_map_backend
+    COMMAND test_process_filter_map_backend)
+
+# 内核侧角色过滤：包含真实过滤头与探针源码，主机模拟 bpf 辅助函数
+add_executable(test_kernel_role_filter test_kernel_role_filter.cc)
+target_include_directories(test_kernel_role_filter PRIVATE
+    ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_filter)
+add_test(NAME test_kernel_role_filter COMMAND test_kernel_role_filter)
 
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)

@@ -32,18 +32,36 @@ struct NetworkCollectorState;
  */
 class CollectorType {
    public:
-    CollectorType() = default;
-    virtual ~CollectorType() = default;
+    CollectorType()                                = default;
+    virtual ~CollectorType()                       = default;
 
-    CollectorType(const CollectorType&) = delete;
+    CollectorType(const CollectorType&)            = delete;
     CollectorType& operator=(const CollectorType&) = delete;
-    CollectorType(CollectorType&&) = delete;
-    CollectorType& operator=(CollectorType&&) = delete;
+    CollectorType(CollectorType&&)                 = delete;
+    CollectorType& operator=(CollectorType&&)      = delete;
 
-    /** @brief 加载并挂载探针；失败可重试，重复成功初始化返回 false。 */
-    virtual bool init() = 0;
-    /** @brief 轮询至中断或错误；未初始化时直接返回。 */
-    virtual void collect() = 0;
+    /**
+     * @brief 加载骨架、创建 ringbuf 并校验过滤 map fd，不挂载探针。
+     * @return 成功为 true；已准备或加载、map 校验、ringbuf 创建失败为 false
+     * @note 成功后 role_filter_map_fd() 即可返回有效 fd，此时尚无事件产生；
+     *       须再调用 attach()。失败时不保留任何已准备资源。
+     */
+    virtual bool prepare()                         = 0;
+    /**
+     * @brief 在 prepare() 成功后挂载探针。
+     * @return 成功为 true；未准备、已挂载或挂载失败为 false
+     * @note 挂载失败保留已准备资源，调用方可析构或放弃。
+     */
+    virtual bool attach()                          = 0;
+    /**
+     * @brief 加载、创建 ringbuf 并挂载探针，等价于 prepare() 后 attach()。
+     * @return 成功为 true；attach() 失败时回收已准备资源并返回 false
+     * @note 重复初始化返回 false；已 prepare() 而未 attach() 时返回 false，
+     *       且不改变已准备状态。
+     */
+    virtual bool init()                            = 0;
+    /** @brief 轮询至中断或错误；未准备或未挂载时直接返回。 */
+    virtual void collect()                         = 0;
 };
 
 class Collector {
@@ -62,10 +80,12 @@ class FileEventCollector : public CollectorType {
     explicit FileEventCollector(hng::SPSC_Queue<file_access_data>& queue);
     ~FileEventCollector() override;
 
+    bool prepare() override;
+    bool attach() override;
     bool init() override;
     void collect() override;
     /**
-     * @brief 借用角色过滤 map fd；初始化前或失败后返回 -1。
+     * @brief 借用角色过滤 map fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；须复制 fd 或保持采集器存活。
      *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
      */
@@ -74,7 +94,8 @@ class FileEventCollector : public CollectorType {
    private:
     hng::SPSC_Queue<file_access_data>& file_rawevent_queue;
     std::unique_ptr<hng::detail::FileCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept;
+    static int handle_rb_event(void* ctx, void* data,
+                               std::size_t data_sz) noexcept;
 };
 
 /** @brief 系统调用事件采集器；借用的队列必须比采集器活得更久。 */
@@ -83,10 +104,12 @@ class SyscallEventCollector : public CollectorType {
     explicit SyscallEventCollector(hng::SPSC_Queue<syscall_event>& queue);
     ~SyscallEventCollector() override;
 
+    bool prepare() override;
+    bool attach() override;
     bool init() override;
     void collect() override;
     /**
-     * @brief 借用角色过滤 map fd；初始化前或失败后返回 -1。
+     * @brief 借用角色过滤 map fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；须复制 fd 或保持采集器存活。
      *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
      */
@@ -95,7 +118,8 @@ class SyscallEventCollector : public CollectorType {
    private:
     hng::SPSC_Queue<syscall_event>& syscall_rawevent_queue;
     std::unique_ptr<hng::detail::SyscallCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept;
+    static int handle_rb_event(void* ctx, void* data,
+                               std::size_t data_sz) noexcept;
 };
 
 /** @brief 网络事件采集器；借用的队列必须比采集器活得更久。 */
@@ -104,10 +128,12 @@ class NetworkEventCollector : public CollectorType {
     explicit NetworkEventCollector(hng::SPSC_Queue<network_data>& queue);
     ~NetworkEventCollector() override;
 
+    bool prepare() override;
+    bool attach() override;
     bool init() override;
     void collect() override;
     /**
-     * @brief 借用角色过滤 map fd；初始化前或失败后返回 -1。
+     * @brief 借用角色过滤 map fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；须复制 fd 或保持采集器存活。
      *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
      */
@@ -116,7 +142,8 @@ class NetworkEventCollector : public CollectorType {
    private:
     hng::SPSC_Queue<network_data>& network_rawevent_queue;
     std::unique_ptr<hng::detail::NetworkCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data, std::size_t data_sz) noexcept;
+    static int handle_rb_event(void* ctx, void* data,
+                               std::size_t data_sz) noexcept;
 };
 
 /** @brief IPC 探针与载荷尚未定义，暂仅保留类型声明。 */

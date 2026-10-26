@@ -224,6 +224,62 @@ RoleMemberChanges RoleRelationStore::bind_to_role(hng::Process child,
     return changes;
 }
 
+RoleMemberChanges RoleRelationStore::bind_to_role_initial(hng::Process child,
+                                                          hng::Process parent)
+{
+    std::unique_lock lock(mutex_);
+    RoleMemberChanges changes;
+
+    auto parent_owned = process_to_role_.find(parent);
+    if (parent_owned == process_to_role_.end()) {
+        return changes;
+    }
+    if (process_to_role_.find(child) != process_to_role_.end()) {
+        return changes;
+    }
+
+    const hng::RelationTimePoint now = options_.now();
+    if (tombstones_.find(child, now).has_value()) {
+        return changes;
+    }
+
+    auto record = role_table_.find(parent_owned->second);
+    if (record == role_table_.end()) {
+        return changes;
+    }
+    if (adopt(parent_owned->second, record->second, child, now) ==
+        AdoptResult::ADDED) {
+        changes.add(parent_owned->second, child);
+    }
+    return changes;
+}
+
+RoleMemberChanges RoleRelationStore::adopt_members(
+    uint32_t role_id, const std::vector<hng::Process>& members)
+{
+    std::unique_lock lock(mutex_);
+    RoleMemberChanges changes;
+
+    auto record = role_table_.find(role_id);
+    if (record == role_table_.end()) {
+        return changes;
+    }
+    const hng::RelationTimePoint now = options_.now();
+    for (const hng::Process& p : members) {
+        switch (adopt(role_id, record->second, p, now)) {
+            case AdoptResult::ADDED:
+                changes.add(role_id, p);
+                break;
+            case AdoptResult::PRESENT:
+                break;
+            case AdoptResult::REJECTED:
+                ++stats_.late_adopt_rejected;
+                break;
+        }
+    }
+    return changes;
+}
+
 void RoleRelationStore::on_process_exited(hng::Process p)
 {
     std::unique_lock lock(mutex_);
@@ -272,6 +328,18 @@ std::optional<uint32_t> RoleRelationStore::lookup(hng::Process p) const
         return std::nullopt;
     }
     return owned->second;
+}
+
+std::vector<hng::Process> RoleRelationStore::ownership_processes() const
+{
+    std::shared_lock lock(mutex_);
+
+    std::vector<hng::Process> result;
+    result.reserve(process_to_role_.size());
+    for (const auto& entry : process_to_role_) {
+        result.push_back(entry.first);
+    }
+    return result;
 }
 
 std::optional<hng::Role> RoleRelationStore::role(uint32_t role_id) const
