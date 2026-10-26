@@ -44,6 +44,27 @@ protobuf_generate(TARGET hng_event_data LANGUAGE cpp
 )
 
 # ============================================================
+# 统一日志
+#
+# 公共头只依赖 fmt；spdlog 仅出现在 log.cc。系统 spdlog 为 external fmt
+# 构建，与 fmt 10 同版本，故不切换到 header-only 或内置 fmt。
+# ============================================================
+find_package(fmt REQUIRED)
+find_package(spdlog REQUIRED)
+add_library(hng_log STATIC
+    agent/util/src/log.cc
+)
+target_include_directories(hng_log PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_log
+    PUBLIC fmt::fmt
+    PRIVATE spdlog::spdlog
+)
+# log.cc 自身的告警（如无法识别的 HNG_LOG_LEVEL）以 "log" 为模块名
+target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
+
+# ============================================================
 # 语义化模块
 # ============================================================
 add_library(hng_semantic STATIC
