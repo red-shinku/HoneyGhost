@@ -19,3 +19,5 @@ target_link_libraries(hng_assembly PUBLIC
     hng_context_maintainer
     hng_role_filter
 )
+target_link_libraries(hng_assembly PRIVATE hng_log)
+target_compile_definitions(hng_assembly PRIVATE HNG_LOG_TAG="init")
