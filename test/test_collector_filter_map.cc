@@ -3,7 +3,7 @@
  * @brief 用真实采集器源码验证初始化事务、回调边界、map fd、消费与资源回收。
  * @note 使用骨架替身，不代表真实内核加载验证。
  */
-#include "agent/collector/include/collector.hpp"
+#include "agent/collector/src/collector.hpp"
 #include "test/fixtures/collector_skeleton_stub.hpp"
 
 #include <array>

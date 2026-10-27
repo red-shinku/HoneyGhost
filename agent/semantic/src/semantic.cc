@@ -2,7 +2,7 @@
  * @file semantic.cc
  * @brief 语义聚合的单线程轮转与停机排空。
  */
-#include "agent/semantic/include/semantic.hpp"
+#include "agent/semantic/src/semantic.hpp"
 #include "agent/util/include/log.hpp"
 
 #include <chrono>

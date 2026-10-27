@@ -2,7 +2,7 @@
  * @file test_semantic_aggregate.cc
  * @brief 语义聚合的双线消费、预算轮转与停机排空，无 IO / 无特权。
  */
-#include "agent/semantic/include/semantic.hpp"
+#include "agent/semantic/src/semantic.hpp"
 
 #include <chrono>
 #include <cstdio>

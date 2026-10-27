@@ -23,6 +23,7 @@ endif()
 
 add_library(hng_collector STATIC
     src/collector.cc
+    src/collector_component.cc
     src/file_event_collector.cc
     src/syscall_event_collector.cc
     src/network_event_collector.cc)

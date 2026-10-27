@@ -10,7 +10,7 @@
  * @date 2026.08.17
  */
 
-#include "agent/semantic/include/semantic.hpp"
+#include "agent/semantic/src/semantic.hpp"
 #include "kernel/include/syscalls_type.h"
 
 #include <fcntl.h>

@@ -312,3 +312,13 @@ add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
 # 公共头独立编译：不提供骨架替身或 libbpf 的 include 路径。
 add_library(test_collector_public_header OBJECT test_collector_public_header.cc)
 target_include_directories(test_collector_public_header PRIVATE ${HNG_SOURCE_DIR})
+
+# 组件工厂的存活名额契约：语义组件始终可测，采集组件随目标存在。
+add_executable(test_component_factories test_component_factories.cc)
+target_link_libraries(test_component_factories PRIVATE hng_semantic)
+if(TARGET hng_collector)
+    target_link_libraries(test_component_factories PRIVATE hng_collector)
+    target_compile_definitions(test_component_factories
+        PRIVATE HNG_HAVE_COLLECTOR=1)
+endif()
+add_test(NAME test_component_factories COMMAND test_component_factories)

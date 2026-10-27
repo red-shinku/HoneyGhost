@@ -2,7 +2,7 @@
  * @file network_event_collector.cc
  * @brief 网络事件采集线：ringbuf 资源、探针挂载与按预算消费。
  */
-#include "agent/collector/include/collector.hpp"
+#include "agent/collector/src/collector.hpp"
 #include "kernel/networks.skel.h"
 
 #include <bpf/libbpf_version.h>

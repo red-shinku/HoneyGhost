@@ -80,6 +80,7 @@ add_library(hng_semantic STATIC
     agent/semantic/src/path/path_rule.cc
     agent/semantic/src/path/token_validator.cc
     agent/semantic/src/semantic.cc
+    agent/semantic/src/semantic_component.cc
     agent/semantic/src/semantic_file.cc
     agent/semantic/src/semantic_syscall.cc
 )

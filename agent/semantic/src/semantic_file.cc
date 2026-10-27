@@ -8,7 +8,7 @@
  * @date 2026.08.14
  */
 
-#include "agent/semantic/include/semantic.hpp"
+#include "agent/semantic/src/semantic.hpp"
 #include "agent/semantic/src/path/path_normalizer.hpp"
 #include "agent/semantic/src/path/path_rule.hpp"
 
