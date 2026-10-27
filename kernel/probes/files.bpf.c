@@ -86,7 +86,7 @@ int trace_file_openat(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[1]);
     data->flags = ctx->args[2];
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
 
     return 0;
 }
@@ -106,7 +106,7 @@ int trace_file_open(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
     data->flags = ctx->args[1];
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
 
     return 0;
 }
@@ -126,7 +126,7 @@ int trace_file_creat(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
     data->flags = O_CREAT | O_WRONLY | O_TRUNC;
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
 
     return 0;
 }
@@ -161,7 +161,7 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
         data->flags = 0;
     }
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
 
     return 0;
 }

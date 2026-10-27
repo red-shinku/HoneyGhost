@@ -207,14 +207,14 @@ int trace_network_connect(struct trace_event_raw_sys_enter *ctx)
 
     //! @note args[0]: sockfd, args[1]: 目标 sockaddr, args[2]: addrlen
     if (!parse_sockaddr((const void *)ctx->args[1], (u32)ctx->args[2], data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
     //! @note 源端口为本地临时端口，sys_enter 阶段可能尚未分配，为 0
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
 
@@ -231,13 +231,13 @@ int trace_network_sendto(struct trace_event_raw_sys_enter *ctx)
 
     //! @note args[0]: sockfd, args[4]: 目标 sockaddr, args[5]: addrlen
     if (!parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5], data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
 
@@ -263,13 +263,13 @@ int trace_network_sendmsg(struct trace_event_raw_sys_enter *ctx)
 
     //! @note 已 connect 的套接字可传 NULL 的 msg_name，此时跳过（连接信息已由 connect 事件记录）
     if (!parse_sockaddr(dest_addr, addrlen, data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
 
