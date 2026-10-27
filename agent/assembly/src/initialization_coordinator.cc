@@ -13,7 +13,7 @@
 #include "agent/control_plane/include/role_component.hpp"
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/role_discovery/include/role_source_barrier.hpp"
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/include/role_filter_component.hpp"
 #include "agent/util/include/log.hpp"
 
 #include <chrono>
@@ -133,7 +133,8 @@ const RoleReconcileReport& RoleInitializer::report() const noexcept
     return report_;
 }
 
-RoleFilterInitializer::RoleFilterInitializer(RoleFilter* filter) : filter_(filter)
+RoleFilterInitializer::RoleFilterInitializer(RoleFilterComponent* filter)
+    : filter_(filter)
 {
 }
 
@@ -157,7 +158,7 @@ const RoleFilterStats& RoleFilterInitializer::report() const noexcept
 
 InitializationCoordinator::InitializationCoordinator(
     ProcessComponent& process, ContextComponent& context, RoleComponent& role,
-    ::ContextMaintainer& maintainer, RoleFilter* role_filter,
+    ::ContextMaintainer& maintainer, RoleFilterComponent* role_filter,
     ::RoleSourceBarrier* role_barrier, InitializationOptions options)
     : process_(process),
       context_(context),

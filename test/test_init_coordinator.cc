@@ -25,8 +25,9 @@
 #include "agent/control_plane/include/role_component.hpp"
 #include "agent/event_data/include/process_seed.hpp"
 #include "agent/role_discovery/include/role_source_barrier.hpp"
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/include/role_filter_component.hpp"
 #include "agent/role_filter/include/role_filter_config.hpp"
+#include "agent/role_filter/include/role_filter_factory.hpp"
 #include "agent/role_filter/include/role_filter_policy.hpp"
 
 #include <chrono>
@@ -105,8 +106,8 @@ hng::ProcessSnapshot make_snapshot()
 
 /**
  * @brief 测试装配：真实组件 + 假 map/probe，不启动线程
- * @details 完成阶段 0 的接线：注入 context 服务、把 RoleFilter 注册为角色
- *          生命周期出口；不做 seed/reconcile。
+ * @details 完成阶段 0 的接线：注入 context 服务、把 RoleFilterComponent
+ *          注册为角色生命周期出口；不做 seed/reconcile。
  */
 struct Harness {
     std::unique_ptr<hng::ProcessComponent> process;
@@ -114,7 +115,7 @@ struct Harness {
     std::unique_ptr<hng::RoleComponent> role;
     ContextMaintainer maintainer;
     FakeMap* map_view = nullptr;
-    std::unique_ptr<hng::RoleFilter> filter;
+    std::unique_ptr<hng::RoleFilterComponent> filter;
     RoleSourceBarrier barrier;
 
     explicit Harness(hng::RoleComponentOptions role_options = {})
@@ -128,15 +129,17 @@ struct Harness {
         auto map = std::make_unique<FakeMap>();
         map_view = map.get();
         std::istringstream input("[whitelist]\nexact: nginx.service\n");
-        hng::RoleFilterOptions options;
-        options.liveness = [](hng::Process) {
+        hng::RoleFilterComponentOptions options;
+        options.lookup      = &role->lookup_service();
+        options.supervision = &role->supervision_service();
+        options.policy =
+            hng::RoleFilterPolicy(hng::parse_role_filter_config(input));
+        options.map                     = std::move(map);
+        options.filter_options.liveness = [](hng::Process) {
             return hng::ProcessLiveness::ALIVE;
         };
-        filter = std::make_unique<hng::RoleFilter>(
-            role->lookup_service(),
-            hng::RoleFilterPolicy(hng::parse_role_filter_config(input)),
-            std::move(map), options);
-        role->add_lifecycle_sink(filter.get());
+        filter = hng::RoleFilterFactory::create(std::move(options));
+        role->add_lifecycle_sink(&filter->lifecycle_sink());
     }
 };
 

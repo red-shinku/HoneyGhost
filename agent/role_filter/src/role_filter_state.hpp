@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/src/role_filter.hpp"
 
 namespace hng::detail {
 using ProcessSet = std::unordered_set<Process>;

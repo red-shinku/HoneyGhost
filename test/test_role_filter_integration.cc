@@ -5,7 +5,7 @@
  * @author inless427
  */
 #include "agent/control_plane/src/role_manager.hpp"
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/src/role_filter.hpp"
 #include <condition_variable>
 #include <cstdio>
 #include <mutex>

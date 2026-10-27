@@ -15,7 +15,7 @@
 #include "agent/control_plane/include/context_component.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/include/role_filter_component.hpp"
 
 namespace hng {
 
@@ -104,12 +104,12 @@ class RoleInitializer {
 
 /**
  * @brief 采集名单的初始化器
- * @see RoleFilter::seed_initial_roles
+ * @see RoleFilterComponent::seed_initial_roles
  */
 class RoleFilterInitializer {
    public:
     /// @param filter 名单维护器；空指针表示本次不播种，统计全零
-    explicit RoleFilterInitializer(RoleFilter* filter);
+    explicit RoleFilterInitializer(RoleFilterComponent* filter);
 
     /// @brief 非空时播种初始名单并读取统计；只调用一次
     void run();
@@ -118,7 +118,7 @@ class RoleFilterInitializer {
     const RoleFilterStats& report() const noexcept;
 
    private:
-    RoleFilter* filter_;
+    RoleFilterComponent* filter_;
     RoleFilterStats report_;
 };
 

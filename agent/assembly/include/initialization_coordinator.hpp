@@ -22,7 +22,7 @@ namespace hng {
 class ContextComponent;
 class ProcessComponent;
 class RoleComponent;
-class RoleFilter;
+class RoleFilterComponent;
 
 /**
  * @brief 初始化协调的可调参数
@@ -35,11 +35,13 @@ struct InitializationOptions {
 
 /**
  * @brief 按固定顺序执行一次初始化写入并聚合报告
- * @details 顺序：角色源屏障 → RM drain → RoleFilter 初始名单 → 读快照 →
- *          PM seed → RM drain 与对账 → RoleFilter 应用成员通知 → CM seed →
- *          名单统计。任何初始化写入被拒即停止后续写入并把总状态置为 FAILED。
+ * @details 顺序：角色源屏障 → RM drain → RoleFilterComponent 初始名单 →
+ *          读快照 → PM seed → RM drain 与对账 → RoleFilterComponent 应用成员
+ *          通知 → CM seed → 名单统计。任何初始化写入被拒即停止后续写入并把
+ *          总状态置为 FAILED。
  * @note PM/CM/RM 的 seed 与 reconcile 各只调用一次，故只能在组件仍为
- *       CONSTRUCTED 时调用；RoleFilter 不在 CONSTRUCTED 时播种，不会因此失败。
+ *       CONSTRUCTED 时调用；RoleFilterComponent 不在 CONSTRUCTED 时播种，
+ *       不会因此失败。
  *       协调器不启动组件线程，也不注册 sink；接线由装配方在调用前完成。
  * @see hng::InitReport
  */
@@ -59,7 +61,7 @@ class InitializationCoordinator {
     InitializationCoordinator(ProcessComponent& process,
                               ContextComponent& context, RoleComponent& role,
                               ::ContextMaintainer& maintainer,
-                              RoleFilter* role_filter,
+                              RoleFilterComponent* role_filter,
                               ::RoleSourceBarrier* role_barrier,
                               InitializationOptions options = {});
 
@@ -79,7 +81,7 @@ class InitializationCoordinator {
     ContextComponent& context_;
     RoleComponent& role_;
     ::ContextMaintainer& maintainer_;
-    RoleFilter* role_filter_;
+    RoleFilterComponent* role_filter_;
     ::RoleSourceBarrier* role_barrier_;
     InitializationOptions options_;
 };
