@@ -72,19 +72,24 @@ target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
 add_subdirectory(agent/collector)
 
 # ============================================================
-# 语义化模块
+# 语义化模块（无状态工具 + 单线程语义聚合）
 # ============================================================
+find_package(Threads REQUIRED)
 add_library(hng_semantic STATIC
     agent/semantic/src/path/path_normalizer.cc
     agent/semantic/src/path/path_rule.cc
     agent/semantic/src/path/token_validator.cc
+    agent/semantic/src/semantic.cc
     agent/semantic/src/semantic_file.cc
     agent/semantic/src/semantic_syscall.cc
 )
 target_include_directories(hng_semantic PUBLIC
     ${HNG_SOURCE_DIR}
 )
-target_link_libraries(hng_semantic PUBLIC hng_event_data)
+target_link_libraries(hng_semantic
+    PUBLIC hng_event_data
+           Threads::Threads
+)
 
 # ============================================================
 # context 派生规则模块
