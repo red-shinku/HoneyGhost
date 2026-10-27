@@ -56,6 +56,7 @@ void RuntimeEngine::stop()
     // 先关门：此后入队一律被拒，下面的排空不会再遇到新命令
     commands_.stop();
     stopped_.store(true, std::memory_order_release);
+    // TODO: 停机不再取语义事件，队列尾部会被丢弃；需要精确排空时加 drain。
 }
 
 bool RuntimeEngine::subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter,
@@ -85,9 +86,9 @@ void RuntimeEngine::unsubscribe(RuntimeEventSink* sink)
     }
 }
 
-RuntimeEngineStats RuntimeEngine::stats() const
+hng::RuntimeEngineStats RuntimeEngine::stats() const
 {
-    RuntimeEngineStats snapshot;
+    hng::RuntimeEngineStats snapshot;
     snapshot.unsettled_events = unsettled_events_.load(std::memory_order_relaxed);
     snapshot.peak_cli_streams = peak_cli_streams_.load(std::memory_order_relaxed);
     snapshot.queue_rejected   = queue_rejected_.load(std::memory_order_relaxed);

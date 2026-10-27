@@ -276,6 +276,7 @@ add_subdirectory(agent/role_filter)
 # ============================================================
 add_library(hng_runtime_engine STATIC
     agent/runtime_engine/src/runtime_engine.cc
+    agent/runtime_engine/src/runtime_engine_component.cc
     agent/runtime_engine/src/runtime_event_dispatcher.cc
     agent/runtime_engine/src/runtime_packaging.cc
     agent/runtime_engine/src/runtime_pipeline.cc
