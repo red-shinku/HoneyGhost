@@ -214,6 +214,32 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
 endif()
 
 # ============================================================
+# 角色发现组件（工厂 + 运行期句柄）
+#
+# 包装 systemd 与 containerd 两个发现源。可用性宏只对本目标 PRIVATE，不进入
+# 公共头；源未编入构建时对应工厂方法返回空指针。
+# ============================================================
+add_library(hng_role_discovery_component STATIC
+    agent/role_discovery/src/role_discovery_component.cc
+)
+target_include_directories(hng_role_discovery_component PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_role_discovery_component PUBLIC hng_role_discovery)
+if(TARGET hng_role_systemd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_systemd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_SYSTEMD=1)
+endif()
+if(TARGET hng_role_containerd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_containerd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_CONTAINERD=1)
+endif()
+
+# ============================================================
 # 控制平面（角色关系表 + 角色管理器 + 角色组件句柄）
 #
 # 依赖角色发现公共骨架（RoleEvent / RolePayload 类型与 RoleCgroupReader）。
