@@ -90,6 +90,8 @@ target_link_libraries(hng_semantic
     PUBLIC hng_event_data
            Threads::Threads
 )
+target_link_libraries(hng_semantic PRIVATE hng_log)
+target_compile_definitions(hng_semantic PRIVATE HNG_LOG_TAG="semantic")
 
 # ============================================================
 # context 派生规则模块

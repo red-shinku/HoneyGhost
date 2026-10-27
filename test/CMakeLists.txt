@@ -303,7 +303,10 @@ add_executable(test_collector_aggregate
     test_collector_aggregate.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/collector.cc)
 target_include_directories(test_collector_aggregate PRIVATE ${HNG_SOURCE_DIR})
-target_link_libraries(test_collector_aggregate PRIVATE Threads::Threads)
+target_link_libraries(test_collector_aggregate PRIVATE
+    Threads::Threads hng_log)
+target_compile_definitions(test_collector_aggregate
+    PRIVATE HNG_LOG_TAG="collector")
 add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
 
 # 公共头独立编译：不提供骨架替身或 libbpf 的 include 路径。
