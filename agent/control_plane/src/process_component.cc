@@ -1,12 +1,23 @@
 #include "agent/control_plane/include/process_component.hpp"
 
+#include <atomic>
 #include <utility>
 
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/src/process_manager.hpp"
+#include "agent/util/include/single_instance_guard.hpp"
 
 namespace hng {
 
 struct ProcessComponent::Impl {
+    /**
+     * @brief 先占用存活名额，再构造进程管理器。
+     * @param taken 本创建方法的存活标志
+     * @throws std::logic_error 名额已被占用
+     */
+    explicit Impl(std::atomic<bool>& taken) : guard(taken, "ProcessComponent") {}
+
+    hng::detail::SingleInstanceGuard guard;
     ProcessManager manager;
 };
 
@@ -66,9 +77,10 @@ void ProcessComponent::run() { impl_->manager.run(); }
 
 void ProcessComponent::stop() { impl_->manager.stop(); }
 
-std::unique_ptr<ProcessComponent> make_process_component()
+std::unique_ptr<ProcessComponent> ControlPlaneFactory::create_process()
 {
-    auto impl = std::make_unique<ProcessComponent::Impl>();
+    static std::atomic<bool> taken{false};
+    auto impl = std::make_unique<ProcessComponent::Impl>(taken);
     return std::unique_ptr<ProcessComponent>(
         new ProcessComponent(std::move(impl)));
 }

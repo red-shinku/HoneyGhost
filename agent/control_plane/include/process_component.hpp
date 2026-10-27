@@ -20,6 +20,8 @@
 
 namespace hng {
 
+class ControlPlaneFactory;
+
 /**
  * @brief 进程管理组件
  * @details 提供进程查询、注册、更新与存活视图的服务接口，并转发组件的生命
@@ -82,14 +84,10 @@ class ProcessComponent final : public hng::Component {
 
     explicit ProcessComponent(std::unique_ptr<Impl> impl);
 
-    friend std::unique_ptr<ProcessComponent> make_process_component();
+    friend class ControlPlaneFactory;
 
     std::unique_ptr<Impl> impl_;
 };
-
-/// @brief 构造进程管理组件
-/// @return 状态为 CONSTRUCTED 的组件；服务接口可直接取用
-std::unique_ptr<ProcessComponent> make_process_component();
 
 }  // namespace hng
 

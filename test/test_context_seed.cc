@@ -22,6 +22,7 @@
 #include "agent/context_maintainer/include/context_seed.hpp"
 #include "agent/control_plane/include/context_component.hpp"
 #include "agent/control_plane/include/context_seed_service.hpp"
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/src/context_manager.hpp"
 
 #include <algorithm>
@@ -598,7 +599,7 @@ void run_component_seed()
     batch.entries.push_back(entry(1401, 14010, 1400, 14000, "/bin/ls"));
     const ContextSeedPlan plan = maintainer.build_seed_plan(batch);
 
-    auto component             = hng::make_context_component();
+    auto component             = hng::ControlPlaneFactory::create_context();
     CHECK(component->state() == hng::ComponentState::CONSTRUCTED,
           "组件初始应为 CONSTRUCTED");
 

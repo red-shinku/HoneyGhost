@@ -21,6 +21,7 @@
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/control_plane/include/context_component.hpp"
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
 #include "agent/event_data/include/process_seed.hpp"
@@ -120,9 +121,9 @@ struct Harness {
 
     explicit Harness(hng::RoleComponentOptions role_options = {})
     {
-        process = hng::make_process_component();
-        context = hng::make_context_component();
-        role    = hng::make_role_component(std::move(role_options));
+        process = hng::ControlPlaneFactory::create_process();
+        context = hng::ControlPlaneFactory::create_context();
+        role    = hng::ControlPlaneFactory::create_role(std::move(role_options));
         maintainer.set_context_service(&context->lookup_service(),
                                        &context->join_service(),
                                        &context->update_service());

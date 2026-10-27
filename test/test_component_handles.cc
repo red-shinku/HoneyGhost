@@ -12,6 +12,7 @@
  */
 
 #include "agent/control_plane/include/context_component.hpp"
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
 
@@ -33,7 +34,7 @@ int g_fail = 0;
 void run_process_component()
 {
     {
-        auto component = hng::make_process_component();
+        auto component = hng::ControlPlaneFactory::create_process();
         CHECK(component != nullptr, "进程组件工厂应返回非空句柄");
         if (!component) {
             return;
@@ -69,7 +70,7 @@ void run_process_component()
 void run_context_component()
 {
     {
-        auto component = hng::make_context_component();
+        auto component = hng::ControlPlaneFactory::create_context();
         CHECK(component != nullptr, "上下文组件工厂应返回非空句柄");
         if (!component) {
             return;
@@ -106,7 +107,7 @@ void run_context_component()
 void run_role_component()
 {
     {
-        auto component = hng::make_role_component();
+        auto component = hng::ControlPlaneFactory::create_role();
         CHECK(component != nullptr, "角色组件工厂应返回非空句柄");
         if (!component) {
             return;

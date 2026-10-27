@@ -25,6 +25,8 @@
 
 namespace hng {
 
+class ControlPlaneFactory;
+
 /**
  * @brief 角色组件的注入点
  * @details 留空的字段使用真实实现；单元测试可注入替身以免依赖 cgroup 与
@@ -111,17 +113,10 @@ class RoleComponent final : public hng::Component {
 
     explicit RoleComponent(std::unique_ptr<Impl> impl);
 
-    friend std::unique_ptr<RoleComponent> make_role_component(
-        RoleComponentOptions options);
+    friend class ControlPlaneFactory;
 
     std::unique_ptr<Impl> impl_;
 };
-
-/// @brief 构造角色管理组件
-/// @param options cgroup 读取与存活核对的外部 IO 注入点
-/// @return 状态为 CONSTRUCTED 的组件；服务接口可直接取用
-std::unique_ptr<RoleComponent> make_role_component(
-    RoleComponentOptions options = {});
 
 }  // namespace hng
 
