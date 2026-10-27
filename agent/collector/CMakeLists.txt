@@ -22,11 +22,15 @@ if(NOT HNG_COLLECTOR_LIBBPF_INCLUDE_DIR OR NOT HNG_COLLECTOR_LIBBPF_LIBRARY)
 endif()
 
 add_library(hng_collector STATIC
+    src/collector.cc
     src/file_event_collector.cc
     src/syscall_event_collector.cc
     src/network_event_collector.cc)
 target_include_directories(hng_collector
     PUBLIC ${HNG_SOURCE_DIR}
     PRIVATE ${HNG_COLLECTOR_LIBBPF_INCLUDE_DIR})
-target_link_libraries(hng_collector PRIVATE ${HNG_COLLECTOR_LIBBPF_LIBRARY})
+target_link_libraries(hng_collector
+    PRIVATE ${HNG_COLLECTOR_LIBBPF_LIBRARY}
+            hng_log)
+target_compile_definitions(hng_collector PRIVATE HNG_LOG_TAG="collector")
 add_dependencies(hng_collector hng_ebpf)

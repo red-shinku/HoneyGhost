@@ -6,7 +6,7 @@
  *  - 归一化表：normalize() 的词法边界（合并 //、./..、/var/run 别名、相对路径透传）；
  *  - 语义化表：raw → 期望语义路径，覆盖规则表全分支、静态守卫、兜底扫描、快路径负例；
  *  - 文法表：token_validator 各槽位谓词与兜底谓词。
- * Semantic_file::work() 的队列往返将在集成验证中覆盖。
+ * Semantic 聚合的双线消费由 test_semantic_aggregate 覆盖。
  *
  * @author red_shinku
  * @date 2026.08.14

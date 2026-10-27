@@ -272,7 +272,7 @@ int trace_process_birth(struct pt_regs *ctx)
     event->hdr.head.ppid_start_time =
         BPF_CORE_READ(parent, start_boottime) / NSEC_PER_USER_HZ;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -290,7 +290,7 @@ int trace_exit_group(struct trace_event_raw_sys_enter *ctx)
     //! @note args[0]: int error_code
     event->process_event.exit_code = (s32)ctx->args[0];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -334,7 +334,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
                                 sizeof(event->exec_event.argv1), arg1_ptr);
     }
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -374,7 +374,7 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
     //! @note args[4]: int flags
     event->exec_event.flags = (u32)ctx->args[4];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -399,7 +399,7 @@ int trace_setuid(struct trace_event_raw_sys_enter *ctx)
     //! @note args[0]: uid_t uid
     event->credential_event.setuid.uid = (u32)ctx->args[0];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -417,7 +417,7 @@ int trace_setgid(struct trace_event_raw_sys_enter *ctx)
     //! @note args[0]: gid_t gid
     event->credential_event.setgid.gid = (u32)ctx->args[0];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -449,7 +449,7 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
             ((u64)cap_data[1].inheritable << 32) | cap_data[0].inheritable;
     }
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -491,7 +491,7 @@ int trace_unshare(struct trace_event_raw_sys_enter *ctx)
     else if (flags & CLONE_NEWCGROUP)
         event->namespace_event.ns_type = CLONE_NEWCGROUP;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -509,7 +509,7 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
     event->namespace_event.ns_type = (u32)ctx->args[1];
     event->namespace_event.flags   = 0;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -534,7 +534,7 @@ int trace_syscall_open(struct trace_event_raw_sys_enter *ctx)
     event->file_event.flags = (u32)ctx->args[1];
     event->file_event.mode  = (u32)ctx->args[2];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -552,7 +552,7 @@ int trace_syscall_openat(struct trace_event_raw_sys_enter *ctx)
     event->file_event.flags = (u32)ctx->args[2];
     event->file_event.mode  = (u32)ctx->args[3];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -573,7 +573,7 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
         event->file_event.mode  = (u32)how.mode;
     }
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -593,7 +593,7 @@ int trace_syscall_creat(struct trace_event_raw_sys_enter *ctx)
     //! @note args[1]: umode_t mode
     event->file_event.mode  = (u32)ctx->args[1];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -608,7 +608,7 @@ int trace_syscall_unlink(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_UNLINK);
     if (!event) return 0;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -623,7 +623,7 @@ int trace_syscall_link(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_LINK);
     if (!event) return 0;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -638,7 +638,7 @@ int trace_syscall_rename(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_RENAME);
     if (!event) return 0;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -653,7 +653,7 @@ int trace_syscall_renameat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_RENAMEAT);
     if (!event) return 0;
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -670,7 +670,7 @@ int trace_syscall_renameat2(struct trace_event_raw_sys_enter *ctx)
 
     event->file_event.flags = (u32)ctx->args[4];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -697,7 +697,7 @@ int trace_mmap(struct trace_event_raw_sys_enter *ctx)
     //! @note args[3]: int flags (MAP_*)
     event->memory_event.flags = ctx->args[3];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -715,7 +715,7 @@ int trace_mprotect(struct trace_event_raw_sys_enter *ctx)
     //! @note args[2]: int prot (PROT_*)
     event->memory_event.prot = ctx->args[2];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -742,7 +742,7 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
         event->network_event.family = sa.sa_family;
     }
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -761,7 +761,7 @@ int trace_socket(struct trace_event_raw_sys_enter *ctx)
     event->network_event.type     = (u32)ctx->args[1];
     event->network_event.protocol = (u32)ctx->args[2];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -782,7 +782,7 @@ int trace_bind(struct trace_event_raw_sys_enter *ctx)
         event->network_event.family = sa.sa_family;
     }
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -809,7 +809,7 @@ int trace_ptrace(struct trace_event_raw_sys_enter *ctx)
     //! @note args[1]: pid_t pid — 目标进程
     event->kernel_event.arg     = ctx->args[1];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -829,7 +829,7 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     //! @note args[2]: unsigned int size — attr 大小（可用于推断 BPF 命令版本）
     event->kernel_event.arg     = ctx->args[2];
 
-    bpf_ringbuf_submit(event, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 

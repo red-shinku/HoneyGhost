@@ -1,9 +1,11 @@
 /**
  * @file file_event_collector.cc
- * @brief 原始事件采集、探针资源管理与过滤 map fd 接口。
+ * @brief 文件事件采集线：ringbuf 资源、探针挂载与按预算消费。
  */
 #include "agent/collector/include/collector.hpp"
 #include "kernel/files.skel.h"
+
+#include <bpf/libbpf_version.h>
 
 #include <cerrno>
 #include <cstring>
@@ -19,6 +21,7 @@ struct FileCollectorState {
     std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)> buffer{
         nullptr, &::ring_buffer__free};
     bool attached = false;  ///< attach() 已成功挂载探针
+    bool ready    = false;  ///< ringbuf 已可被 consume() 消费
 };
 }  // namespace hng::detail
 
@@ -31,8 +34,8 @@ FileEventCollector::~FileEventCollector() = default;
 
 /**
  * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
- * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以 NUL
- * 结束。 队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
+ * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以
+ * NUL 结束。队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
  */
 int FileEventCollector::handle_rb_event(void* ctx, void* data,
                                         std::size_t data_sz) noexcept
@@ -87,6 +90,7 @@ bool FileEventCollector::attach()
         return false;
     }
     state_->attached = true;
+    state_->ready    = true;
     return true;
 }
 
@@ -102,13 +106,36 @@ bool FileEventCollector::init()
     return true;
 }
 
-void FileEventCollector::collect()
+void FileEventCollector::detach()
 {
     if (!state_ || !state_->attached) {
         return;
     }
-    while (ring_buffer__poll(state_->buffer.get(), 300) >= 0) {
+    files_collector__detach(state_->skeleton.get());
+    state_->attached = false;
+}
+
+int FileEventCollector::consume(std::size_t budget)
+{
+    if (!state_ || !state_->ready) {
+        return 0;
     }
+#if defined(LIBBPF_MAJOR_VERSION) && defined(LIBBPF_MINOR_VERSION) && \
+    (LIBBPF_MAJOR_VERSION > 1 ||                                      \
+     (LIBBPF_MAJOR_VERSION == 1 && LIBBPF_MINOR_VERSION >= 5))
+    return ring_buffer__consume_n(state_->buffer.get(), budget);
+#else
+    (void)budget;
+    return ring_buffer__consume(state_->buffer.get());
+#endif
+}
+
+int FileEventCollector::epoll_fd() const noexcept
+{
+    if (!state_ || !state_->ready) {
+        return -1;
+    }
+    return ring_buffer__epoll_fd(state_->buffer.get());
 }
 
 int FileEventCollector::role_filter_map_fd() const noexcept

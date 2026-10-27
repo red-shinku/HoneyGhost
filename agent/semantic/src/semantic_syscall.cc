@@ -1,10 +1,9 @@
 /**
  * @file semantic_syscall.cc
- * @brief 系统调用事件语义化处理器 实现
+ * @brief 系统调用事件语义化工具实现
  * @details
- * 从系统调用原始事件队列取出 struct syscall_event，按 hdr.type 将 union 中八种
- * 事件分别转换为对应的 proto 语义载荷，组装为 syscall_semantic_data 推入下游
- * 语义事件队列（RawEventQueue_SS<syscall_semantic_data>）。
+ * 按 hdr.type 将 union 中八种事件分别转换为对应的 proto 语义载荷，组装为
+ * syscall_semantic_data。本工具不持有队列与线程状态。
  *
  * 语义化原则：去除随机性信息。除 exec 的 filename（复用 agent/semantic/path/
  * 规则引擎语义化）与 credential 的 union→oneof 归位外，其余六种事件为纯字段
@@ -221,33 +220,6 @@ void kernel_to_semantic(const struct syscall_event& raw,
 
 }  // namespace
 
-Semantic_syscall::Semantic_syscall(
-    hng::SPSC_Queue<struct syscall_event>& in_queue,
-    hng::SPSC_Queue<hng::syscall_semantic_data>& out_queue)
-    : raw_event_queue(in_queue), event_queue(out_queue)
-{
-}
-
-Semantic_syscall::~Semantic_syscall() {}
-
-/**
- * @brief 单条系统调用事件语义化
- * @details 编排两步：进程身份头部原样拷贝 → 按 hdr.type 分派八种载荷转换，
- * 推入下游队列。
- */
-void Semantic_syscall::transform()
-{
-    struct syscall_event raw;
-    if (!raw_event_queue.pop(raw)) {
-        return;  // 输入队列空
-    }
-
-    hng::syscall_semantic_data ev;
-    transform_one(raw, ev);
-
-    event_queue.push(ev);  // TODO: 下游队列满时丢事件，背压策略待定
-}
-
 /**
  * @brief 原始事件 → 语义事件纯转换
  * @details 输入事件头（进程身份上下文）原样拷贝为语义事件头部；载荷按
@@ -255,7 +227,7 @@ void Semantic_syscall::transform()
  * 此处不做重新推断。
  */
 void Semantic_syscall::transform_one(const struct syscall_event& raw,
-                                     hng::syscall_semantic_data& out)
+                                     hng::syscall_semantic_data& out) const
 {
     out.head.pid             = raw.hdr.head.pid;
     out.head.pid_start_time  = raw.hdr.head.pid_start_time;
@@ -291,16 +263,5 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
         case KERNEL_EVENT:
             kernel_to_semantic(raw, out);
             break;
-    }
-}
-
-/**
- * @brief 工作循环：持续消费系统调用原始事件
- * @details 忙轮询直到退出。TODO: 队列空时的调度让出与退出机制。
- */
-void Semantic_syscall::work()
-{
-    while (true) {
-        transform();
     }
 }
