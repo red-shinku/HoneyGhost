@@ -24,6 +24,12 @@ add_executable(test_semantic_syscall test_semantic_syscall.cc)
 target_link_libraries(test_semantic_syscall PRIVATE hng_semantic)
 add_test(NAME test_semantic_syscall COMMAND test_semantic_syscall)
 
+# 语义聚合：真实 SPSC 双线验证转换、预算轮转与停机排空
+add_executable(test_semantic_aggregate test_semantic_aggregate.cc)
+target_link_libraries(test_semantic_aggregate PRIVATE
+    hng_semantic Threads::Threads)
+add_test(NAME test_semantic_aggregate COMMAND test_semantic_aggregate)
+
 add_executable(test_context_rule test_context_rule.cc)
 target_link_libraries(test_context_rule PRIVATE hng_context_rule)
 add_test(NAME test_context_rule COMMAND test_context_rule)
@@ -276,10 +282,13 @@ endif()
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
+file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/bpf)
 foreach(probe files syscalls networks)
     configure_file(fixtures/collector_skeleton_stub.hpp
         ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
+configure_file(fixtures/libbpf_version_stub.h
+    ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
 add_executable(test_collector_filter_map
     test_collector_filter_map.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/file_event_collector.cc
@@ -288,6 +297,14 @@ add_executable(test_collector_filter_map
 target_include_directories(test_collector_filter_map PRIVATE
     ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
 add_test(NAME test_collector_filter_map COMMAND test_collector_filter_map)
+
+# 采集聚合：假线 + eventfd 验证 epoll 唤醒、预算与停机排空，不依赖 libbpf。
+add_executable(test_collector_aggregate
+    test_collector_aggregate.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/collector.cc)
+target_include_directories(test_collector_aggregate PRIVATE ${HNG_SOURCE_DIR})
+target_link_libraries(test_collector_aggregate PRIVATE Threads::Threads)
+add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
 
 # 公共头独立编译：不提供骨架替身或 libbpf 的 include 路径。
 add_library(test_collector_public_header OBJECT test_collector_public_header.cc)

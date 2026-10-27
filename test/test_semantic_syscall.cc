@@ -36,16 +36,14 @@ int g_fail = 0;
         }                                                                        \
     } while (0)
 
-// ---- 队列往返辅助 ----
+// ---- 纯转换辅助 ----
 
 /**
  * @brief 单条原始事件 → 语义事件（经公开纯转换接口 transform_one）
  */
 void run_one(const struct syscall_event& raw, hng::syscall_semantic_data& out)
 {
-    hng::SPSC_Queue<struct syscall_event> in_queue(8);
-    hng::SPSC_Queue<hng::syscall_semantic_data> out_queue(8);
-    Semantic_syscall sem(in_queue, out_queue);
+    Semantic_syscall sem;
     sem.transform_one(raw, out);
 }
 

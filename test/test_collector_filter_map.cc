@@ -1,12 +1,13 @@
 /**
  * @file test_collector_filter_map.cc
- * @brief 用真实采集器源码验证初始化事务、回调边界、map fd 和资源回收。
+ * @brief 用真实采集器源码验证初始化事务、回调边界、map fd、消费与资源回收。
  * @note 使用骨架替身，不代表真实内核加载验证。
  */
 #include "agent/collector/include/collector.hpp"
 #include "test/fixtures/collector_skeleton_stub.hpp"
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -24,14 +25,15 @@ int checks = 0;
                                      std::to_string(__LINE__));               \
     } while (false)
 
-void reset_poll()
+void reset_consume()
 {
-    hng_test_poll_calls      = 0;
-    hng_test_poll_successes  = 0;
-    hng_test_poll_error      = -EINTR;
-    hng_test_deliver_payload = false;
-    hng_test_payload         = nullptr;
-    hng_test_payload_size    = 0;
+    hng_test_consume_calls     = 0;
+    hng_test_consume_successes = 0;
+    hng_test_consume_error     = -EIO;
+    hng_test_consume_budget    = 0;
+    hng_test_deliver_payload   = false;
+    hng_test_payload           = nullptr;
+    hng_test_payload_size      = 0;
 }
 
 // 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
@@ -102,13 +104,14 @@ template <class Collector, class Event>
 void verify()
 {
     hng::SPSC_Queue<Event> queue(4);
-    reset_poll();
-    // prepare 只加载骨架、建 ringbuf 并取 map fd；探针未挂载前 collect 不轮询。
+    reset_consume();
+    // prepare 只加载骨架、建 ringbuf 并取 map fd；探针未挂载前不消费。
     {
         Collector collector(queue);
         REQUIRE(collector.role_filter_map_fd() == -1);
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 0);
+        REQUIRE(collector.epoll_fd() == -1);
+        REQUIRE(collector.consume(1) == 0);
+        REQUIRE(hng_test_consume_calls == 0);
         REQUIRE(!collector.attach());
 
         hng_test_open_failure = true;
@@ -126,8 +129,9 @@ void verify()
         REQUIRE(fd == hng_test_last_filter_fd && fd >= 0);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         REQUIRE(hng_test_attach_calls == attaches_before);
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 0);
+        REQUIRE(collector.epoll_fd() == -1);
+        REQUIRE(collector.consume(1) == 0);
+        REQUIRE(hng_test_consume_calls == 0);
 
         // 重复 prepare、以及已准备未挂载时的 init 都不得改动已准备状态。
         REQUIRE(!collector.prepare());
@@ -141,11 +145,28 @@ void verify()
         REQUIRE(!collector.attach());
         REQUIRE(!collector.init());
         REQUIRE(collector.role_filter_map_fd() == fd);
+        REQUIRE(collector.epoll_fd() >= 0);
 
-        reset_poll();
-        hng_test_poll_successes = 1;
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 2);
+        reset_consume();
+        hng_test_consume_successes = 1;
+        REQUIRE(collector.consume(7) == 1);
+        REQUIRE(hng_test_consume_calls == 1);
+        REQUIRE(hng_test_consume_budget == 7);
+
+        reset_consume();
+        REQUIRE(collector.consume(1) == -EIO);
+        REQUIRE(hng_test_consume_calls == 1);
+
+        // detach 只停止新事件，ringbuf 仍可继续排空。
+        const int detaches_before = hng_test_detach_calls;
+        collector.detach();
+        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        collector.detach();
+        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        reset_consume();
+        hng_test_consume_successes = 1;
+        REQUIRE(collector.consume(1) == 1);
+        REQUIRE(hng_test_consume_calls == 1);
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
@@ -156,12 +177,12 @@ void verify()
         REQUIRE(collector.prepare());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
-        reset_poll();
+        reset_consume();
         hng_test_attach_failure = true;
         REQUIRE(!collector.attach());
         REQUIRE(collector.role_filter_map_fd() == fd);
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 0);
+        REQUIRE(collector.consume(1) == 0);
+        REQUIRE(hng_test_consume_calls == 0);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         hng_test_attach_failure = false;
         REQUIRE(collector.attach());
@@ -173,8 +194,8 @@ void verify()
     {
         Collector collector(queue);
         REQUIRE(collector.role_filter_map_fd() == -1);
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 0);
+        REQUIRE(collector.consume(1) == 0);
+        REQUIRE(hng_test_consume_calls == 0);
         hng_test_open_failure = true;
         REQUIRE(!collector.init());
         REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
@@ -227,12 +248,12 @@ void verify()
 
         alignas(Event) std::array<unsigned char, sizeof(Event) + 9> payload{};
         std::memcpy(payload.data() + 1, &event, sizeof(event));
+        reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = payload.data() + 1;
         hng_test_payload_size    = sizeof(event);
-        collector.collect();
-        REQUIRE(hng_test_callback_result == 0 && hng_test_poll_calls == 1);
-        REQUIRE(hng_test_poll_timeout == 300);
+        REQUIRE(collector.consume(1) == 1);
+        REQUIRE(hng_test_callback_result == 0 && hng_test_consume_calls == 1);
         // 回调后覆写 ringbuf 借用内存，队列仍须持有独立事件值。
         payload.fill(0);
         Event received{};
@@ -256,19 +277,20 @@ void verify()
             REQUIRE(queue.pop(received) && same_event(received, event));
         REQUIRE(queue.empty());
 
-        reset_poll();
-        hng_test_poll_successes = 2;
-        hng_test_poll_error     = -EIO;
-        collector.collect();
-        REQUIRE(hng_test_poll_calls == 3);
-        reset_poll();
+        reset_consume();
+        hng_test_consume_error = -EIO;
+        REQUIRE(collector.consume(1) == -EIO);
+        REQUIRE(hng_test_consume_calls == 1);
+
+        reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = &event;
         hng_test_payload_size    = sizeof(event) - 1;
-        collector.collect();
-        REQUIRE(hng_test_callback_result == -EINVAL && hng_test_poll_calls == 1);
+        REQUIRE(collector.consume(1) == -EINVAL);
+        REQUIRE(hng_test_callback_result == -EINVAL);
+        REQUIRE(hng_test_consume_calls == 1);
         REQUIRE(queue.empty());
-        reset_poll();
+        reset_consume();
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
