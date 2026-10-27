@@ -22,6 +22,7 @@ if(NOT HNG_COLLECTOR_LIBBPF_INCLUDE_DIR OR NOT HNG_COLLECTOR_LIBBPF_LIBRARY)
 endif()
 
 add_library(hng_collector STATIC
+    src/collector.cc
     src/file_event_collector.cc
     src/syscall_event_collector.cc
     src/network_event_collector.cc)
