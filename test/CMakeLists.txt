@@ -313,10 +313,12 @@ add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
 add_library(test_collector_public_header OBJECT test_collector_public_header.cc)
 target_include_directories(test_collector_public_header PRIVATE ${HNG_SOURCE_DIR})
 
-# 组件工厂的存活名额契约：语义组件始终可测，采集组件随目标存在。
+# 组件工厂的存活名额契约：采集组件随目标存在，其余组件始终可测。
 add_executable(test_component_factories test_component_factories.cc)
 target_link_libraries(test_component_factories PRIVATE
-    hng_semantic hng_role_filter hng_runtime_engine)
+    hng_semantic hng_role_filter hng_runtime_engine
+    hng_process_manager hng_context_manager hng_control_plane
+    hng_role_discovery_component)
 if(TARGET hng_collector)
     target_link_libraries(test_component_factories PRIVATE hng_collector)
     target_compile_definitions(test_component_factories
