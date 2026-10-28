@@ -3,13 +3,17 @@
  * @brief 装配层的构造、启动与停机实现
  * @details 启动顺序：构造与接线 → 名单 map 前置 → 名单组件 → 角色源 →
  *          初始化 → 控制面线程 → 引擎线程 → 探针挂载与采集线程；停机按
- *          “先停生产者、再停消费者”执行。
+ *          “先停生产者、再停消费者”执行。启动按 build_control_plane()、
+ *          build_pipeline()、build_filter()、start_role_sources()、
+ *          initialize()、start_consumers() 分段；停机按 stop_stages() 与
+ *          release_components() 分段。
  * @author red_shinku
  * @date 2026.10.27
  */
 
 #include "agent/assembly/include/assembly.hpp"
 
+#include "agent/assembly/src/component_threads.hpp"
 #include "agent/assembly/src/proc_snapshot.hpp"
 #include "agent/collector/include/collector_component.hpp"
 #include "agent/collector/include/collector_factory.hpp"
@@ -42,7 +46,6 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 
 namespace hng {
@@ -71,6 +74,33 @@ struct Assembly::Impl {
     /// @brief 按停机顺序停止并 join，再逆序释放组件
     void do_shutdown();
 
+    /// @brief S0 构造控制面聚合，并向维护器注入 context 服务
+    void build_control_plane();
+
+    /// @brief 构造采集、语义与引擎组件
+    void build_pipeline();
+
+#ifdef HNG_HAVE_COLLECTOR
+    /// @brief S1–S2 准备采集器名单 map，构造名单组件并注册生命周期出口
+    void build_filter();
+#endif
+
+    /// @brief S3 构造角色发现源、登记屏障并启动其线程
+    void start_role_sources();
+
+    /// @brief S4 读快照并执行初始化
+    /// @return 初始化报告；state 为 FAILED 时调用方须停机
+    InitReport initialize();
+
+    /// @brief S5–S7 启动控制面、引擎、探针与消费线程
+    void start_consumers();
+
+    /// @brief T1–T8 按停机顺序停止并 join 各组件
+    void stop_stages();
+
+    /// @brief 逆序释放组件，归还工厂名额
+    void release_components();
+
     AssemblyOptions options;
     hng::SPSC_Queue<::file_access_data> raw_file_q;
     hng::SPSC_Queue<::syscall_event> raw_syscall_q;
@@ -91,15 +121,8 @@ struct Assembly::Impl {
     std::unique_ptr<hng::RoleDiscoveryComponent> systemd_source;
     std::unique_ptr<hng::RoleDiscoveryComponent> containerd_source;
 
-    std::thread process_thread;
-    std::thread context_thread;
-    std::thread role_thread;
-    std::thread role_filter_thread;
-    std::thread collector_thread;
-    std::thread semantic_thread;
-    std::thread engine_thread;
-    std::thread systemd_thread;
-    std::thread containerd_thread;
+    /// @brief 组件线程表；每个已启动组件至多一个线程
+    hng::ComponentThreads threads;
 
     InitReport report;
     std::atomic<bool> running{false};
@@ -108,20 +131,17 @@ struct Assembly::Impl {
     std::once_flag shutdown_once;
 };
 
-InitReport Assembly::Impl::start_impl()
+void Assembly::Impl::build_control_plane()
 {
-#ifndef HNG_HAVE_COLLECTOR
-    if (options.collect) {
-        throw std::runtime_error("collector not in build: use --no-collect");
-    }
-#endif
-
     // S0 构造控制面聚合句柄；组件间接线由 ControlPlane 完成
     control_plane = ControlPlaneFactory::create();
     maintainer.set_context_service(&control_plane->context().lookup_service(),
                                    &control_plane->context().join_service(),
                                    &control_plane->context().update_service());
+}
 
+void Assembly::Impl::build_pipeline()
+{
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
         collector = CollectorFactory::create(
@@ -137,8 +157,11 @@ InitReport Assembly::Impl::start_impl()
          &control_plane->process().update_service(),
          &control_plane->role().join_service(),
          &control_plane->role().lookup_service()});
+}
 
 #ifdef HNG_HAVE_COLLECTOR
+void Assembly::Impl::build_filter()
+{
     // S1 名单 map 由采集器 prepare() 创建，成功后才有可用 fd
     if (collector != nullptr && !collector->prepare()) {
         throw std::runtime_error("fail to prepare collector");
@@ -155,8 +178,11 @@ InitReport Assembly::Impl::start_impl()
         role_filter         = RoleFilterFactory::create(std::move(ropt));
         control_plane->role().add_lifecycle_sink(&role_filter->lifecycle_sink());
     }
+}
 #endif
 
+void Assembly::Impl::start_role_sources()
+{
     // S3 先登记角色源再启动其线程；工厂返回空表示该源未编入构建
     if (options.enable_systemd) {
         systemd_source = RoleDiscoveryFactory::create_systemd(
@@ -164,8 +190,7 @@ InitReport Assembly::Impl::start_impl()
             SystemdSourceOptions{options.systemd_snapshot_interval});
         if (systemd_source != nullptr) {
             barrier.expect(role::RoleSource::SYSTEMD);
-            systemd_thread =
-                std::thread([source = systemd_source.get()] { source->run(); });
+            threads.start(*systemd_source);
         }
         else {
             HNG_LOG_WARN("systemd role source not built in; skipped");
@@ -177,42 +202,38 @@ InitReport Assembly::Impl::start_impl()
             ContainerdSourceOptions{options.containerd_socket_path});
         if (containerd_source != nullptr) {
             barrier.expect(role::RoleSource::CONTAINERD);
-            containerd_thread = std::thread(
-                [source = containerd_source.get()] { source->run(); });
+            threads.start(*containerd_source);
         }
         else {
             HNG_LOG_WARN("containerd role source not built in; skipped");
         }
     }
+}
 
-    // S4 初始化写入落地后再挂探针；FAILED 时不启动任何消费线程
+InitReport Assembly::Impl::initialize()
+{
+    // S4 初始化写入落地后再挂探针
     // TODO: 快照在角色源屏障与名单播种之前读取；屏障等待与播种期间的进程
     //       变化要等下一次事件才可见。需要收窄时把读取移到屏障/播种之后。
     ProcessSnapshotReader reader;
     InitializationCoordinator coordinator(
         control_plane->process(), control_plane->context(), control_plane->role(),
         maintainer, role_filter.get(), &barrier, options.initialization);
-    report = coordinator.run(reader.read());
-    if (report.state == InitState::FAILED) {
-        HNG_LOG_ERROR("initialization failed; consumer threads not started");
-        shutdown();
-        return report;
-    }
+    return coordinator.run(reader.read());
+}
 
+void Assembly::Impl::start_consumers()
+{
     // S5 控制面线程：PM、CM、RM，名单组件存在时一并启动
-    process_thread = std::thread(
-        [component = &control_plane->process()] { component->run(); });
-    context_thread = std::thread(
-        [component = &control_plane->context()] { component->run(); });
-    role_thread =
-        std::thread([component = &control_plane->role()] { component->run(); });
+    threads.start(control_plane->process());
+    threads.start(control_plane->context());
+    threads.start(control_plane->role());
     if (role_filter != nullptr) {
-        role_filter_thread =
-            std::thread([component = role_filter.get()] { component->run(); });
+        threads.start(*role_filter);
     }
 
     // S6 引擎线程：探针挂载前已在运行
-    engine_thread = std::thread([component = engine.get()] { component->run(); });
+    threads.start(*engine);
 
 #ifdef HNG_HAVE_COLLECTOR
     // S7 探针挂载后启动采集与语义线程
@@ -222,13 +243,81 @@ InitReport Assembly::Impl::start_impl()
         if (!collector->attach()) {
             throw std::runtime_error("采集器挂载探针失败");
         }
-        collector_thread =
-            std::thread([component = collector.get()] { component->run(); });
-        semantic_thread =
-            std::thread([component = semantic.get()] { component->run(); });
+        threads.start(*collector);
+        threads.start(*semantic);
+    }
+#endif
+}
+
+void Assembly::Impl::stop_stages()
+{
+    // 先停生产者再停消费者；可选组件未构造时跳过
+#ifdef HNG_HAVE_COLLECTOR
+    if (collector != nullptr) {
+        threads.stop_and_join(*collector);  // T1
+    }
+#endif
+    if (semantic != nullptr) {
+        threads.stop_and_join(*semantic);  // T2
+    }
+    if (systemd_source != nullptr) {
+        threads.stop_and_join(*systemd_source);  // T3
+    }
+    if (containerd_source != nullptr) {
+        threads.stop_and_join(*containerd_source);
+    }
+    if (engine != nullptr) {
+        threads.stop_and_join(*engine);  // T4
+    }
+    if (control_plane != nullptr) {
+        threads.stop_and_join(control_plane->process());  // T5
+        threads.stop_and_join(control_plane->role());     // T6
+    }
+    if (role_filter != nullptr) {
+        threads.stop_and_join(*role_filter);  // T7
+    }
+    if (control_plane != nullptr) {
+        threads.stop_and_join(control_plane->context());  // T8
+    }
+}
+
+void Assembly::Impl::release_components()
+{
+    // 逆序释放组件，归还工厂名额；队列与维护器活到 Impl 析构
+    systemd_source.reset();
+    containerd_source.reset();
+    engine.reset();
+    role_filter.reset();
+    semantic.reset();
+#ifdef HNG_HAVE_COLLECTOR
+    collector.reset();
+#endif
+    control_plane.reset();
+}
+
+InitReport Assembly::Impl::start_impl()
+{
+#ifndef HNG_HAVE_COLLECTOR
+    if (options.collect) {
+        throw std::runtime_error("collector not in build: use --no-collect");
     }
 #endif
 
+    build_control_plane();
+    build_pipeline();
+#ifdef HNG_HAVE_COLLECTOR
+    build_filter();
+#endif
+    start_role_sources();
+    report = initialize();
+
+    if (report.state == InitState::FAILED) {
+        HNG_LOG_ERROR("initialization failed; consumer threads not started");
+        shutdown();
+        return report;
+    }
+
+    start_consumers();
     // S8 全部线程就绪
     running.store(true);
     HNG_LOG_INFO(
@@ -248,49 +337,8 @@ void Assembly::Impl::shutdown()
 void Assembly::Impl::do_shutdown()
 {
     running.store(false);
-
-    hng::ProcessComponent* process = nullptr;
-    hng::RoleComponent* role       = nullptr;
-    hng::ContextComponent* context = nullptr;
-    if (control_plane != nullptr) {
-        process = &control_plane->process();
-        role    = &control_plane->role();
-        context = &control_plane->context();
-    }
-
-    // 先停生产者再停消费者；join 只在可 join 时调用
-    const auto stop_and_join = [](hng::Component* component,
-                                  std::thread& thread) {
-        if (component != nullptr) {
-            component->stop();
-        }
-        if (thread.joinable()) {
-            thread.join();
-        }
-    };
-
-#ifdef HNG_HAVE_COLLECTOR
-    stop_and_join(collector.get(), collector_thread);  // T1
-#endif
-    stop_and_join(semantic.get(), semantic_thread);       // T2
-    stop_and_join(systemd_source.get(), systemd_thread);  // T3
-    stop_and_join(containerd_source.get(), containerd_thread);
-    stop_and_join(engine.get(), engine_thread);            // T4
-    stop_and_join(process, process_thread);                // T5
-    stop_and_join(role, role_thread);                      // T6
-    stop_and_join(role_filter.get(), role_filter_thread);  // T7
-    stop_and_join(context, context_thread);                // T8
-
-    // 逆序释放组件，归还工厂名额；队列与维护器活到 Impl 析构
-    systemd_source.reset();
-    containerd_source.reset();
-    engine.reset();
-    role_filter.reset();
-    semantic.reset();
-#ifdef HNG_HAVE_COLLECTOR
-    collector.reset();
-#endif
-    control_plane.reset();
+    stop_stages();
+    release_components();
 
     HNG_LOG_INFO("agent stopped");
 }
