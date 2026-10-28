@@ -86,7 +86,7 @@ void verify_services()
     (void)assembly.start();
     CHECK(assembly.running(), "启动后 running() 应为真");
 
-    const hng::AssemblyServices services = assembly.services();
+    const hng::AgentServices services = assembly.services();
     CHECK(services.role != nullptr, "运行期 role 应非空");
     CHECK(services.context != nullptr, "运行期 context 应非空");
     CHECK(services.process != nullptr, "运行期 process 应非空");

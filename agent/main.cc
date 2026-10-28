@@ -211,7 +211,7 @@ int main(int argc, char** argv)
 
         if (cli_enabled) {
 #ifdef HNG_HAVE_CLI_SERVER
-            const hng::AssemblyServices services = assembly.services();
+            const hng::AgentServices services = assembly.services();
             CLIServerDeps deps;
             deps.role    = services.role;
             deps.context = services.context;

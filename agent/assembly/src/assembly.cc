@@ -335,13 +335,13 @@ void Assembly::stop()
 
 bool Assembly::running() const { return impl_->running.load(); }
 
-AssemblyServices Assembly::services() const
+AgentServices Assembly::services() const
 {
     if (!impl_->running.load()) {
         throw std::logic_error("assembly is not running");
     }
 
-    AssemblyServices services;
+    AgentServices services;
     services.role       = &impl_->control_plane->role().lookup_service();
     services.context    = &impl_->control_plane->context().lookup_service();
     services.process    = &impl_->control_plane->process().lookup_service();
