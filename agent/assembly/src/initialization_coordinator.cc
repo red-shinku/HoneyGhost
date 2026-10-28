@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 
 namespace hng {
 
@@ -170,7 +171,7 @@ InitializationCoordinator::InitializationCoordinator(
 {
 }
 
-InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
+InitReport InitializationCoordinator::run(const InitializationIO& io)
 {
     InitReport report;
     InitState state        = InitState::READY;
@@ -224,8 +225,16 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
                           static_cast<int64_t>(applied_before));
     }
 
-    // 4. /proc 不可用时以空且不完整的批继续，角色与名单照常推进
-    report.snapshot = snapshot.anomalies;
+    // 4. 名单已播种：先挂探针，此后 fork 的进程由事件覆盖
+    if (io.attach_probe && !io.attach_probe()) {
+        throw std::runtime_error("collector attach failed");
+    }
+
+    // 5. 挂载完成后再读快照：快照与事件至少一方覆盖每个进程
+    const ProcessSnapshot snapshot = io.read_snapshot();
+
+    // 6. /proc 不可用时以空且不完整的批继续，角色与名单照常推进
+    report.snapshot                = snapshot.anomalies;
     ProcessSeedBatch empty_batch;
     empty_batch.complete = false;
     const ProcessSeedBatch& batch =
@@ -249,7 +258,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
     // 对账被跳过（PM seed 失败）时报告仍应反映本批是否完整
     report.role.snapshot_complete = batch.complete;
 
-    // 5. PM seed：被拒表示组件已不处于 CONSTRUCTED，初始化不能继续
+    // 7. PM seed：被拒表示组件已不处于 CONSTRUCTED，初始化不能继续
     ProcessInitializer process_initializer(process_, batch);
     const auto process_seed_start = std::chrono::steady_clock::now();
     process_initializer.run();
@@ -271,7 +280,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
             report.process.rejected_state);
     }
 
-    // 6. 角色对账：drain 落地初始事件后再清理幽灵、补绑定与重读 cgroup
+    // 8. 角色对账：drain 落地初始事件后再清理幽灵、补绑定与重读 cgroup
     if (!failed) {
         RoleInitializer role_initializer(role_, batch);
         const auto reconcile_start = std::chrono::steady_clock::now();
@@ -303,7 +312,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
         }
     }
 
-    // 7. 应用对账产生的角色与成员通知
+    // 9. 应用对账产生的角色与成员通知
     if (!failed && role_filter_ != nullptr) {
         const auto filter_drain_start = std::chrono::steady_clock::now();
         role_filter_->drain();
@@ -317,7 +326,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
             filter_stats.empty_members);
     }
 
-    // 8. context 计划与 seed：乱序、非法或状态被拒都视为启动失败
+    // 10. context 计划与 seed：乱序、非法或状态被拒都视为启动失败
     if (!failed) {
         ContextInitializer context_initializer(context_, maintainer_, batch);
         const auto context_seed_start = std::chrono::steady_clock::now();
@@ -344,7 +353,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
         }
     }
 
-    // 9. 名单统计：map 写入失败只降级，后续刷新会重试
+    // 11. 名单统计：map 写入失败只降级，后续刷新会重试
     if (role_filter_ != nullptr) {
         report.role_filter = role_filter_->stats();
         if (report.role_filter.map_errors > 0) {
@@ -356,7 +365,7 @@ InitReport InitializationCoordinator::run(const ProcessSnapshot& snapshot)
         }
     }
 
-    // 10. 初始化期丢事件计数尚未接入，先固定为 0
+    // 12. 初始化期丢事件计数尚未接入，先固定为 0
     report.dropped_events = 0;
 
     if (failed) {

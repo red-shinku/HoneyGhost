@@ -1,12 +1,11 @@
 /**
  * @file assembly.cc
  * @brief 装配层的构造、启动与停机实现
- * @details 启动顺序：构造与接线 → 名单 map 前置 → 名单组件 → 角色源 →
- *          初始化 → 控制面线程 → 引擎线程 → 探针挂载与采集线程；停机按
- *          “先停生产者、再停消费者”执行。启动按 build_control_plane()、
- *          build_pipeline()、build_filter()、start_role_sources()、
- *          initialize()、start_consumers() 分段；停机按 stop_stages() 与
- *          release_components() 分段。
+ * @details 启动顺序：构造与接线 → 名单 → 角色源 → 初始化（含探针挂载与读
+ *          快照）→ 消费线程；停机按“先停生产者、再停消费者”执行。启动按
+ *          build_control_plane()、build_pipeline()、build_filter()、
+ *          start_role_sources()、initialize()、start_consumers() 分段；
+ *          停机按 stop_stages() 与 release_components() 分段。
  * @author red_shinku
  * @date 2026.10.27
  */
@@ -88,11 +87,11 @@ struct Assembly::Impl {
     /// @brief S3 构造角色发现源、登记屏障并启动其线程
     void start_role_sources();
 
-    /// @brief S4 读快照并执行初始化
+    /// @brief S4 挂探针、读快照并执行初始化
     /// @return 初始化报告；state 为 FAILED 时调用方须停机
     InitReport initialize();
 
-    /// @brief S5–S7 启动控制面、引擎、探针与消费线程
+    /// @brief S5–S7 启动控制面、引擎与消费线程
     void start_consumers();
 
     /// @brief T1–T8 按停机顺序停止并 join 各组件
@@ -212,14 +211,19 @@ void Assembly::Impl::start_role_sources()
 
 InitReport Assembly::Impl::initialize()
 {
-    // S4 初始化写入落地后再挂探针
-    // TODO: 快照在角色源屏障与名单播种之前读取；屏障等待与播种期间的进程
-    //       变化要等下一次事件才可见。需要收窄时把读取移到屏障/播种之后。
+    // S4 名单播种后挂探针，再读快照
     ProcessSnapshotReader reader;
     InitializationCoordinator coordinator(
         control_plane->process(), control_plane->context(), control_plane->role(),
         maintainer, role_filter.get(), &barrier, options.initialization);
-    return coordinator.run(reader.read());
+    InitializationIO io;
+    io.read_snapshot = [&reader] { return reader.read(); };
+#ifdef HNG_HAVE_COLLECTOR
+    if (collector != nullptr) {
+        io.attach_probe = [this] { return collector->attach(); };
+    }
+#endif
+    return coordinator.run(io);
 }
 
 void Assembly::Impl::start_consumers()
@@ -232,17 +236,12 @@ void Assembly::Impl::start_consumers()
         threads.start(*role_filter);
     }
 
-    // S6 引擎线程：探针挂载前已在运行
+    // S6 引擎线程：初始化完成后启动
     threads.start(*engine);
 
 #ifdef HNG_HAVE_COLLECTOR
-    // S7 探针挂载后启动采集与语义线程
+    // S7 探针已在初始化阶段挂载；这里只启动采集与语义线程
     if (collector != nullptr) {
-        // TODO: 快照读取到探针挂载之间 fork 出的进程要等下一次事件
-        //       才可见；需要收窄时在名单播种后加挂载点。
-        if (!collector->attach()) {
-            throw std::runtime_error("采集器挂载探针失败");
-        }
         threads.start(*collector);
         threads.start(*semantic);
     }

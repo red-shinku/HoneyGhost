@@ -10,6 +10,8 @@
  *  - 角色源不可用与超时：降级继续，只有超时计数；
  *  - 初始化写入被拒：总状态 FAILED，后续步骤不再执行也不抛异常；
  *  - map 写入失败：降级但名单仍就绪，后续刷新重试；
+ *  - 挂载与读快照：都在名单播种之后，顺序为先挂载后读取；
+ *  - 挂载失败：抛 std::runtime_error，PM/CM/RM 不开始 seed；
  *  - 状态聚合优先级。
  * @note 全程使用手工快照与假 map/probe，不依赖 /proc、cgroup 与 eBPF，也不启动
  *       任何组件线程。
@@ -38,6 +40,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <unordered_set>
@@ -166,7 +169,9 @@ hng::InitReport run_coordinator(Harness& harness,
     hng::InitializationCoordinator coordinator(
         *harness.process, *harness.context, *harness.role, harness.maintainer,
         harness.filter.get(), wait_sources ? &harness.barrier : nullptr, options);
-    return coordinator.run(snapshot);
+    hng::InitializationIO io;
+    io.read_snapshot = [&snapshot] { return snapshot; };
+    return coordinator.run(io);
 }
 
 // ---- 正常路径 ----
@@ -343,6 +348,76 @@ void run_map_error_path()
           "子进程仍应进入名单");
 }
 
+// ---- 挂载与读快照均在名单播种之后 ----
+void run_probe_before_snapshot_path()
+{
+    Harness harness;
+    const hng::Process root{100, 1000};
+    deliver_join(harness, "nginx.service", root, {root});
+
+    hng::InitializationCoordinator coordinator(*harness.process, *harness.context,
+                                               *harness.role, harness.maintainer,
+                                               harness.filter.get(), nullptr, {});
+
+    std::vector<std::string> order;
+    uint64_t applied_at_attach = 0;
+    uint64_t applied_at_read   = 0;
+    hng::InitializationIO io;
+    io.attach_probe = [&] {
+        order.emplace_back("attach");
+        applied_at_attach = harness.filter->stats().applied_processes;
+        return true;
+    };
+    io.read_snapshot = [&] {
+        order.emplace_back("read");
+        applied_at_read = harness.filter->stats().applied_processes;
+        return make_snapshot();
+    };
+
+    const hng::InitReport report = coordinator.run(io);
+
+    CHECK(order == std::vector<std::string>({"attach", "read"}),
+          "挂载应先于读快照");
+    CHECK(applied_at_attach == 1, "挂载时锚点已进入名单");
+    CHECK(applied_at_read == 1, "读快照时锚点已进入名单");
+    CHECK(report.role_filter.applied_processes == 2, "锚点与子进程都应进入名单");
+}
+
+// ---- 挂载失败：中止初始化，控制面与名单均未 seed ----
+void run_attach_failure_path()
+{
+    Harness harness;
+    hng::InitializationCoordinator coordinator(*harness.process, *harness.context,
+                                               *harness.role, harness.maintainer,
+                                               harness.filter.get(), nullptr, {});
+
+    bool attach_called = false;
+    bool throw_caught  = false;
+    hng::InitializationIO io;
+    io.attach_probe = [&attach_called] {
+        attach_called = true;
+        return false;
+    };
+    io.read_snapshot = [] { return make_snapshot(); };
+    try {
+        coordinator.run(io);
+    }
+    catch (const std::runtime_error&) {
+        throw_caught = true;
+    }
+
+    CHECK(attach_called, "应调用挂载回调");
+    CHECK(throw_caught, "挂载失败应抛 std::runtime_error");
+    CHECK(harness.process->state() == hng::ComponentState::CONSTRUCTED,
+          "挂载失败后 PM 不应开始 seed");
+    CHECK(harness.context->state() == hng::ComponentState::CONSTRUCTED,
+          "挂载失败后 CM 不应开始 seed");
+    CHECK(harness.role->state() == hng::ComponentState::CONSTRUCTED,
+          "挂载失败后 RM 不应开始 seed");
+    CHECK(harness.filter->stats().applied_processes == 0,
+          "挂载失败后名单不应有进程");
+}
+
 // ---- 状态聚合优先级 ----
 void run_merge_priority()
 {
@@ -387,6 +462,8 @@ int main()
         run_source_timeout_path();
         run_failed_path();
         run_map_error_path();
+        run_probe_before_snapshot_path();
+        run_attach_failure_path();
         run_merge_priority();
         if (g_fail != 0) {
             std::fprintf(stderr, "FAIL: %d checks failed\n", g_fail);
