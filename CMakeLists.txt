@@ -326,8 +326,8 @@ add_subdirectory(agent/assembly)
 # ============================================================
 # 节点代理可执行目标
 #
-# 第一版只做参数解析、角色过滤配置加载、信号等待与装配层启停；不接 CLI
-# 服务端。
+# 参数解析、角色过滤配置加载、信号处理与装配层启停；CLI 服务端编入构建时
+# 一并接入。
 # ============================================================
 add_executable(hng_agent agent/main.cc)
 target_link_libraries(hng_agent PRIVATE hng_assembly)
@@ -363,6 +363,11 @@ if(HNG_ENABLE_CLI_SERVER)
     endif()
 
     add_subdirectory(agent/cli_server)
+
+    if(TARGET hng_agent)
+        target_link_libraries(hng_agent PRIVATE hng_cli_server)
+        target_compile_definitions(hng_agent PRIVATE HNG_HAVE_CLI_SERVER=1)
+    endif()
 endif()
 
 # ============================================================
