@@ -20,6 +20,11 @@
 #include "agent/role_filter/include/role_filter_component.hpp"
 #include "agent/role_filter/include/role_filter_config.hpp"
 
+class RoleLookupService;
+class ContextLookupService;
+class ProcessLookupService;
+class SubscriberRegService;
+
 namespace hng {
 
 /**
@@ -49,16 +54,31 @@ struct AssemblyOptions {
     std::chrono::milliseconds systemd_snapshot_interval{600000};
 };
 
-// TODO: 查询面接线：后续增加只返回服务接口的访问器（或注入 deps），
-//       不经组件。
+/**
+ * @brief 装配层对外提供的服务接口
+ * @details 四个服务接口只在 running() 期间有效；所指对象由装配层拥有，
+ *          须在 stop() 前使用完毕。
+ * @see Assembly::services
+ */
+struct AssemblyServices {
+    /// 角色归属查询
+    const ::RoleLookupService* role       = nullptr;
+    /// 上下文归属查询
+    const ::ContextLookupService* context = nullptr;
+    /// 进程结构查询
+    const ::ProcessLookupService* process = nullptr;
+    /// 引擎订阅入口（写侧）
+    ::SubscriberRegService* subscriber    = nullptr;
+};
+
 /**
  * @brief 装配层
  * @details 独占持有五条事件队列、全部组件、组件线程与角色源屏障；对外只
- *          提供启动、停机、运行状态与初始化报告。构造后不构造组件、不启动
- *          线程。
+ *          提供启动、停机、运行状态、初始化报告与服务接口。构造后不构造
+ *          组件、不启动线程。
  * @note 组件线程由本层创建并 join，stop() 会 join 组件线程，不得从组件线
  *       程调用。
- * @see AssemblyOptions, InitReport
+ * @see AssemblyOptions, AssemblyServices, InitReport
  */
 class Assembly final {
    public:
@@ -93,6 +113,12 @@ class Assembly final {
 
     /// @brief 是否已启动且尚未停机
     bool running() const;
+
+    /// @brief 装配层持有的服务接口
+    /// @return 四个服务指针
+    /// @throws std::logic_error 未处于运行状态
+    /// @note 只在 running() 期间有效
+    AssemblyServices services() const;
 
     /// @brief 最近一次 start() 的初始化报告；未启动时为默认值
     const InitReport& init_report() const;

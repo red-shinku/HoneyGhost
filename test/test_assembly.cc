@@ -5,6 +5,8 @@
  *  - collect = false 时启动成功、running() 为真、报告状态非 FAILED；
  *  - init_report() 与 start() 返回的状态一致；
  *  - stop() 后 running() 为假，重复 stop() 不崩；
+ *  - services() 只在运行期有效：未启动与停机后抛 std::logic_error，运行期
+ *    四个服务指针非空；
  *  - start() 只能调用一次，第二次抛 std::logic_error；
  *  - 已 stop() 的实例再 start() 抛 std::logic_error。
  * @note 不加载探针、不连 systemd 与 containerd，也不断言 /proc 的具体条目；
@@ -67,6 +69,41 @@ void verify_lifecycle()
     CHECK(!assembly.running(), "重复 stop() 后 running() 仍应为假");
 }
 
+/// @brief 服务访问器只在运行期有效
+void verify_services()
+{
+    hng::Assembly assembly(make_options());
+
+    bool before_start_threw = false;
+    try {
+        (void)assembly.services();
+    }
+    catch (const std::logic_error&) {
+        before_start_threw = true;
+    }
+    CHECK(before_start_threw, "未启动时 services() 应抛 std::logic_error");
+
+    (void)assembly.start();
+    CHECK(assembly.running(), "启动后 running() 应为真");
+
+    const hng::AssemblyServices services = assembly.services();
+    CHECK(services.role != nullptr, "运行期 role 应非空");
+    CHECK(services.context != nullptr, "运行期 context 应非空");
+    CHECK(services.process != nullptr, "运行期 process 应非空");
+    CHECK(services.subscriber != nullptr, "运行期 subscriber 应非空");
+
+    assembly.stop();
+
+    bool after_stop_threw = false;
+    try {
+        (void)assembly.services();
+    }
+    catch (const std::logic_error&) {
+        after_stop_threw = true;
+    }
+    CHECK(after_stop_threw, "停机后 services() 应抛 std::logic_error");
+}
+
 /// @brief 先 stop() 后 start() 应被拒绝
 void verify_start_after_stop()
 {
@@ -88,6 +125,7 @@ void verify_start_after_stop()
 int main()
 {
     verify_lifecycle();
+    verify_services();
     verify_start_after_stop();
 
     if (g_fail) {

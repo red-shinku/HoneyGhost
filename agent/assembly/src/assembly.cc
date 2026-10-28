@@ -331,6 +331,20 @@ void Assembly::stop()
 
 bool Assembly::running() const { return impl_->running.load(); }
 
+AssemblyServices Assembly::services() const
+{
+    if (!impl_->running.load()) {
+        throw std::logic_error("assembly is not running");
+    }
+
+    AssemblyServices services;
+    services.role       = &impl_->role->lookup_service();
+    services.context    = &impl_->context->lookup_service();
+    services.process    = &impl_->process->lookup_service();
+    services.subscriber = &impl_->engine->subscriber_service();
+    return services;
+}
+
 const InitReport& Assembly::init_report() const { return impl_->report; }
 
 }  // namespace hng
