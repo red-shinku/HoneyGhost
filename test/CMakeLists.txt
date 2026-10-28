@@ -89,6 +89,14 @@ target_link_libraries(test_init_coordinator PRIVATE
     hng_assembly hng_role_filter)
 add_test(NAME test_init_coordinator COMMAND test_init_coordinator)
 
+# 装配层生命周期：不加载探针、不连角色源，无 IO / 无特权
+add_executable(test_assembly test_assembly.cc)
+target_link_libraries(test_assembly PRIVATE hng_assembly)
+add_test(NAME test_assembly COMMAND test_assembly)
+
+# 可执行目标的用法输出：不阻塞信号、不构造装配层
+add_test(NAME hng_agent_help COMMAND hng_agent --help)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
