@@ -209,6 +209,11 @@ target_link_libraries(test_component_handles PRIVATE
     hng_process_manager hng_context_manager hng_control_plane)
 add_test(NAME test_component_handles COMMAND test_component_handles)
 
+# 控制面聚合句柄：装配三组件、服务取用、名额互斥与释放后重建，无 IO / 无特权
+add_executable(test_control_plane_aggregate test_control_plane_aggregate.cc)
+target_link_libraries(test_control_plane_aggregate PRIVATE hng_control_plane)
+add_test(NAME test_control_plane_aggregate COMMAND test_control_plane_aggregate)
+
 # 控制平面的角色管理器：队列与消费线程，cgroup 读取走注入点，无特权
 add_executable(test_role_manager test_role_manager.cc)
 target_link_libraries(test_role_manager PRIVATE hng_control_plane)

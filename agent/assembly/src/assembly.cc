@@ -15,6 +15,7 @@
 #include "agent/collector/include/collector_factory.hpp"
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/control_plane/include/context_component.hpp"
+#include "agent/control_plane/include/control_plane.hpp"
 #include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
@@ -77,9 +78,8 @@ struct Assembly::Impl {
     hng::SPSC_Queue<hng::file_semantic_data> semantic_file_q;
     hng::SPSC_Queue<hng::syscall_semantic_data> semantic_syscall_q;
     ::ContextMaintainer maintainer;
-    std::unique_ptr<hng::RoleComponent> role;
-    std::unique_ptr<hng::ProcessComponent> process;
-    std::unique_ptr<hng::ContextComponent> context;
+    /// @brief 控制面三个组件的聚合句柄
+    std::unique_ptr<hng::ControlPlane> control_plane;
 #ifdef HNG_HAVE_COLLECTOR
     /// @brief 采集组件；collect 为 false 时为空
     std::unique_ptr<hng::CollectorComponent> collector;
@@ -116,17 +116,11 @@ InitReport Assembly::Impl::start_impl()
     }
 #endif
 
-    // S0 构造控制面组件并完成跨模块接线
-    role    = ControlPlaneFactory::create_role();
-    process = ControlPlaneFactory::create_process();
-    context = ControlPlaneFactory::create_context();
-
-    process->set_role_join_service(&role->join_service());
-    process->add_process_lifecycle_sink(&context->lifecycle_sink());
-    process->add_process_lifecycle_sink(&role->lifecycle_sink());
-    maintainer.set_context_service(&context->lookup_service(),
-                                   &context->join_service(),
-                                   &context->update_service());
+    // S0 构造控制面聚合句柄；组件间接线由 ControlPlane 完成
+    control_plane = ControlPlaneFactory::create();
+    maintainer.set_context_service(&control_plane->context().lookup_service(),
+                                   &control_plane->context().join_service(),
+                                   &control_plane->context().update_service());
 
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
@@ -139,8 +133,10 @@ InitReport Assembly::Impl::start_impl()
 
     engine = RuntimeEngineFactory::create(
         {&semantic_syscall_q, &semantic_file_q, &maintainer,
-         &process->join_service(), &process->update_service(),
-         &role->join_service(), &role->lookup_service()});
+         &control_plane->process().join_service(),
+         &control_plane->process().update_service(),
+         &control_plane->role().join_service(),
+         &control_plane->role().lookup_service()});
 
 #ifdef HNG_HAVE_COLLECTOR
     // S1 名单 map 由采集器 prepare() 创建，成功后才有可用 fd
@@ -151,20 +147,20 @@ InitReport Assembly::Impl::start_impl()
     // S2 用过滤 map fd 构造名单组件，并注册为 RM 的生命周期出口
     if (collector != nullptr) {
         RoleFilterComponentOptions ropt;
-        ropt.lookup      = &role->lookup_service();
-        ropt.supervision = &role->supervision_service();
+        ropt.lookup      = &control_plane->role().lookup_service();
+        ropt.supervision = &control_plane->role().supervision_service();
         ropt.policy      = RoleFilterPolicy(options.role_filter_config);
         ropt.map = make_bpf_process_filter_map(collector->role_filter_map_fds());
         ropt.filter_options = options.role_filter_options;
         role_filter         = RoleFilterFactory::create(std::move(ropt));
-        role->add_lifecycle_sink(&role_filter->lifecycle_sink());
+        control_plane->role().add_lifecycle_sink(&role_filter->lifecycle_sink());
     }
 #endif
 
     // S3 先登记角色源再启动其线程；工厂返回空表示该源未编入构建
     if (options.enable_systemd) {
         systemd_source = RoleDiscoveryFactory::create_systemd(
-            role->event_sink(), barrier,
+            control_plane->role().event_sink(), barrier,
             SystemdSourceOptions{options.systemd_snapshot_interval});
         if (systemd_source != nullptr) {
             barrier.expect(role::RoleSource::SYSTEMD);
@@ -177,7 +173,7 @@ InitReport Assembly::Impl::start_impl()
     }
     if (options.enable_containerd) {
         containerd_source = RoleDiscoveryFactory::create_containerd(
-            role->event_sink(), barrier,
+            control_plane->role().event_sink(), barrier,
             ContainerdSourceOptions{options.containerd_socket_path});
         if (containerd_source != nullptr) {
             barrier.expect(role::RoleSource::CONTAINERD);
@@ -193,9 +189,9 @@ InitReport Assembly::Impl::start_impl()
     // TODO: 快照在角色源屏障与名单播种之前读取；屏障等待与播种期间的进程
     //       变化要等下一次事件才可见。需要收窄时把读取移到屏障/播种之后。
     ProcessSnapshotReader reader;
-    InitializationCoordinator coordinator(*process, *context, *role, maintainer,
-                                          role_filter.get(), &barrier,
-                                          options.initialization);
+    InitializationCoordinator coordinator(
+        control_plane->process(), control_plane->context(), control_plane->role(),
+        maintainer, role_filter.get(), &barrier, options.initialization);
     report = coordinator.run(reader.read());
     if (report.state == InitState::FAILED) {
         HNG_LOG_ERROR("initialization failed; consumer threads not started");
@@ -204,11 +200,12 @@ InitReport Assembly::Impl::start_impl()
     }
 
     // S5 控制面线程：PM、CM、RM，名单组件存在时一并启动
-    process_thread =
-        std::thread([component = process.get()] { component->run(); });
-    context_thread =
-        std::thread([component = context.get()] { component->run(); });
-    role_thread = std::thread([component = role.get()] { component->run(); });
+    process_thread = std::thread(
+        [component = &control_plane->process()] { component->run(); });
+    context_thread = std::thread(
+        [component = &control_plane->context()] { component->run(); });
+    role_thread =
+        std::thread([component = &control_plane->role()] { component->run(); });
     if (role_filter != nullptr) {
         role_filter_thread =
             std::thread([component = role_filter.get()] { component->run(); });
@@ -252,6 +249,15 @@ void Assembly::Impl::do_shutdown()
 {
     running.store(false);
 
+    hng::ProcessComponent* process = nullptr;
+    hng::RoleComponent* role       = nullptr;
+    hng::ContextComponent* context = nullptr;
+    if (control_plane != nullptr) {
+        process = &control_plane->process();
+        role    = &control_plane->role();
+        context = &control_plane->context();
+    }
+
     // 先停生产者再停消费者；join 只在可 join 时调用
     const auto stop_and_join = [](hng::Component* component,
                                   std::thread& thread) {
@@ -270,10 +276,10 @@ void Assembly::Impl::do_shutdown()
     stop_and_join(systemd_source.get(), systemd_thread);  // T3
     stop_and_join(containerd_source.get(), containerd_thread);
     stop_and_join(engine.get(), engine_thread);            // T4
-    stop_and_join(process.get(), process_thread);          // T5
-    stop_and_join(role.get(), role_thread);                // T6
+    stop_and_join(process, process_thread);                // T5
+    stop_and_join(role, role_thread);                      // T6
     stop_and_join(role_filter.get(), role_filter_thread);  // T7
-    stop_and_join(context.get(), context_thread);          // T8
+    stop_and_join(context, context_thread);                // T8
 
     // 逆序释放组件，归还工厂名额；队列与维护器活到 Impl 析构
     systemd_source.reset();
@@ -284,9 +290,7 @@ void Assembly::Impl::do_shutdown()
 #ifdef HNG_HAVE_COLLECTOR
     collector.reset();
 #endif
-    process.reset();
-    role.reset();
-    context.reset();
+    control_plane.reset();
 
     HNG_LOG_INFO("agent stopped");
 }
@@ -338,9 +342,9 @@ AssemblyServices Assembly::services() const
     }
 
     AssemblyServices services;
-    services.role       = &impl_->role->lookup_service();
-    services.context    = &impl_->context->lookup_service();
-    services.process    = &impl_->process->lookup_service();
+    services.role       = &impl_->control_plane->role().lookup_service();
+    services.context    = &impl_->control_plane->context().lookup_service();
+    services.process    = &impl_->control_plane->process().lookup_service();
     services.subscriber = &impl_->engine->subscriber_service();
     return services;
 }
