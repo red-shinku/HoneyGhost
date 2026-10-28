@@ -324,6 +324,16 @@ target_link_libraries(hng_runtime_engine PUBLIC
 add_subdirectory(agent/assembly)
 
 # ============================================================
+# 节点代理可执行目标
+#
+# 第一版只做参数解析、角色过滤配置加载、信号等待与装配层启停；不接 CLI
+# 服务端。
+# ============================================================
+add_executable(hng_agent agent/main.cc)
+target_link_libraries(hng_agent PRIVATE hng_assembly)
+target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
+
+# ============================================================
 # CLI 服务端
 # ============================================================
 option(HNG_ENABLE_CLI_SERVER "构建 CLI 服务端模块（需 userver）" ON)
