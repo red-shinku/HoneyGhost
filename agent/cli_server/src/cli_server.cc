@@ -18,6 +18,7 @@
 #include <userver/yaml_config/schema.hpp>
 
 #include "agent/cli_server/src/cli_context_query_service.hpp"
+#include "agent/cli_server/src/cli_process_query_service.hpp"
 #include "agent/cli_server/src/cli_role_query_service.hpp"
 #include "agent/cli_server/src/cli_runtime_service.hpp"
 
@@ -69,6 +70,7 @@ void AppendCliServerComponents(userver::components::ComponentList& list)
     list.Append<CLIServer>()
         .Append<CLIRoleQueryService>()
         .Append<CLIContextQueryService>()
+        .Append<CLIProcessQueryService>()
         .Append<CLIRuntimeService>();
 }
 

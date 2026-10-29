@@ -52,6 +52,7 @@ components_manager:
             drain-timeout: @DRAIN_TIMEOUT@
         cli-role-service: {}
         cli-context-service: {}
+        cli-process-service: {}
         cli-runtime-service: {}
 )";
 

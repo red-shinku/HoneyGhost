@@ -108,6 +108,7 @@ components_manager:
             drain-timeout: 30s
         cli-role-service: {}
         cli-context-service: {}
+        cli-process-service: {}
         cli-runtime-service: {}
 )";
 
@@ -148,12 +149,28 @@ class RoleStub final : public RoleLookupService {
     RoleManagerStats stats() const override
     {
         RoleManagerStats s;
-        s.store.rejected         = 1;
-        s.store.unknown_instance = 2;
-        s.store.owner_conflict   = 3;
-        s.store.anchors_removed  = 4;
-        s.cgroup_read_empty      = 5;
-        s.queue_rejected         = 6;
+        s.store.rejected            = 1;
+        s.store.unknown_instance    = 2;
+        s.store.owner_conflict      = 3;
+        s.store.anchors_removed     = 4;
+        s.cgroup_read_empty         = 5;
+        s.queue_rejected            = 6;
+        s.bind_deferred             = 7;
+        s.bind_resolved             = 8;
+        s.bind_rejected             = 9;
+        s.bind_expired              = 10;
+        s.bind_ignored              = 11;
+        s.late_adopt_rejected       = 12;
+        s.tombstone_depth           = 13;
+        s.dead_member_rejected      = 14;
+        s.dead_anchor_rejected      = 15;
+        s.store.bind_deferred       = s.bind_deferred;
+        s.store.bind_resolved       = s.bind_resolved;
+        s.store.bind_rejected       = s.bind_rejected;
+        s.store.bind_expired        = s.bind_expired;
+        s.store.bind_ignored        = s.bind_ignored;
+        s.store.late_adopt_rejected = s.late_adopt_rejected;
+        s.store.tombstone_depth     = s.tombstone_depth;
         return s;
     }
 
@@ -218,6 +235,21 @@ class ContextStub final : public ContextLookupService {
         ContextManagerStats s;
         s.ctxroot_parent_unsettled = 11;
         s.unknown_unregister       = 12;
+        s.pending_deferred         = 13;
+        s.pending_resolved         = 14;
+        s.pending_rejected         = 15;
+        s.pending_expired          = 16;
+        s.pending_cancelled        = 17;
+        s.pending_depth            = 18;
+        s.bind_orphaned            = 19;
+        s.extra_orphaned           = 20;
+        s.parent_missing           = 21;
+        s.late_register            = 22;
+        s.late_bind                = 23;
+        s.duplicate_context        = 24;
+        s.ownership_conflict       = 25;
+        s.tombstone_hits           = 26;
+        s.tombstone_depth          = 27;
         return s;
     }
 };
@@ -445,7 +477,8 @@ bool WaitForServer(hng::clisv::RoleManagerService::Stub& stub)
 }
 
 void run_query_face(hng::clisv::RoleManagerService::Stub& role,
-                    hng::clisv::ContextManagerService::Stub& context_svc)
+                    hng::clisv::ContextManagerService::Stub& context_svc,
+                    hng::clisv::ProcessManagerService::Stub& process_svc)
 {
     // RM_GetProcessSet：成员来自替身，root_pid 来自 main_process
     {
@@ -530,7 +563,16 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
                   response.owner_conflict() == 3 &&
                   response.anchors_removed() == 4 &&
                   response.cgroup_read_empty() == 5 &&
-                  response.queue_rejected() == 6,
+                  response.queue_rejected() == 6 &&
+                  response.bind_deferred() == 7 &&
+                  response.bind_resolved() == 8 &&
+                  response.bind_rejected() == 9 &&
+                  response.bind_expired() == 10 &&
+                  response.bind_ignored() == 11 &&
+                  response.late_adopt_rejected() == 12 &&
+                  response.tombstone_depth() == 13 &&
+                  response.dead_member_rejected() == 14 &&
+                  response.dead_anchor_rejected() == 15,
               "RM_GetStats 应映射全部字段");
     }
 
@@ -639,8 +681,38 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
             context_svc.GetStats(&context, request, &response);
         CHECK(status.ok(), "CM_GetStats 应成功");
         CHECK(response.ctxroot_parent_unsettled() == 11 &&
-                  response.unknown_unregister() == 12,
+                  response.unknown_unregister() == 12 &&
+                  response.pending_deferred() == 13 &&
+                  response.pending_resolved() == 14 &&
+                  response.pending_rejected() == 15 &&
+                  response.pending_expired() == 16 &&
+                  response.pending_cancelled() == 17 &&
+                  response.pending_depth() == 18 &&
+                  response.bind_orphaned() == 19 &&
+                  response.extra_orphaned() == 20 &&
+                  response.parent_missing() == 21 &&
+                  response.late_register() == 22 &&
+                  response.late_bind() == 23 &&
+                  response.duplicate_context() == 24 &&
+                  response.ownership_conflict() == 25 &&
+                  response.tombstone_hits() == 26 &&
+                  response.tombstone_depth() == 27,
               "CM_GetStats 应映射全部字段");
+    }
+
+    // PM_GetStats
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::PM_GetStatsRequest request;
+        hng::clisv::PM_GetStatsResponse response;
+        const grpc::Status status =
+            process_svc.GetStats(&context, request, &response);
+        CHECK(status.ok(), "PM_GetStats 应成功");
+        CHECK(response.pid_reused() == 1 && response.stale_add() == 2 &&
+                  response.parent_missing() == 3 &&
+                  response.tombstone_depth() == 4,
+              "PM_GetStats 应映射全部字段");
     }
 
     // CM_WhichContext：命中、未命中、参数非法
@@ -812,6 +884,7 @@ int main()
     const auto channel = MakeChannel();
     auto role          = hng::clisv::RoleManagerService::NewStub(channel);
     auto context_svc   = hng::clisv::ContextManagerService::NewStub(channel);
+    auto process_svc   = hng::clisv::ProcessManagerService::NewStub(channel);
     auto runtime       = hng::clisv::RuntimeService::NewStub(channel);
 
     // 停机时故意留一条活跃流：它应由停机广播收敛，而不是拖住退出
@@ -819,7 +892,7 @@ int main()
     std::unique_ptr<grpc::ClientReader<hng::clisv::ReceiveEventResponse>> held;
 
     if (WaitForServer(*role)) {
-        run_query_face(*role, *context_svc);
+        run_query_face(*role, *context_svc, *process_svc);
         run_stream_quota(*runtime);
         run_filter(*runtime);
         run_role_label_filter(*runtime);
