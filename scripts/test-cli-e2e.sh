@@ -145,6 +145,15 @@ assert_match "owner_conflict" '^owner_conflict +3$' "$out"
 assert_match "anchors_removed" '^anchors_removed +4$' "$out"
 assert_match "cgroup_read_empty" '^cgroup_read_empty +5$' "$out"
 assert_match "queue_rejected" '^queue_rejected +6$' "$out"
+assert_match "bind_deferred" '^bind_deferred +7$' "$out"
+assert_match "bind_resolved" '^bind_resolved +8$' "$out"
+assert_match "bind_rejected" '^bind_rejected +9$' "$out"
+assert_match "bind_expired" '^bind_expired +10$' "$out"
+assert_match "bind_ignored" '^bind_ignored +11$' "$out"
+assert_match "late_adopt_rejected" '^late_adopt_rejected +12$' "$out"
+assert_match "tombstone_depth" '^tombstone_depth +13$' "$out"
+assert_match "dead_member_rejected" '^dead_member_rejected +14$' "$out"
+assert_match "dead_anchor_rejected" '^dead_anchor_rejected +15$' "$out"
 
 run "role which 1001" 0 "$cli" --socket "$socket" role which 1001
 assert_eq "role which 输出" "7" "$out"
@@ -175,6 +184,27 @@ PROCESSES (root 1001)
 run "context stats" 0 "$cli" --socket "$socket" context stats
 assert_match "ctxroot_parent_unsettled" '^ctxroot_parent_unsettled +11$' "$out"
 assert_match "unknown_unregister" '^unknown_unregister +12$' "$out"
+assert_match "pending_deferred" '^pending_deferred +13$' "$out"
+assert_match "pending_resolved" '^pending_resolved +14$' "$out"
+assert_match "pending_rejected" '^pending_rejected +15$' "$out"
+assert_match "pending_expired" '^pending_expired +16$' "$out"
+assert_match "pending_cancelled" '^pending_cancelled +17$' "$out"
+assert_match "pending_depth" '^pending_depth +18$' "$out"
+assert_match "bind_orphaned" '^bind_orphaned +19$' "$out"
+assert_match "extra_orphaned" '^extra_orphaned +20$' "$out"
+assert_match "parent_missing" '^parent_missing +21$' "$out"
+assert_match "late_register" '^late_register +22$' "$out"
+assert_match "late_bind" '^late_bind +23$' "$out"
+assert_match "duplicate_context" '^duplicate_context +24$' "$out"
+assert_match "ownership_conflict" '^ownership_conflict +25$' "$out"
+assert_match "tombstone_hits" '^tombstone_hits +26$' "$out"
+assert_match "tombstone_depth" '^tombstone_depth +27$' "$out"
+
+run "process stats" 0 "$cli" --socket "$socket" process stats
+assert_match "pid_reused" '^pid_reused +1$' "$out"
+assert_match "stale_add" '^stale_add +2$' "$out"
+assert_match "parent_missing" '^parent_missing +3$' "$out"
+assert_match "tombstone_depth" '^tombstone_depth +4$' "$out"
 
 run "context which 1001" 0 "$cli" --socket "$socket" context which 1001
 assert_eq "context which 输出" "3" "$out"
@@ -185,13 +215,17 @@ assert_match "异常上下文数" '^EXCEPTION CONTEXTS +1$' "$out"
 assert_match "附属上下文数" '^EXTRA CONTEXTS +1$' "$out"
 assert_contains "角色计数段" "ROLE STATS" "$out"
 assert_contains "上下文计数段" "CONTEXT STATS" "$out"
+assert_contains "进程计数段" "PROCESS STATS" "$out"
 
 run "status -o json" 0 "$cli" --socket "$socket" status -o json
 assert_contains "监管角色数" '"supervised_role_count": 1' "$out"
 assert_contains "异常上下文数" '"exception_context_count": 1' "$out"
 assert_contains "附属上下文数" '"extra_context_count": 1' "$out"
 assert_contains "角色计数" '"rejected": 1' "$out"
+assert_contains "角色计数（新增）" '"bind_deferred": 7' "$out"
 assert_contains "上下文计数" '"ctxroot_parent_unsettled": 11' "$out"
+assert_contains "上下文计数（新增）" '"pending_depth": 18' "$out"
+assert_contains "进程计数" '"pid_reused": 1' "$out"
 
 echo "错误路径"
 
