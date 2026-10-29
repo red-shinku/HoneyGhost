@@ -84,6 +84,12 @@ hghost context which 1234
 一类失败不影响另一类：成功类照常输出，失败原因写 stderr，整条命令退出 `1`；
 两类都失败时不输出数据。
 
+### process（进程）
+
+```sh
+hghost process stats               # 进程管理器计数
+```
+
 ### status（系统总览）
 
 ```sh
@@ -91,7 +97,7 @@ hghost status
 hghost status -o json
 ```
 
-汇总监管角色数、异常/附属上下文数，以及两个管理器的计数。各段独立：
+汇总监管角色数、异常/附属上下文数，以及角色、上下文、进程三个管理器的计数。各段独立：
 失败的段在 table 模式不输出、JSON 为 `null`，其余段照常输出，整条命令退出 `1`。
 
 ### events（事件流）

@@ -71,6 +71,14 @@ func (f fakeContextService) Which(ctx context.Context, pid uint32) (uint32, bool
 	return f.which(ctx, pid)
 }
 
+type fakeProcessService struct {
+	stats func(context.Context) (model.ProcessStats, error)
+}
+
+func (f fakeProcessService) Stats(ctx context.Context) (model.ProcessStats, error) {
+	return f.stats(ctx)
+}
+
 type fakeEventService struct {
 	subscribe func(context.Context, model.RuntimeSelector,
 		[]model.EventType) (api.EventStream, error)
@@ -233,7 +241,11 @@ func TestRoleListError(t *testing.T) {
 func TestRoleStats(t *testing.T) {
 	svcs := api.Services{Roles: fakeRoleService{
 		stats: func(context.Context) (model.RoleStats, error) {
-			return model.RoleStats{Rejected: uint64Ptr(0), OwnerConflict: uint64Ptr(2)}, nil
+			return model.RoleStats{
+				Rejected:      uint64Ptr(0),
+				OwnerConflict: uint64Ptr(2),
+				BindDeferred:  uint64Ptr(3),
+			}, nil
 		},
 	}}
 	out, _, err := executeWithServices(t, svcs, "role", "stats")
@@ -242,6 +254,7 @@ func TestRoleStats(t *testing.T) {
 	}
 	for _, line := range []string{
 		"COUNTER", "rejected", "0", "unknown_instance", "-", "owner_conflict", "2",
+		"bind_deferred", "3",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)
@@ -680,6 +693,11 @@ func TestStatus(t *testing.T) {
 				return model.ContextStats{UnknownUnregister: uint64Ptr(2)}, nil
 			},
 		},
+		Process: fakeProcessService{
+			stats: func(context.Context) (model.ProcessStats, error) {
+				return model.ProcessStats{PidReused: uint64Ptr(1)}, nil
+			},
+		},
 	}
 	out, _, err := executeWithServices(t, svcs, "status")
 	if err != nil {
@@ -691,6 +709,7 @@ func TestStatus(t *testing.T) {
 	for _, line := range []string{
 		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
+		"PROCESS STATS", "pid_reused",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)
@@ -707,6 +726,7 @@ func TestStatus(t *testing.T) {
 		"\"extra_context_count\": 2",
 		"\"role_stats\"",
 		"\"context_stats\"",
+		"\"process_stats\"",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)
@@ -731,6 +751,11 @@ func TestStatusPartial(t *testing.T) {
 				return model.ContextStats{}, nil
 			},
 		},
+		Process: fakeProcessService{
+			stats: func(context.Context) (model.ProcessStats, error) {
+				return model.ProcessStats{}, nil
+			},
+		},
 	}
 	out, _, err := executeWithServices(t, svcs, "status")
 	if err == nil {
@@ -739,7 +764,8 @@ func TestStatusPartial(t *testing.T) {
 	if strings.Contains(out, "SUPERVISED ROLES") {
 		t.Errorf("stdout contains failed supervised roles segment:\n%s", out)
 	}
-	if !strings.Contains(out, "EXCEPTION CONTEXTS") || !strings.Contains(out, "ROLE STATS") {
+	if !strings.Contains(out, "EXCEPTION CONTEXTS") || !strings.Contains(out, "ROLE STATS") ||
+		!strings.Contains(out, "PROCESS STATS") {
 		t.Errorf("stdout missing successful segments:\n%s", out)
 	}
 	if ExitCode(err, false) != 1 {
@@ -777,6 +803,11 @@ func TestStatusAllFail(t *testing.T) {
 			extraIDs:     failIDs,
 			stats:        failContexts,
 		},
+		Process: fakeProcessService{
+			stats: func(context.Context) (model.ProcessStats, error) {
+				return model.ProcessStats{}, &api.StatusError{Op: "GetStats", Kind: api.ErrorUnavailable, Message: "boom"}
+			},
+		},
 	}
 	out, _, err := executeWithServices(t, svcs, "status")
 	if err == nil {
@@ -796,6 +827,7 @@ func TestStatusAllFail(t *testing.T) {
 		"\"extra_context_count\": null",
 		"\"role_stats\": null",
 		"\"context_stats\": null",
+		"\"process_stats\": null",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)
@@ -1286,12 +1318,35 @@ func TestContextListEmpty(t *testing.T) {
 	}
 }
 
+func TestProcessStats(t *testing.T) {
+	svcs := api.Services{Process: fakeProcessService{
+		stats: func(context.Context) (model.ProcessStats, error) {
+			return model.ProcessStats{
+				PidReused:      uint64Ptr(1),
+				TombstoneDepth: uint64Ptr(4),
+			}, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "process", "stats")
+	if err != nil {
+		t.Fatalf("process stats: %v", err)
+	}
+	for _, line := range []string{
+		"COUNTER", "pid_reused", "1", "stale_add", "-", "tombstone_depth", "4",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("stdout missing %q:\n%s", line, out)
+		}
+	}
+}
+
 func TestContextStats(t *testing.T) {
 	svcs := api.Services{Contexts: fakeContextService{
 		stats: func(context.Context) (model.ContextStats, error) {
 			return model.ContextStats{
 				CtxrootParentUnsettled: uint64Ptr(1),
 				UnknownUnregister:      uint64Ptr(2),
+				PendingDepth:           uint64Ptr(3),
 			}, nil
 		},
 	}}
@@ -1299,7 +1354,10 @@ func TestContextStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("context stats: %v", err)
 	}
-	for _, line := range []string{"COUNTER", "ctxroot_parent_unsettled", "1", "unknown_unregister", "2"} {
+	for _, line := range []string{
+		"COUNTER", "ctxroot_parent_unsettled", "1", "unknown_unregister", "2",
+		"pending_depth", "3",
+	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)
 		}

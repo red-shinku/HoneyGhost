@@ -42,18 +42,52 @@ const (
 //
 // 每个计数为 nil 表示服务端未提供该 optional 字段。
 type RoleStats struct {
-	Rejected        *uint64 `json:"rejected"`
-	UnknownInstance *uint64 `json:"unknown_instance"`
-	OwnerConflict   *uint64 `json:"owner_conflict"`
-	AnchorsRemoved  *uint64 `json:"anchors_removed"`
-	CgroupReadEmpty *uint64 `json:"cgroup_read_empty"`
-	QueueRejected   *uint64 `json:"queue_rejected"`
+	Rejected           *uint64 `json:"rejected"`
+	UnknownInstance    *uint64 `json:"unknown_instance"`
+	OwnerConflict      *uint64 `json:"owner_conflict"`
+	AnchorsRemoved     *uint64 `json:"anchors_removed"`
+	CgroupReadEmpty    *uint64 `json:"cgroup_read_empty"`
+	QueueRejected      *uint64 `json:"queue_rejected"`
+	BindDeferred       *uint64 `json:"bind_deferred"`
+	BindResolved       *uint64 `json:"bind_resolved"`
+	BindRejected       *uint64 `json:"bind_rejected"`
+	BindExpired        *uint64 `json:"bind_expired"`
+	BindIgnored        *uint64 `json:"bind_ignored"`
+	LateAdoptRejected  *uint64 `json:"late_adopt_rejected"`
+	TombstoneDepth     *uint64 `json:"tombstone_depth"`
+	DeadMemberRejected *uint64 `json:"dead_member_rejected"`
+	DeadAnchorRejected *uint64 `json:"dead_anchor_rejected"`
 }
 
 // ContextStats 是上下文管理器的计数快照。
 type ContextStats struct {
 	CtxrootParentUnsettled *uint64 `json:"ctxroot_parent_unsettled"`
 	UnknownUnregister      *uint64 `json:"unknown_unregister"`
+	PendingDeferred        *uint64 `json:"pending_deferred"`
+	PendingResolved        *uint64 `json:"pending_resolved"`
+	PendingRejected        *uint64 `json:"pending_rejected"`
+	PendingExpired         *uint64 `json:"pending_expired"`
+	PendingCancelled       *uint64 `json:"pending_cancelled"`
+	PendingDepth           *uint64 `json:"pending_depth"`
+	BindOrphaned           *uint64 `json:"bind_orphaned"`
+	ExtraOrphaned          *uint64 `json:"extra_orphaned"`
+	ParentMissing          *uint64 `json:"parent_missing"`
+	LateRegister           *uint64 `json:"late_register"`
+	LateBind               *uint64 `json:"late_bind"`
+	DuplicateContext       *uint64 `json:"duplicate_context"`
+	OwnershipConflict      *uint64 `json:"ownership_conflict"`
+	TombstoneHits          *uint64 `json:"tombstone_hits"`
+	TombstoneDepth         *uint64 `json:"tombstone_depth"`
+}
+
+// ProcessStats 是进程管理器的计数快照。
+//
+// 每个计数为 nil 表示服务端未提供该 optional 字段。
+type ProcessStats struct {
+	PidReused      *uint64 `json:"pid_reused"`
+	StaleAdd       *uint64 `json:"stale_add"`
+	ParentMissing  *uint64 `json:"parent_missing"`
+	TombstoneDepth *uint64 `json:"tombstone_depth"`
 }
 
 // Status 是 status 命令的总览。
@@ -65,6 +99,7 @@ type Status struct {
 	ExtraContextCount     *int          `json:"extra_context_count"`
 	RoleStats             *RoleStats    `json:"role_stats"`
 	ContextStats          *ContextStats `json:"context_stats"`
+	ProcessStats          *ProcessStats `json:"process_stats"`
 }
 
 // 上下文属性名，同时用作 context list 的 KIND 列与 JSON 的 kind 值。
