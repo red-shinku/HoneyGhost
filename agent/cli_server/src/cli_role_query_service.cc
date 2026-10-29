@@ -161,6 +161,15 @@ CLIRoleQueryService::GetStatsResult CLIRoleQueryService::GetStats(
             out.set_anchors_removed(stats.store.anchors_removed);
             out.set_cgroup_read_empty(stats.cgroup_read_empty);
             out.set_queue_rejected(stats.queue_rejected);
+            out.set_bind_deferred(stats.bind_deferred);
+            out.set_bind_resolved(stats.bind_resolved);
+            out.set_bind_rejected(stats.bind_rejected);
+            out.set_bind_expired(stats.bind_expired);
+            out.set_bind_ignored(stats.bind_ignored);
+            out.set_late_adopt_rejected(stats.late_adopt_rejected);
+            out.set_tombstone_depth(stats.tombstone_depth);
+            out.set_dead_member_rejected(stats.dead_member_rejected);
+            out.set_dead_anchor_rejected(stats.dead_anchor_rejected);
         });
 }
 
