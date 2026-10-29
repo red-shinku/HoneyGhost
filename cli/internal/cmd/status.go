@@ -65,6 +65,12 @@ func runStatus(ctx context.Context, out io.Writer, r render.Renderer, svcs api.S
 		status.ContextStats = &stats
 	}
 
+	if stats, err := svcs.Process.Stats(ctx); err != nil {
+		failures = append(failures, failure{Label: "process stats", Err: err})
+	} else {
+		status.ProcessStats = &stats
+	}
+
 	if err := r.Status(out, status); err != nil {
 		return err
 	}

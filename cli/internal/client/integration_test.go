@@ -50,8 +50,14 @@ func (fakeRoleServer) GetContextSet(context.Context, *clisv.RM_GetContextSetRequ
 
 func (fakeRoleServer) GetStats(context.Context, *clisv.RM_GetStatsRequest) (
 	*clisv.RM_GetStatsResponse, error) {
-	one, two := uint64(1), uint64(2)
-	return &clisv.RM_GetStatsResponse{Rejected: &one, OwnerConflict: &two}, nil
+	one, two, seven := uint64(1), uint64(2), uint64(7)
+	return &clisv.RM_GetStatsResponse{
+		Rejected:           &one,
+		OwnerConflict:      &two,
+		BindDeferred:       &seven,
+		TombstoneDepth:     &seven,
+		DeadMemberRejected: &seven,
+	}, nil
 }
 
 func (fakeRoleServer) WhichRole(_ context.Context, req *clisv.RM_WhichRoleRequest) (
@@ -87,13 +93,31 @@ func (fakeContextServer) GetProcessSet(context.Context, *clisv.CM_GetProcessSetR
 
 func (fakeContextServer) GetStats(context.Context, *clisv.CM_GetStatsRequest) (
 	*clisv.CM_GetStatsResponse, error) {
-	return &clisv.CM_GetStatsResponse{CtxrootParentUnsettled: 1, UnknownUnregister: 2}, nil
+	return &clisv.CM_GetStatsResponse{
+		CtxrootParentUnsettled: 1,
+		UnknownUnregister:      2,
+		PendingDepth:           3,
+		TombstoneDepth:         4,
+	}, nil
 }
 
 func (fakeContextServer) WhichContext(context.Context, *clisv.CM_WhichContextRequest) (
 	*clisv.CM_WhichContextResponse, error) {
 	id := uint32(3)
 	return &clisv.CM_WhichContextResponse{ContextID: &id}, nil
+}
+
+type fakeProcessServer struct {
+	clisv.UnimplementedProcessManagerServiceServer
+}
+
+func (fakeProcessServer) GetStats(context.Context, *clisv.PM_GetStatsRequest) (
+	*clisv.PM_GetStatsResponse, error) {
+	one, four := uint64(1), uint64(4)
+	return &clisv.PM_GetStatsResponse{
+		PidReused:      &one,
+		TombstoneDepth: &four,
+	}, nil
 }
 
 func startTestServer(t *testing.T) string {
@@ -106,6 +130,7 @@ func startTestServer(t *testing.T) string {
 	server := grpc.NewServer()
 	clisv.RegisterRoleManagerServiceServer(server, fakeRoleServer{})
 	clisv.RegisterContextManagerServiceServer(server, fakeContextServer{})
+	clisv.RegisterProcessManagerServiceServer(server, fakeProcessServer{})
 	go func() {
 		_ = server.Serve(lis)
 	}()
@@ -362,6 +387,15 @@ func TestIntegrationQueries(t *testing.T) {
 	if roleStats.UnknownInstance != nil {
 		t.Errorf("UnknownInstance = %v, want nil", roleStats.UnknownInstance)
 	}
+	if roleStats.BindDeferred == nil || *roleStats.BindDeferred != 7 {
+		t.Errorf("BindDeferred = %v, want 7", roleStats.BindDeferred)
+	}
+	if roleStats.DeadMemberRejected == nil || *roleStats.DeadMemberRejected != 7 {
+		t.Errorf("DeadMemberRejected = %v, want 7", roleStats.DeadMemberRejected)
+	}
+	if roleStats.DeadAnchorRejected != nil {
+		t.Errorf("DeadAnchorRejected = %v, want nil", roleStats.DeadAnchorRejected)
+	}
 
 	excep, err := svcs.Contexts.ExceptionIDs(ctx)
 	if err != nil {
@@ -394,6 +428,26 @@ func TestIntegrationQueries(t *testing.T) {
 	if contextStats.CtxrootParentUnsettled == nil || *contextStats.CtxrootParentUnsettled != 1 ||
 		contextStats.UnknownUnregister == nil || *contextStats.UnknownUnregister != 2 {
 		t.Errorf("context stats = %+v, want 1/2", contextStats)
+	}
+	if contextStats.PendingDepth == nil || *contextStats.PendingDepth != 3 {
+		t.Errorf("PendingDepth = %v, want 3", contextStats.PendingDepth)
+	}
+	if contextStats.TombstoneDepth == nil || *contextStats.TombstoneDepth != 4 {
+		t.Errorf("TombstoneDepth = %v, want 4", contextStats.TombstoneDepth)
+	}
+
+	processStats, err := svcs.Process.Stats(ctx)
+	if err != nil {
+		t.Fatalf("process Stats: %v", err)
+	}
+	if processStats.PidReused == nil || *processStats.PidReused != 1 {
+		t.Errorf("PidReused = %v, want 1", processStats.PidReused)
+	}
+	if processStats.TombstoneDepth == nil || *processStats.TombstoneDepth != 4 {
+		t.Errorf("TombstoneDepth = %v, want 4", processStats.TombstoneDepth)
+	}
+	if processStats.StaleAdd != nil {
+		t.Errorf("StaleAdd = %v, want nil", processStats.StaleAdd)
 	}
 
 	contextID, found, err := svcs.Contexts.Which(ctx, 1001)

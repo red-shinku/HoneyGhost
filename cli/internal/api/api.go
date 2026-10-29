@@ -10,10 +10,11 @@ import (
 	"honeyghost/cli/internal/model"
 )
 
-// Services 汇总三类服务。结构体而非接口，避免为三个服务再造一层包装。
+// Services 汇总四类服务。结构体而非接口，避免为每个服务再造一层包装。
 type Services struct {
 	Roles    RoleService
 	Contexts ContextService
+	Process  ProcessService
 	Events   EventService
 }
 
@@ -33,6 +34,11 @@ type ContextService interface {
 	Processes(ctx context.Context, contextID uint32) (model.ProcessSet, error)
 	Stats(ctx context.Context) (model.ContextStats, error)
 	Which(ctx context.Context, pid uint32) (contextID uint32, found bool, err error)
+}
+
+// ProcessService 是进程管理器的消费者侧视图；每个方法对应一个 RPC。
+type ProcessService interface {
+	Stats(ctx context.Context) (model.ProcessStats, error)
 }
 
 // EventService 提供运行时事件订阅。

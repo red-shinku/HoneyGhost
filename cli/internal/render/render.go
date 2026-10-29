@@ -23,6 +23,7 @@ type Renderer interface {
 	ContextList(w io.Writer, refs []model.ContextRef) error
 	ContextDetail(w io.Writer, contextID uint32, ps model.ProcessSet) error
 	ContextStats(w io.Writer, s model.ContextStats) error
+	ProcessStats(w io.Writer, s model.ProcessStats) error
 	Status(w io.Writer, s model.Status) error
 	Event(w io.Writer, ev model.Event) error
 	StreamStats(w io.Writer, s model.StreamStats) error
@@ -97,6 +98,15 @@ func (r tableRenderer) ContextStats(w io.Writer, s model.ContextStats) error {
 		fmt.Fprintln(tw, "COUNTER\tVALUE")
 	}
 	writeCounters(tw, contextCounters(s))
+	return tw.Flush()
+}
+
+func (r tableRenderer) ProcessStats(w io.Writer, s model.ProcessStats) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if !r.opts.NoHeaders {
+		fmt.Fprintln(tw, "COUNTER\tVALUE")
+	}
+	writeCounters(tw, processCounters(s))
 	return tw.Flush()
 }
 
@@ -178,6 +188,13 @@ func (r tableRenderer) Status(w io.Writer, s model.Status) error {
 		open()
 		ew.println("CONTEXT STATS")
 		if err := writeIndentedCounters(w, contextCounters(*s.ContextStats)); err != nil {
+			return err
+		}
+	}
+	if s.ProcessStats != nil {
+		open()
+		ew.println("PROCESS STATS")
+		if err := writeIndentedCounters(w, processCounters(*s.ProcessStats)); err != nil {
 			return err
 		}
 	}
@@ -315,6 +332,15 @@ func roleCounters(s model.RoleStats) []counter {
 		{"anchors_removed", s.AnchorsRemoved},
 		{"cgroup_read_empty", s.CgroupReadEmpty},
 		{"queue_rejected", s.QueueRejected},
+		{"bind_deferred", s.BindDeferred},
+		{"bind_resolved", s.BindResolved},
+		{"bind_rejected", s.BindRejected},
+		{"bind_expired", s.BindExpired},
+		{"bind_ignored", s.BindIgnored},
+		{"late_adopt_rejected", s.LateAdoptRejected},
+		{"tombstone_depth", s.TombstoneDepth},
+		{"dead_member_rejected", s.DeadMemberRejected},
+		{"dead_anchor_rejected", s.DeadAnchorRejected},
 	}
 }
 
@@ -322,6 +348,30 @@ func contextCounters(s model.ContextStats) []counter {
 	return []counter{
 		{"ctxroot_parent_unsettled", s.CtxrootParentUnsettled},
 		{"unknown_unregister", s.UnknownUnregister},
+		{"pending_deferred", s.PendingDeferred},
+		{"pending_resolved", s.PendingResolved},
+		{"pending_rejected", s.PendingRejected},
+		{"pending_expired", s.PendingExpired},
+		{"pending_cancelled", s.PendingCancelled},
+		{"pending_depth", s.PendingDepth},
+		{"bind_orphaned", s.BindOrphaned},
+		{"extra_orphaned", s.ExtraOrphaned},
+		{"parent_missing", s.ParentMissing},
+		{"late_register", s.LateRegister},
+		{"late_bind", s.LateBind},
+		{"duplicate_context", s.DuplicateContext},
+		{"ownership_conflict", s.OwnershipConflict},
+		{"tombstone_hits", s.TombstoneHits},
+		{"tombstone_depth", s.TombstoneDepth},
+	}
+}
+
+func processCounters(s model.ProcessStats) []counter {
+	return []counter{
+		{"pid_reused", s.PidReused},
+		{"stale_add", s.StaleAdd},
+		{"parent_missing", s.ParentMissing},
+		{"tombstone_depth", s.TombstoneDepth},
 	}
 }
 
@@ -380,6 +430,10 @@ func (jsonRenderer) RoleStats(w io.Writer, s model.RoleStats) error {
 }
 
 func (jsonRenderer) ContextStats(w io.Writer, s model.ContextStats) error {
+	return writeJSON(w, s)
+}
+
+func (jsonRenderer) ProcessStats(w io.Writer, s model.ProcessStats) error {
 	return writeJSON(w, s)
 }
 

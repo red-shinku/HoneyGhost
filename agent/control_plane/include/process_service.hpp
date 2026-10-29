@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 
+#include "agent/control_plane/include/process_stats.hpp"
 #include "agent/event_data/include/process.hpp"
 
 class ProcessLookupService {
@@ -25,6 +26,10 @@ class ProcessLookupService {
     /// @brief 按 pid 反查进程实体；不存在时为空
     /// @note 存活进程优先；未命中时取虚拟根中该 pid 的最新实例
     virtual std::optional<hng::Process> resolve(uint32_t pid) const         = 0;
+
+    /// @brief 异常态观测快照
+    /// @note 可从任意线程读取
+    virtual ProcessManagerStats stats() const                               = 0;
 };
 
 class ProcessJoinService {

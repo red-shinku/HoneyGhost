@@ -36,12 +36,21 @@ func convertUint32s(in []uint32) []uint32 {
 
 func convertRoleStats(in *clisv.RM_GetStatsResponse) model.RoleStats {
 	return model.RoleStats{
-		Rejected:        copyUint64(in.Rejected),
-		UnknownInstance: copyUint64(in.UnknownInstance),
-		OwnerConflict:   copyUint64(in.OwnerConflict),
-		AnchorsRemoved:  copyUint64(in.AnchorsRemoved),
-		CgroupReadEmpty: copyUint64(in.CgroupReadEmpty),
-		QueueRejected:   copyUint64(in.QueueRejected),
+		Rejected:           copyUint64(in.Rejected),
+		UnknownInstance:    copyUint64(in.UnknownInstance),
+		OwnerConflict:      copyUint64(in.OwnerConflict),
+		AnchorsRemoved:     copyUint64(in.AnchorsRemoved),
+		CgroupReadEmpty:    copyUint64(in.CgroupReadEmpty),
+		QueueRejected:      copyUint64(in.QueueRejected),
+		BindDeferred:       copyUint64(in.BindDeferred),
+		BindResolved:       copyUint64(in.BindResolved),
+		BindRejected:       copyUint64(in.BindRejected),
+		BindExpired:        copyUint64(in.BindExpired),
+		BindIgnored:        copyUint64(in.BindIgnored),
+		LateAdoptRejected:  copyUint64(in.LateAdoptRejected),
+		TombstoneDepth:     copyUint64(in.TombstoneDepth),
+		DeadMemberRejected: copyUint64(in.DeadMemberRejected),
+		DeadAnchorRejected: copyUint64(in.DeadAnchorRejected),
 	}
 }
 
@@ -49,6 +58,30 @@ func convertContextStats(in *clisv.CM_GetStatsResponse) model.ContextStats {
 	return model.ContextStats{
 		CtxrootParentUnsettled: uint64Ptr(in.CtxrootParentUnsettled),
 		UnknownUnregister:      uint64Ptr(in.UnknownUnregister),
+		PendingDeferred:        uint64Ptr(in.PendingDeferred),
+		PendingResolved:        uint64Ptr(in.PendingResolved),
+		PendingRejected:        uint64Ptr(in.PendingRejected),
+		PendingExpired:         uint64Ptr(in.PendingExpired),
+		PendingCancelled:       uint64Ptr(in.PendingCancelled),
+		PendingDepth:           uint64Ptr(in.PendingDepth),
+		BindOrphaned:           uint64Ptr(in.BindOrphaned),
+		ExtraOrphaned:          uint64Ptr(in.ExtraOrphaned),
+		ParentMissing:          uint64Ptr(in.ParentMissing),
+		LateRegister:           uint64Ptr(in.LateRegister),
+		LateBind:               uint64Ptr(in.LateBind),
+		DuplicateContext:       uint64Ptr(in.DuplicateContext),
+		OwnershipConflict:      uint64Ptr(in.OwnershipConflict),
+		TombstoneHits:          uint64Ptr(in.TombstoneHits),
+		TombstoneDepth:         uint64Ptr(in.TombstoneDepth),
+	}
+}
+
+func convertProcessStats(in *clisv.PM_GetStatsResponse) model.ProcessStats {
+	return model.ProcessStats{
+		PidReused:      copyUint64(in.PidReused),
+		StaleAdd:       copyUint64(in.StaleAdd),
+		ParentMissing:  copyUint64(in.ParentMissing),
+		TombstoneDepth: copyUint64(in.TombstoneDepth),
 	}
 }
 

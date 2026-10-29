@@ -20,11 +20,12 @@ type Options struct {
 	UserAgent string
 }
 
-// Client 持有一条 gRPC 连接与三个服务客户端。
+// Client 持有一条 gRPC 连接与四个服务客户端。
 type Client struct {
 	conn     *grpc.ClientConn
 	roles    clisv.RoleManagerServiceClient
 	contexts clisv.ContextManagerServiceClient
+	process  clisv.ProcessManagerServiceClient
 	events   clisv.RuntimeServiceClient
 }
 
@@ -45,6 +46,7 @@ func Dial(_ context.Context, socket string, opts Options) (*Client, error) {
 		conn:     conn,
 		roles:    clisv.NewRoleManagerServiceClient(conn),
 		contexts: clisv.NewContextManagerServiceClient(conn),
+		process:  clisv.NewProcessManagerServiceClient(conn),
 		events:   clisv.NewRuntimeServiceClient(conn),
 	}, nil
 }
@@ -54,6 +56,7 @@ func (c *Client) Services() api.Services {
 	return api.Services{
 		Roles:    roleService{c},
 		Contexts: contextService{c},
+		Process:  processService{c},
 		Events:   eventService{c},
 	}
 }
@@ -155,6 +158,18 @@ func (s contextService) Which(ctx context.Context, pid uint32) (uint32, bool, er
 	}
 	contextID, found := convertWhichContext(resp)
 	return contextID, found, nil
+}
+
+type processService struct {
+	c *Client
+}
+
+func (s processService) Stats(ctx context.Context) (model.ProcessStats, error) {
+	resp, err := s.c.process.GetStats(ctx, &clisv.PM_GetStatsRequest{})
+	if err != nil {
+		return model.ProcessStats{}, statusError("GetStats", err)
+	}
+	return convertProcessStats(resp), nil
 }
 
 type eventService struct {

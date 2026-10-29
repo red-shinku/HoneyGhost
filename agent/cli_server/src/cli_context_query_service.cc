@@ -99,6 +99,21 @@ CLIContextQueryService::GetStatsResult CLIContextQueryService::GetStats(
             const ContextManagerStats stats = deps_.context->stats();
             out.set_ctxroot_parent_unsettled(stats.ctxroot_parent_unsettled);
             out.set_unknown_unregister(stats.unknown_unregister);
+            out.set_pending_deferred(stats.pending_deferred);
+            out.set_pending_resolved(stats.pending_resolved);
+            out.set_pending_rejected(stats.pending_rejected);
+            out.set_pending_expired(stats.pending_expired);
+            out.set_pending_cancelled(stats.pending_cancelled);
+            out.set_pending_depth(stats.pending_depth);
+            out.set_bind_orphaned(stats.bind_orphaned);
+            out.set_extra_orphaned(stats.extra_orphaned);
+            out.set_parent_missing(stats.parent_missing);
+            out.set_late_register(stats.late_register);
+            out.set_late_bind(stats.late_bind);
+            out.set_duplicate_context(stats.duplicate_context);
+            out.set_ownership_conflict(stats.ownership_conflict);
+            out.set_tombstone_hits(stats.tombstone_hits);
+            out.set_tombstone_depth(stats.tombstone_depth);
         });
 }
 

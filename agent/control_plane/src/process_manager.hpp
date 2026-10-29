@@ -95,8 +95,8 @@ class ProcessManager : public ProcessLookupService,
     void set_role_join_service(RoleJoinService* service);
 
     /// @brief 异常态观测快照
-    /// @note 只供 ProcessManager 的装配者/运维端使用
-    ProcessManagerStats stats() const;
+    /// @note 可从任意线程读取
+    ProcessManagerStats stats() const override;
 
    private:
     /// @brief 入队任务：注册、注销一个进程，或更新其镜像

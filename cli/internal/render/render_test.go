@@ -63,12 +63,21 @@ func TestGoldenRoles(t *testing.T) {
 
 func TestGoldenRoleStats(t *testing.T) {
 	stats := model.RoleStats{
-		Rejected:        uint64Ptr(0),
-		UnknownInstance: nil,
-		OwnerConflict:   uint64Ptr(2),
-		AnchorsRemoved:  uint64Ptr(0),
-		CgroupReadEmpty: nil,
-		QueueRejected:   uint64Ptr(5),
+		Rejected:           uint64Ptr(0),
+		UnknownInstance:    nil,
+		OwnerConflict:      uint64Ptr(2),
+		AnchorsRemoved:     uint64Ptr(0),
+		CgroupReadEmpty:    nil,
+		QueueRejected:      uint64Ptr(5),
+		BindDeferred:       uint64Ptr(3),
+		BindResolved:       uint64Ptr(3),
+		BindRejected:       nil,
+		BindExpired:        nil,
+		BindIgnored:        uint64Ptr(0),
+		LateAdoptRejected:  uint64Ptr(1),
+		TombstoneDepth:     uint64Ptr(4),
+		DeadMemberRejected: nil,
+		DeadAnchorRejected: uint64Ptr(0),
 	}
 	checkGolden(t, "role_stats_table", render(t, FormatTable, Options{},
 		func(r Renderer, b *bytes.Buffer) error { return r.RoleStats(b, stats) }))
@@ -82,11 +91,39 @@ func TestGoldenContextStats(t *testing.T) {
 	stats := model.ContextStats{
 		CtxrootParentUnsettled: uint64Ptr(1),
 		UnknownUnregister:      uint64Ptr(2),
+		PendingDeferred:        uint64Ptr(3),
+		PendingResolved:        uint64Ptr(2),
+		PendingRejected:        uint64Ptr(0),
+		PendingExpired:         uint64Ptr(1),
+		PendingCancelled:       uint64Ptr(0),
+		PendingDepth:           uint64Ptr(1),
+		BindOrphaned:           uint64Ptr(0),
+		ExtraOrphaned:          uint64Ptr(0),
+		ParentMissing:          uint64Ptr(2),
+		LateRegister:           uint64Ptr(1),
+		LateBind:               uint64Ptr(0),
+		DuplicateContext:       uint64Ptr(1),
+		OwnershipConflict:      uint64Ptr(0),
+		TombstoneHits:          uint64Ptr(9),
+		TombstoneDepth:         uint64Ptr(1),
 	}
 	checkGolden(t, "context_stats_table", render(t, FormatTable, Options{},
 		func(r Renderer, b *bytes.Buffer) error { return r.ContextStats(b, stats) }))
 	checkGolden(t, "context_stats_json", render(t, FormatJSON, Options{},
 		func(r Renderer, b *bytes.Buffer) error { return r.ContextStats(b, stats) }))
+}
+
+func TestGoldenProcessStats(t *testing.T) {
+	stats := model.ProcessStats{
+		PidReused:      uint64Ptr(0),
+		StaleAdd:       nil,
+		ParentMissing:  uint64Ptr(2),
+		TombstoneDepth: uint64Ptr(4),
+	}
+	checkGolden(t, "process_stats_table", render(t, FormatTable, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.ProcessStats(b, stats) }))
+	checkGolden(t, "process_stats_json", render(t, FormatJSON, Options{},
+		func(r Renderer, b *bytes.Buffer) error { return r.ProcessStats(b, stats) }))
 }
 
 func TestGoldenWhich(t *testing.T) {
@@ -172,16 +209,46 @@ func TestGoldenStatus(t *testing.T) {
 		ExceptionContextCount: &exception,
 		ExtraContextCount:     &extra,
 		RoleStats: &model.RoleStats{
-			Rejected:        uint64Ptr(0),
-			UnknownInstance: nil,
-			OwnerConflict:   uint64Ptr(2),
-			AnchorsRemoved:  uint64Ptr(0),
-			CgroupReadEmpty: nil,
-			QueueRejected:   uint64Ptr(5),
+			Rejected:           uint64Ptr(0),
+			UnknownInstance:    nil,
+			OwnerConflict:      uint64Ptr(2),
+			AnchorsRemoved:     uint64Ptr(0),
+			CgroupReadEmpty:    nil,
+			QueueRejected:      uint64Ptr(5),
+			BindDeferred:       uint64Ptr(3),
+			BindResolved:       uint64Ptr(3),
+			BindRejected:       nil,
+			BindExpired:        nil,
+			BindIgnored:        uint64Ptr(0),
+			LateAdoptRejected:  uint64Ptr(1),
+			TombstoneDepth:     uint64Ptr(4),
+			DeadMemberRejected: nil,
+			DeadAnchorRejected: uint64Ptr(0),
 		},
 		ContextStats: &model.ContextStats{
 			CtxrootParentUnsettled: uint64Ptr(1),
 			UnknownUnregister:      uint64Ptr(2),
+			PendingDeferred:        uint64Ptr(3),
+			PendingResolved:        uint64Ptr(2),
+			PendingRejected:        uint64Ptr(0),
+			PendingExpired:         uint64Ptr(1),
+			PendingCancelled:       uint64Ptr(0),
+			PendingDepth:           uint64Ptr(1),
+			BindOrphaned:           uint64Ptr(0),
+			ExtraOrphaned:          uint64Ptr(0),
+			ParentMissing:          uint64Ptr(2),
+			LateRegister:           uint64Ptr(1),
+			LateBind:               uint64Ptr(0),
+			DuplicateContext:       uint64Ptr(1),
+			OwnershipConflict:      uint64Ptr(0),
+			TombstoneHits:          uint64Ptr(9),
+			TombstoneDepth:         uint64Ptr(1),
+		},
+		ProcessStats: &model.ProcessStats{
+			PidReused:      uint64Ptr(0),
+			StaleAdd:       nil,
+			ParentMissing:  uint64Ptr(2),
+			TombstoneDepth: uint64Ptr(4),
 		},
 	}
 	checkGolden(t, "status_table", render(t, FormatTable, Options{},

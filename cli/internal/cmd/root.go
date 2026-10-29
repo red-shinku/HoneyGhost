@@ -57,6 +57,7 @@ func NewRootCommand(app *App, info BuildInfo) *cobra.Command {
 	root.AddCommand(
 		newRoleCommand(app),
 		newContextCommand(app),
+		newProcessCommand(app),
 		newEventsCommand(app),
 		newStatusCommand(app),
 		newVersionCommand(info),

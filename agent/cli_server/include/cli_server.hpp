@@ -25,7 +25,8 @@ void InstallCliServerDeps(const CLIServerDeps& deps);
  * @param list 装配方传给 components::RunApplication 的组件表
  * @note
  * 登记之后静态配置里的 cli-server / cli-role-service / cli-context-service /
- * cli-runtime-service 才有组件可实例化（未登记的键会以「no component with such
+ * cli-process-service / cli-runtime-service 才有组件可实例化（未登记的键会以
+ * 「no component with such
  * name is registered」报错）
  * @note 服务组件在构造期向 grpc-server 注册自己，且构造期经 FindComponent 取用
  * cli-server。服务组件还依赖 gRPC 的中间件管线，故装配方须先把

@@ -63,10 +63,12 @@ func TestConvertUint32s(t *testing.T) {
 
 func TestConvertRoleStatsCopiesOptionalFields(t *testing.T) {
 	value := uint64(3)
+	deferred := uint64(7)
 	in := &clisv.RM_GetStatsResponse{
 		Rejected:        &value,
 		UnknownInstance: nil,
 		OwnerConflict:   &value,
+		BindDeferred:    &deferred,
 	}
 	got := convertRoleStats(in)
 	if got.Rejected == nil || *got.Rejected != 3 {
@@ -75,9 +77,17 @@ func TestConvertRoleStatsCopiesOptionalFields(t *testing.T) {
 	if got.UnknownInstance != nil {
 		t.Errorf("UnknownInstance = %v, want nil", got.UnknownInstance)
 	}
+	if got.BindDeferred == nil || *got.BindDeferred != 7 {
+		t.Errorf("BindDeferred = %v, want 7", got.BindDeferred)
+	}
+	if got.BindResolved != nil {
+		t.Errorf("BindResolved = %v, want nil", got.BindResolved)
+	}
 	value = 9
-	if *got.Rejected != 3 {
-		t.Errorf("Rejected aliases proto value: got %d, want 3", *got.Rejected)
+	deferred = 9
+	if *got.Rejected != 3 || *got.BindDeferred != 7 {
+		t.Errorf("stats alias proto values: got %d/%d, want 3/7",
+			*got.Rejected, *got.BindDeferred)
 	}
 }
 
@@ -85,6 +95,8 @@ func TestConvertContextStats(t *testing.T) {
 	in := &clisv.CM_GetStatsResponse{
 		CtxrootParentUnsettled: 1,
 		UnknownUnregister:      2,
+		PendingDepth:           3,
+		TombstoneHits:          4,
 	}
 	got := convertContextStats(in)
 	if got.CtxrootParentUnsettled == nil || *got.CtxrootParentUnsettled != 1 {
@@ -92,6 +104,31 @@ func TestConvertContextStats(t *testing.T) {
 	}
 	if got.UnknownUnregister == nil || *got.UnknownUnregister != 2 {
 		t.Errorf("UnknownUnregister = %v, want 2", got.UnknownUnregister)
+	}
+	if got.PendingDepth == nil || *got.PendingDepth != 3 {
+		t.Errorf("PendingDepth = %v, want 3", got.PendingDepth)
+	}
+	if got.TombstoneHits == nil || *got.TombstoneHits != 4 {
+		t.Errorf("TombstoneHits = %v, want 4", got.TombstoneHits)
+	}
+}
+
+func TestConvertProcessStats(t *testing.T) {
+	value := uint64(4)
+	in := &clisv.PM_GetStatsResponse{
+		PidReused:      &value,
+		TombstoneDepth: &value,
+	}
+	got := convertProcessStats(in)
+	if got.PidReused == nil || *got.PidReused != 4 {
+		t.Errorf("PidReused = %v, want 4", got.PidReused)
+	}
+	if got.StaleAdd != nil {
+		t.Errorf("StaleAdd = %v, want nil", got.StaleAdd)
+	}
+	value = 9
+	if *got.PidReused != 4 {
+		t.Errorf("PidReused aliases proto value: got %d, want 4", *got.PidReused)
 	}
 }
 
