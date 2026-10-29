@@ -89,6 +89,14 @@ target_link_libraries(test_init_coordinator PRIVATE
     hng_assembly hng_role_filter)
 add_test(NAME test_init_coordinator COMMAND test_init_coordinator)
 
+# 装配层生命周期：不加载探针、不连角色源，无 IO / 无特权
+add_executable(test_assembly test_assembly.cc)
+target_link_libraries(test_assembly PRIVATE hng_assembly)
+add_test(NAME test_assembly COMMAND test_assembly)
+
+# 可执行目标的用法输出：不阻塞信号、不构造装配层
+add_test(NAME hng_agent_help COMMAND hng_agent --help)
+
 # 通知队列（公共件，header-only）：无 IO / 无特权
 add_executable(test_notification_queue test_notification_queue.cc)
 target_include_directories(test_notification_queue PRIVATE ${HNG_SOURCE_DIR})
@@ -178,6 +186,16 @@ if(TARGET hng_cli_server)
     target_link_libraries(e2e_cli_server PRIVATE hng_cli_server userver::grpc)
     add_test(NAME e2e_cli_server COMMAND e2e_cli_server)
     set_tests_properties(e2e_cli_server PROPERTIES TIMEOUT 120)
+
+    # 真实 agent：子进程跑 hng_agent，父进程断言查询面与两种停机路径；
+    # 需要 /proc 与 /tmp，无特权
+    add_executable(e2e_agent_cli e2e_agent_cli.cc)
+    target_link_libraries(e2e_agent_cli PRIVATE hng_cli_server userver::grpc)
+    add_test(NAME e2e_agent_cli COMMAND e2e_agent_cli $<TARGET_FILE:hng_agent>)
+    # 就绪判定读 "--no-cli" 模式的 info 日志，固定级别避免宿主环境覆盖
+    set_tests_properties(e2e_agent_cli PROPERTIES
+        TIMEOUT 120
+        ENVIRONMENT "HNG_LOG_LEVEL=info")
 endif()
 
 # 控制平面的角色关系表：纯内存，无 IO / 无特权
@@ -190,6 +208,11 @@ add_executable(test_component_handles test_component_handles.cc)
 target_link_libraries(test_component_handles PRIVATE
     hng_process_manager hng_context_manager hng_control_plane)
 add_test(NAME test_component_handles COMMAND test_component_handles)
+
+# 控制面聚合句柄：装配三组件、服务取用、名额互斥与释放后重建，无 IO / 无特权
+add_executable(test_control_plane_aggregate test_control_plane_aggregate.cc)
+target_link_libraries(test_control_plane_aggregate PRIVATE hng_control_plane)
+add_test(NAME test_control_plane_aggregate COMMAND test_control_plane_aggregate)
 
 # 控制平面的角色管理器：队列与消费线程，cgroup 读取走注入点，无特权
 add_executable(test_role_manager test_role_manager.cc)
@@ -312,3 +335,16 @@ add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
 # 公共头独立编译：不提供骨架替身或 libbpf 的 include 路径。
 add_library(test_collector_public_header OBJECT test_collector_public_header.cc)
 target_include_directories(test_collector_public_header PRIVATE ${HNG_SOURCE_DIR})
+
+# 组件工厂的存活名额契约：采集组件随目标存在，其余组件始终可测。
+add_executable(test_component_factories test_component_factories.cc)
+target_link_libraries(test_component_factories PRIVATE
+    hng_semantic hng_role_filter hng_runtime_engine
+    hng_process_manager hng_context_manager hng_control_plane
+    hng_role_discovery_component)
+if(TARGET hng_collector)
+    target_link_libraries(test_component_factories PRIVATE hng_collector)
+    target_compile_definitions(test_component_factories
+        PRIVATE HNG_HAVE_COLLECTOR=1)
+endif()
+add_test(NAME test_component_factories COMMAND test_component_factories)

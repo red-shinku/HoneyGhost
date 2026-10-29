@@ -3,7 +3,7 @@
  * @brief 配置边界、标签策略、成员刷新、重试及消费线程的单元测试。
  * @author inless427
  */
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/src/role_filter.hpp"
 #include "agent/role_filter/src/role_filter_state.hpp"
 #include <condition_variable>
 #include <cstdio>

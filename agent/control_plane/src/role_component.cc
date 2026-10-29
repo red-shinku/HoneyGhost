@@ -1,14 +1,27 @@
 #include "agent/control_plane/include/role_component.hpp"
 
+#include <atomic>
 #include <utility>
 
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/src/role_manager.hpp"
+#include "agent/util/include/single_instance_guard.hpp"
 
 namespace hng {
 
 struct RoleComponent::Impl {
-    explicit Impl(RoleManagerProbe probe) : manager(std::move(probe)) {}
+    /**
+     * @brief 先占用存活名额，再把探针转交角色管理器。
+     * @param probe cgroup 读取与存活核对的注入点
+     * @param taken 本创建方法的存活标志
+     * @throws std::logic_error 名额已被占用
+     */
+    Impl(RoleManagerProbe probe, std::atomic<bool>& taken)
+        : guard(taken, "RoleComponent"), manager(std::move(probe))
+    {
+    }
 
+    hng::detail::SingleInstanceGuard guard;
     RoleManager manager;
 };
 
@@ -71,12 +84,15 @@ void RoleComponent::run() { impl_->manager.run(); }
 
 void RoleComponent::stop() { impl_->manager.stop(); }
 
-std::unique_ptr<RoleComponent> make_role_component(RoleComponentOptions options)
+std::unique_ptr<RoleComponent> ControlPlaneFactory::create_role(
+    RoleComponentOptions options)
 {
+    static std::atomic<bool> taken{false};
+
     RoleManagerProbe probe;
     probe.read_members = std::move(options.read_members);
     probe.is_exited    = std::move(options.is_exited);
-    auto impl          = std::make_unique<RoleComponent::Impl>(std::move(probe));
+    auto impl = std::make_unique<RoleComponent::Impl>(std::move(probe), taken);
     return std::unique_ptr<RoleComponent>(new RoleComponent(std::move(impl)));
 }
 

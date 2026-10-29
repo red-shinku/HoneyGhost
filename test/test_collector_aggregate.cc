@@ -2,7 +2,7 @@
  * @file test_collector_aggregate.cc
  * @brief 采集聚合的 epoll 唤醒、按线预算、停机与排空，无 libbpf / 无特权。
  */
-#include "agent/collector/include/collector.hpp"
+#include "agent/collector/src/collector.hpp"
 
 #include <sys/eventfd.h>
 #include <unistd.h>

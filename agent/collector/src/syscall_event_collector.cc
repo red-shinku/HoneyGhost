@@ -2,7 +2,7 @@
  * @file syscall_event_collector.cc
  * @brief 系统调用事件采集线：ringbuf 资源、探针挂载与按预算消费。
  */
-#include "agent/collector/include/collector.hpp"
+#include "agent/collector/src/collector.hpp"
 #include "kernel/syscalls.skel.h"
 
 #include <bpf/libbpf_version.h>

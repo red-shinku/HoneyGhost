@@ -15,7 +15,7 @@
 #include "agent/control_plane/include/process_seed_service.hpp"
 #include "agent/control_plane/include/role_seed_service.hpp"
 #include "agent/event_data/include/process_seed.hpp"
-#include "agent/role_filter/include/role_filter.hpp"
+#include "agent/role_filter/include/role_filter_component.hpp"
 
 namespace hng {
 

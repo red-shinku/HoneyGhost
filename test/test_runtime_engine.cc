@@ -357,7 +357,7 @@ void run_reject_subscribe_after_stop()
 
     CHECK(!ack.called.load(), "订阅从未成立，不会有回执");
 
-    const RuntimeEngineStats s = env.engine.stats();
+    const hng::RuntimeEngineStats s = env.engine.stats();
     CHECK(s.queue_rejected == 1, "被拒的命令计数");
     CHECK(s.peak_cli_streams == 0, "被拒的命令不改变订阅表");
 }
@@ -459,7 +459,7 @@ void run_stats_unsettled()
     env.engine.stop();
     engine_thread.join();
 
-    const RuntimeEngineStats s = env.engine.stats();
+    const hng::RuntimeEngineStats s = env.engine.stats();
     CHECK(sys.calls.load() == kUnsettled + kSettled, "事件全部投递");
     CHECK(s.unsettled_events == static_cast<uint64_t>(kUnsettled),
           "归属未落定按事件计数，一条事件最多计一次");

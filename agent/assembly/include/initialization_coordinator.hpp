@@ -11,6 +11,7 @@
 #define HNG_ASSEMBLY_INITIALIZATION_COORDINATOR_HPP_
 
 #include <chrono>
+#include <functional>
 
 #include "agent/assembly/include/init_report.hpp"
 
@@ -22,7 +23,7 @@ namespace hng {
 class ContextComponent;
 class ProcessComponent;
 class RoleComponent;
-class RoleFilter;
+class RoleFilterComponent;
 
 /**
  * @brief 初始化协调的可调参数
@@ -34,12 +35,27 @@ struct InitializationOptions {
 };
 
 /**
+ * @brief 初始化期注入的探针挂载与快照读取回调
+ * @details 两个回调都在名单初始播种之后、PM seed 之前调用：非空时先调用
+ *          attach_probe，再调用 read_snapshot。
+ */
+struct InitializationIO final {
+    /// @brief 名单播种后、读快照前挂载探针；空表示不挂载；返回 false 表示失败
+    std::function<bool()> attach_probe;
+    /// @brief 挂载探针后读取 /proc 快照；不得为空
+    std::function<ProcessSnapshot()> read_snapshot;
+};
+
+/**
  * @brief 按固定顺序执行一次初始化写入并聚合报告
- * @details 顺序：角色源屏障 → RM drain → RoleFilter 初始名单 → 读快照 →
- *          PM seed → RM drain 与对账 → RoleFilter 应用成员通知 → CM seed →
- *          名单统计。任何初始化写入被拒即停止后续写入并把总状态置为 FAILED。
+ * @details 顺序：角色源屏障 → RM drain 初始角色事件 → RoleFilterComponent
+ *          初始名单播种 → 挂载探针 → 读快照 → PM seed → RM drain 与对账 →
+ *          RoleFilterComponent 应用成员通知 → CM seed → 名单统计。attach_probe
+ *          返回 false 时抛 std::runtime_error 终止初始化。任何初始化写入被拒
+ *          即停止后续写入并把总状态置为 FAILED。
  * @note PM/CM/RM 的 seed 与 reconcile 各只调用一次，故只能在组件仍为
- *       CONSTRUCTED 时调用；RoleFilter 不在 CONSTRUCTED 时播种，不会因此失败。
+ *       CONSTRUCTED 时调用；RoleFilterComponent 不在 CONSTRUCTED 时播种，
+ *       不会因此失败。
  *       协调器不启动组件线程，也不注册 sink；接线由装配方在调用前完成。
  * @see hng::InitReport
  */
@@ -59,27 +75,28 @@ class InitializationCoordinator {
     InitializationCoordinator(ProcessComponent& process,
                               ContextComponent& context, RoleComponent& role,
                               ::ContextMaintainer& maintainer,
-                              RoleFilter* role_filter,
+                              RoleFilterComponent* role_filter,
                               ::RoleSourceBarrier* role_barrier,
                               InitializationOptions options = {});
 
     /**
      * @brief 执行一次初始化
-     * @param snapshot 本次 /proc 快照；proc_available 为 false 时忽略其内容
+     * @param io 探针挂载与快照读取回调
      * @return 各步骤的落地统计与聚合状态
      * @pre 三个控制面组件均为 CONSTRUCTED；各只调用一次
+     * @pre read_snapshot 非空
      * @pre 角色发现器已上报角色源结论或已超时，且没有组件消费线程在运行
      * @note 组件写入被拒只体现在报告与 FAILED 状态上；组件或查询抛出的异常
      *       按原样传播，由装配方按启动失败处理
      */
-    InitReport run(const ProcessSnapshot& snapshot);
+    InitReport run(const InitializationIO& io);
 
    private:
     ProcessComponent& process_;
     ContextComponent& context_;
     RoleComponent& role_;
     ::ContextMaintainer& maintainer_;
-    RoleFilter* role_filter_;
+    RoleFilterComponent* role_filter_;
     ::RoleSourceBarrier* role_barrier_;
     InitializationOptions options_;
 };

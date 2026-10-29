@@ -19,6 +19,8 @@
 
 namespace hng {
 
+class ControlPlaneFactory;
+
 /**
  * @brief 上下文管理组件
  * @details 提供 context 查询、注册与更新服务，并转发组件的生命周期。组件
@@ -73,14 +75,10 @@ class ContextComponent final : public hng::Component {
 
     explicit ContextComponent(std::unique_ptr<Impl> impl);
 
-    friend std::unique_ptr<ContextComponent> make_context_component();
+    friend class ControlPlaneFactory;
 
     std::unique_ptr<Impl> impl_;
 };
-
-/// @brief 构造上下文管理组件
-/// @return 状态为 CONSTRUCTED 的组件；服务接口可直接取用
-std::unique_ptr<ContextComponent> make_context_component();
 
 }  // namespace hng
 

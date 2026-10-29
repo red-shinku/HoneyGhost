@@ -80,6 +80,7 @@ add_library(hng_semantic STATIC
     agent/semantic/src/path/path_rule.cc
     agent/semantic/src/path/token_validator.cc
     agent/semantic/src/semantic.cc
+    agent/semantic/src/semantic_component.cc
     agent/semantic/src/semantic_file.cc
     agent/semantic/src/semantic_syscall.cc
 )
@@ -213,13 +214,40 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
 endif()
 
 # ============================================================
-# 控制平面（角色关系表 + 角色管理器 + 角色组件句柄）
+# 角色发现组件（工厂 + 运行期句柄）
+#
+# 包装 systemd 与 containerd 两个发现源。可用性宏只对本目标 PRIVATE，不进入
+# 公共头；源未编入构建时对应工厂方法返回空指针。
+# ============================================================
+add_library(hng_role_discovery_component STATIC
+    agent/role_discovery/src/role_discovery_component.cc
+)
+target_include_directories(hng_role_discovery_component PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_role_discovery_component PUBLIC hng_role_discovery)
+if(TARGET hng_role_systemd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_systemd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_SYSTEMD=1)
+endif()
+if(TARGET hng_role_containerd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_containerd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_CONTAINERD=1)
+endif()
+
+# ============================================================
+# 控制平面（角色关系表 + 角色管理器 + 角色组件句柄 + 聚合句柄）
 #
 # 依赖角色发现公共骨架（RoleEvent / RolePayload 类型与 RoleCgroupReader）。
-# 本目标纳入角色关系表、角色管理器与角色组件句柄；ProcessManager /
-# ContextManager 在各自目标中。
+# ProcessManager / ContextManager 在各自目标中；聚合句柄经链接依赖取用，
+# 装配三个组件后完成控制面内部接线。
 # ============================================================
 add_library(hng_control_plane STATIC
+    agent/control_plane/src/control_plane.cc
     agent/control_plane/src/role_component.cc
     agent/control_plane/src/role_label_builder.cc
     agent/control_plane/src/role_manager.cc
@@ -228,7 +256,11 @@ add_library(hng_control_plane STATIC
 target_include_directories(hng_control_plane PUBLIC
     ${HNG_SOURCE_DIR}
 )
-target_link_libraries(hng_control_plane PUBLIC hng_role_discovery)
+target_link_libraries(hng_control_plane PUBLIC
+    hng_role_discovery
+    hng_process_manager
+    hng_context_manager
+)
 
 # ============================================================
 # 控制平面（进程管理器）
@@ -275,6 +307,7 @@ add_subdirectory(agent/role_filter)
 # ============================================================
 add_library(hng_runtime_engine STATIC
     agent/runtime_engine/src/runtime_engine.cc
+    agent/runtime_engine/src/runtime_engine_component.cc
     agent/runtime_engine/src/runtime_event_dispatcher.cc
     agent/runtime_engine/src/runtime_packaging.cc
     agent/runtime_engine/src/runtime_pipeline.cc
@@ -290,10 +323,20 @@ target_link_libraries(hng_runtime_engine PUBLIC
 # ============================================================
 # 装配层
 #
-# 阶段 0 只建立构建目标；初始化协调器与各组件初始化器在后续阶段接入。
-# 放在运行时引擎之后，供后续阶段链接各模块目标。
+# 构造组件、跨模块接线、线程与启停顺序；初始化协调器与 /proc 快照在
+# 本目标内。放在运行时引擎之后，以便链接各模块目标。
 # ============================================================
 add_subdirectory(agent/assembly)
+
+# ============================================================
+# 节点代理可执行目标
+#
+# 参数解析、角色过滤配置加载、信号处理与装配层启停；CLI 服务端编入构建时
+# 一并接入。
+# ============================================================
+add_executable(hng_agent agent/main.cc)
+target_link_libraries(hng_agent PRIVATE hng_assembly)
+target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
 
 # ============================================================
 # CLI 服务端
@@ -325,6 +368,11 @@ if(HNG_ENABLE_CLI_SERVER)
     endif()
 
     add_subdirectory(agent/cli_server)
+
+    if(TARGET hng_agent)
+        target_link_libraries(hng_agent PRIVATE hng_cli_server)
+        target_compile_definitions(hng_agent PRIVATE HNG_HAVE_CLI_SERVER=1)
+    endif()
 endif()
 
 # ============================================================

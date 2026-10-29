@@ -6,44 +6,17 @@
 #ifndef HNG_ROLE_FILTER_HPP_
 #define HNG_ROLE_FILTER_HPP_
 #include <atomic>
-#include <chrono>
-#include <cstdint>
-#include <functional>
 #include <memory>
 #include <vector>
 #include "agent/control_plane/include/role_lifecycle_sink.hpp"
 #include "agent/control_plane/include/role_service.hpp"
-#include "agent/role_filter/include/process_filter_map.hpp"
-#include "agent/role_filter/include/role_filter_policy.hpp"
-#include "agent/util/include/component.hpp"
+#include "agent/role_filter/include/role_filter_component.hpp"
 
 namespace hng {
 
 namespace detail {
 class RoleFilterState;
 }
-
-/** @brief 进程身份存活状态；UNKNOWN 不能作为撤销许可的依据。 */
-enum class ProcessLiveness { ALIVE, DEAD, UNKNOWN };
-
-/** @brief 刷新周期与可替换的存活检查。 */
-struct RoleFilterOptions {
-    std::chrono::milliseconds refresh_interval{
-        1000};  ///< 必须为正，默认每秒刷新。
-    /** @brief 空函数时通过 /proc 核对 PID 和启动时间；UNKNOWN 保留原记录。 */
-    std::function<ProcessLiveness(Process)> liveness;
-};
-
-/** @brief 各字段独立读取的统计结果，不保证来自同一刷新时刻。 */
-struct RoleFilterStats {
-    uint64_t roles = 0;  ///< 上次刷新结束时记录的角色数，包含不关注的角色。
-    uint64_t applied_processes = 0;  ///< 已确认成功同步到所有 map 的进程数。
-    uint64_t map_errors        = 0;  ///< 累计 map 操作错误次数。
-    uint64_t lookup_errors     = 0;  ///< 累计查询或存活检查异常次数。
-    uint64_t empty_members     = 0;  ///< 累计关注角色返回空成员集合的次数。
-    uint64_t queue_rejected    = 0;  ///< 停止后拒绝的入队请求数。
-    int last_map_error         = 0;  ///< 最近一次 map 错误值，初始为零。
-};
 
 /**
  * @brief 由角色通知和周期刷新驱动的进程名单维护器。
@@ -84,13 +57,15 @@ class RoleFilter final : public ::RoleLifecycleSink, public hng::Component {
     void set_supervision_service(::RoleSupervisionService* service);
     /**
      * @brief 用 RoleManager 当前角色全集播种第一份名单，并置 READY。
-     * @pre 尚未 run()；RoleManager 已完成初始角色落地（drain 与 reconcile）
+     * @pre 尚未 run()；RoleManager 已完成初始角色 drain
      * @pre map 后端已由采集器 prepare() 后的空 map fd 创建
      * @note 只调用一次；状态不是 CONSTRUCTED 时为空操作。
      * @note 对每个角色投递 UPDATE 任务、对可取得的锚点投递 MEMBERS 任务，
      *       再同步 drain()；不启动线程。成员仍由 refresh() 经
      *       members(roleID) 重新枚举，不复制 RoleManager 内部表。
      *       map 写入失败保留 uncertain_ 并计数，不阻止 READY，后续刷新重试。
+     * @note 协调器中 PM seed 之后的 RM reconcile 结果经 RoleManager 的成员与
+     *       生命周期通知补入名单，不在播种时读取。
      * @see RoleFilter::run
      */
     void seed_initial_roles();

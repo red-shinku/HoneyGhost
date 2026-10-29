@@ -2,7 +2,7 @@
  * @file collector.cc
  * @brief 采集聚合的 epoll 驱动与停机实现。
  */
-#include "agent/collector/include/collector.hpp"
+#include "agent/collector/src/collector.hpp"
 #include "agent/util/include/log.hpp"
 
 #include <cerrno>

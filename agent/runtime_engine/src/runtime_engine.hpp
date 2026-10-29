@@ -15,20 +15,11 @@
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/runtime_engine/include/runtime_decision_sink.hpp"
+#include "agent/runtime_engine/include/runtime_engine_component.hpp"
 #include "agent/runtime_engine/include/subscriber_reg_service.hpp"
 #include "agent/runtime_engine/src/runtime_event_dispatcher.hpp"
 #include "agent/runtime_engine/src/runtime_pipeline.hpp"
 #include "agent/util/include/notification_queue.hpp"
-
-/// @brief 运行时引擎的观测快照
-struct RuntimeEngineStats {
-    /// 累计：归属未落定（roleID 或 contextID 为 0）的事件数，一条事件最多计一次
-    uint64_t unsettled_events = 0;
-    /// 峰值：CLI 订阅表同时存在的订阅流数
-    uint64_t peak_cli_streams = 0;
-    /// 累计：stop() 之后的订阅 / 注销命令入队被拒绝
-    uint64_t queue_rejected   = 0;
-};
 
 /**
  * @brief 驱动语义事件流、向订阅者分发的顶层组件
@@ -77,7 +68,7 @@ class RuntimeEngine final : public SubscriberRegService {
     void unsubscribe(RuntimeEventSink* sink) override;
 
     /// @brief 异常态观测快照；可从任意线程调用
-    RuntimeEngineStats stats() const;
+    hng::RuntimeEngineStats stats() const;
 
    private:
     /// 一轮最多取出的事件数：与语义队列条数（四条）一致

@@ -13,6 +13,7 @@ target_link_libraries(hng_cli_proto PUBLIC hng_event_data)
 
 add_library(hng_cli_server STATIC
     src/cli_server.cc
+    src/cli_server_runner.cc
     src/cli_context_query_service.cc
     src/cli_role_query_service.cc
     src/cli_runtime_service.cc

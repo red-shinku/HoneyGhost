@@ -14,6 +14,7 @@
  * @date 2026.10.25
  */
 
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/src/process_manager.hpp"
 
@@ -385,7 +386,7 @@ void run_backlog_add()
 
 void run_component_seed()
 {
-    auto component = hng::make_process_component();
+    auto component = hng::ControlPlaneFactory::create_process();
     CHECK(component->state() == hng::ComponentState::CONSTRUCTED,
           "组件初始应为 CONSTRUCTED");
 

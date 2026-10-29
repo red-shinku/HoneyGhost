@@ -1,12 +1,23 @@
 #include "agent/control_plane/include/context_component.hpp"
 
+#include <atomic>
 #include <utility>
 
+#include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/src/context_manager.hpp"
+#include "agent/util/include/single_instance_guard.hpp"
 
 namespace hng {
 
 struct ContextComponent::Impl {
+    /**
+     * @brief 先占用存活名额，再构造上下文管理器。
+     * @param taken 本创建方法的存活标志
+     * @throws std::logic_error 名额已被占用
+     */
+    explicit Impl(std::atomic<bool>& taken) : guard(taken, "ContextComponent") {}
+
+    hng::detail::SingleInstanceGuard guard;
     ContextManager manager;
 };
 
@@ -56,9 +67,10 @@ void ContextComponent::run() { impl_->manager.run(); }
 
 void ContextComponent::stop() { impl_->manager.stop(); }
 
-std::unique_ptr<ContextComponent> make_context_component()
+std::unique_ptr<ContextComponent> ControlPlaneFactory::create_context()
 {
-    auto impl = std::make_unique<ContextComponent::Impl>();
+    static std::atomic<bool> taken{false};
+    auto impl = std::make_unique<ContextComponent::Impl>(taken);
     return std::unique_ptr<ContextComponent>(
         new ContextComponent(std::move(impl)));
 }

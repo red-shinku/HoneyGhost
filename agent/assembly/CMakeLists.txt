@@ -18,6 +18,15 @@ target_link_libraries(hng_assembly PUBLIC
     hng_control_plane
     hng_context_maintainer
     hng_role_filter
+    hng_semantic
+    hng_runtime_engine
+    hng_role_discovery_component
+    Threads::Threads
 )
+# 采集器缺失时装配层以 --no-collect 运行，可用性宏只在本目标内生效
+if(TARGET hng_collector)
+    target_link_libraries(hng_assembly PUBLIC hng_collector)
+    target_compile_definitions(hng_assembly PRIVATE HNG_HAVE_COLLECTOR=1)
+endif()
 target_link_libraries(hng_assembly PRIVATE hng_log)
 target_compile_definitions(hng_assembly PRIVATE HNG_LOG_TAG="init")
