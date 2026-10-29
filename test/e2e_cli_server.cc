@@ -239,6 +239,16 @@ class ProcessStub final : public ProcessLookupService {
         }
         return std::nullopt;
     }
+
+    ProcessManagerStats stats() const override
+    {
+        ProcessManagerStats s;
+        s.pid_reused      = 1;
+        s.stale_add       = 2;
+        s.parent_missing  = 3;
+        s.tombstone_depth = 4;
+        return s;
+    }
 };
 
 /// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件

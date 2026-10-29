@@ -1,7 +1,7 @@
 /**
  * @file process_stats.hpp
  * @brief 进程管理器的异常态观测快照
- * @details 供进程管理器的装配者与运维端读取。
+ * @details 供查询面接口 ProcessLookupService::stats() 与装配方读取。
  * @author red_shinku
  * @date 2026.10.24
  */
