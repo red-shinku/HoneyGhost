@@ -193,6 +193,7 @@ void run_booleans()
     CHECK(parse("[s]\n").get_bool("s", "b", true), "缺键应返回默认值");
     REJECTS(read_bool("yes"), "布尔值");
     REJECTS(read_bool(""), "布尔值");
+    REJECTS(read_bool("yes"), "s.b: 布尔值");
 }
 
 std::uint32_t read_uint(const std::string& value)
@@ -211,6 +212,7 @@ void run_uints()
     REJECTS(read_uint("-1"), "十进制");
     REJECTS(read_uint("12x"), "十进制");
     REJECTS(read_uint(""), "不能为空");
+    REJECTS(read_uint("-1"), "s.n: 无符号整数");
 }
 
 std::chrono::milliseconds read_duration(const std::string& value)
@@ -232,6 +234,7 @@ void run_durations()
     REJECTS(read_duration("s"), "ms、s、m 或 h");
     REJECTS(read_duration(""), "ms、s、m 或 h");
     REJECTS(read_duration("12.5s"), "十进制");
+    REJECTS(read_duration("10x"), "s.t: 时长");
     REJECTS(read_duration("18446744073709551616ms"), "溢出");
     REJECTS(read_duration("9223372036854775807h"), "溢出");
 }

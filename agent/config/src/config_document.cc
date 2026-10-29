@@ -148,7 +148,10 @@ bool ConfigDocument::get_bool(std::string_view section, std::string_view key,
     const auto* entry = find_entry(section, key);
     if (entry == nullptr) return default_value;
     const auto parsed = parse_boolean(entry->value);
-    if (!parsed) fail_at(entry->line, "布尔值应为 true、false、1 或 0");
+    if (!parsed) {
+        fail_at(entry->line, std::string(section) + "." + std::string(key) +
+                                 ": 布尔值应为 true、false、1 或 0");
+    }
     return *parsed;
 }
 
@@ -158,17 +161,19 @@ std::uint32_t ConfigDocument::get_uint(std::string_view section,
 {
     const auto* entry = find_entry(section, key);
     if (entry == nullptr) return default_value;
-    if (entry->value.empty()) fail_at(entry->line, "无符号整数不能为空");
+    const std::string label = std::string(section) + "." + std::string(key);
+    if (entry->value.empty())
+        fail_at(entry->line, label + ": 无符号整数不能为空");
     const std::string_view text = entry->value;
     std::uint64_t raw           = 0;
     const auto result =
         std::from_chars(text.data(), text.data() + text.size(), raw);
     if (result.ec == std::errc::result_out_of_range)
-        fail_at(entry->line, "无符号整数溢出");
+        fail_at(entry->line, label + ": 无符号整数溢出");
     if (result.ec != std::errc() || result.ptr != text.data() + text.size())
-        fail_at(entry->line, "无符号整数只能包含十进制数字");
+        fail_at(entry->line, label + ": 无符号整数只能包含十进制数字");
     if (raw > std::numeric_limits<std::uint32_t>::max())
-        fail_at(entry->line, "无符号整数溢出");
+        fail_at(entry->line, label + ": 无符号整数溢出");
     return static_cast<std::uint32_t>(raw);
 }
 
@@ -203,19 +208,21 @@ std::chrono::milliseconds ConfigDocument::get_duration(
                 break;
         }
     }
+    const std::string label = std::string(section) + "." + std::string(key);
     if (factor == 0 || digits == 0)
-        fail_at(entry->line, "时长应为无符号整数加 ms、s、m 或 h");
+        fail_at(entry->line, label + ": 时长应为无符号整数加 ms、s、m 或 h");
     const std::string_view text(value.data(), digits);
     std::uint64_t raw = 0;
     const auto result =
         std::from_chars(text.data(), text.data() + text.size(), raw);
     if (result.ec == std::errc::result_out_of_range)
-        fail_at(entry->line, "时长溢出");
+        fail_at(entry->line, label + ": 时长溢出");
     if (result.ec != std::errc() || result.ptr != text.data() + text.size())
-        fail_at(entry->line, "时长的数字部分只能包含十进制数字");
+        fail_at(entry->line, label + ": 时长的数字部分只能包含十进制数字");
     const auto max_milliseconds =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-    if (raw > max_milliseconds / factor) fail_at(entry->line, "时长溢出");
+    if (raw > max_milliseconds / factor)
+        fail_at(entry->line, label + ": 时长溢出");
     return std::chrono::milliseconds(static_cast<std::int64_t>(raw * factor));
 }
 

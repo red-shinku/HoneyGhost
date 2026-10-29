@@ -78,7 +78,8 @@ class ConfigDocument final {
      * @param[in] key 键名。
      * @param[in] default_value 键缺失时的返回值。
      * @return 解析后的布尔值。
-     * @throws std::runtime_error 键存在但值为空或格式非法；消息附来源与行号。
+     * @throws std::runtime_error 键存在但值为空或格式非法；消息含来源、行号与
+     * `<节>.<键>`。
      */
     bool get_bool(std::string_view section, std::string_view key,
                   bool default_value) const;
@@ -90,7 +91,7 @@ class ConfigDocument final {
      * @param[in] default_value 键缺失时的返回值。
      * @return 解析后的整数，取值范围为 std::uint32_t。
      * @throws std::runtime_error 键存在但值为空、不是十进制数字或超出
-     * std::uint32_t 范围；消息附来源与行号。
+     * std::uint32_t 范围；消息含来源、行号与 `<节>.<键>`。
      */
     std::uint32_t get_uint(std::string_view section, std::string_view key,
                            std::uint32_t default_value) const;
@@ -103,7 +104,7 @@ class ConfigDocument final {
      * @param[in] default_value 键缺失时的返回值。
      * @return 解析后的时长。
      * @throws std::runtime_error 键存在但值为空、缺少或未知单位、数字非法或
-     * 溢出；消息附来源与行号。
+     * 溢出；消息含来源、行号与 `<节>.<键>`。
      */
     std::chrono::milliseconds get_duration(
         std::string_view section, std::string_view key,

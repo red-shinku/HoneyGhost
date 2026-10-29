@@ -182,6 +182,24 @@ int main(int argc, char** argv)
     if (!config.cli.socket_path.empty()) {
         cli_options.unix_socket_path = config.cli.socket_path;
     }
+    cli_options.config_path = config.cli.config_path;
+
+    PreparedCliServerConfig cli_config;
+    if (cli_enabled) {
+#ifdef HNG_HAVE_CLI_SERVER
+        try {
+            cli_config = prepare_cli_server_config(cli_options);
+        }
+        catch (const std::exception& error) {
+            HNG_LOG_ERROR("failed to prepare cli server config: {}",
+                          error.what());
+            return 1;
+        }
+#endif
+    }
+
+    const std::string& cli_socket =
+        cli_enabled ? cli_config.unix_socket_path : cli_options.unix_socket_path;
 
     HNG_LOG_INFO(
         "agent config: source {}, collect {}, systemd {}, containerd {}, "
@@ -190,7 +208,7 @@ int main(int argc, char** argv)
         options.collect, options.enable_systemd, options.enable_containerd,
         config.role_filter_config_path.empty() ? "<empty policy>"
                                                : config.role_filter_config_path,
-        cli_enabled, cli_options.unix_socket_path);
+        cli_enabled, cli_socket);
 
     // 构造装配层前阻塞信号，之后创建的线程继承该掩码
     sigset_t signals;
@@ -222,8 +240,8 @@ int main(int argc, char** argv)
             deps.process = services.process;
             deps.subs    = services.subscriber;
             HNG_LOG_INFO("starting cli server on unix socket {}",
-                         cli_options.unix_socket_path);
-            RunCliServer(deps, cli_options);
+                         cli_config.unix_socket_path);
+            RunCliServer(deps, cli_config);
 #endif
         }
         else {
