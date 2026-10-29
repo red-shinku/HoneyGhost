@@ -1,14 +1,15 @@
 /**
  * @file main.cc
  * @brief 节点代理的进程入口
- * @details 参数解析、角色过滤配置加载、信号处理、装配层启停，以及编入构建
- *          时的 CLI 服务端运行。
+ * @details 主配置文件与环境变量驱动的启动：参数解析、配置加载、角色过滤
+ *          配置加载、信号处理、装配层启停，以及编入构建时的 CLI 服务端运行。
  * @author red_shinku
  * @date 2026.10.27
  */
 
 #include "agent/assembly/include/assembly.hpp"
 #include "agent/cli_server/include/cli_server_runner.hpp"
+#include "agent/config/include/config_loader.hpp"
 
 #include "agent/role_filter/include/role_filter_config.hpp"
 #include "agent/util/include/log.hpp"
@@ -33,16 +34,10 @@ constexpr bool kCliCompiled = false;
 
 /// @brief 命令行解析结果
 struct Arguments {
-    /// 角色过滤配置文件路径；空表示使用空策略
-    std::string role_filter_config_path;
-    /// 装配层构造选项，命令行可覆盖其中字段
-    hng::AssemblyOptions options;
+    /// 主配置文件路径；空表示依次回退 HNG_CONFIG 与默认路径
+    std::string config_path;
     /// 是否请求打印用法
     bool help = false;
-    /// CLI 服务端的进程级运行参数
-    CLIServerOptions cli_options;
-    /// 是否经 --no-cli 关闭 CLI 服务端
-    bool cli_disabled = false;
 };
 
 /**
@@ -54,14 +49,9 @@ void print_usage(std::FILE* out)
     std::fprintf(
         out,
         "usage: hng_agent [options]\n"
-        "  --role-filter-config PATH  角色过滤配置；省略时拒绝普通事件采集\n"
-        "  --no-collect               不加载探针，只运行控制面与事件引擎\n"
-        "  --no-systemd               关闭 systemd 角色发现源\n"
-        "  --no-containerd            关闭 containerd 角色发现源\n"
-        "  --containerd-socket PATH   翻译进程的 Unix socket 路径\n"
-        "  --no-cli                   不启动 CLI 服务端\n"
-        "  --cli-socket PATH          覆盖 CLI 服务端的 Unix socket 路径\n"
-        "  -h, --help                 显示本说明并退出\n");
+        "  --config PATH  主配置文件；省略时依次取环境变量 HNG_CONFIG、\n"
+        "                 /etc/honeyghost/agent.conf\n"
+        "  -h, --help     显示本说明并退出\n");
 }
 
 /**
@@ -69,7 +59,7 @@ void print_usage(std::FILE* out)
  * @param argc 参数个数
  * @param argv 参数数组
  * @param args 解析结果
- * @return 解析成功为 true；未知参数或缺少取值为 false
+ * @return 解析成功为 true；缺少取值、空取值或未知参数为 false
  * @note --help 出现即返回，不再解析后续参数
  */
 bool parse_arguments(int argc, char** argv, Arguments& args)
@@ -81,44 +71,16 @@ bool parse_arguments(int argc, char** argv, Arguments& args)
             return true;
         }
 
-        if (arg == "--role-filter-config") {
+        if (arg == "--config") {
             if (i + 1 >= argc) {
-                HNG_LOG_ERROR("--role-filter-config requires a value");
+                HNG_LOG_ERROR("--config requires a value");
                 return false;
             }
-            args.role_filter_config_path = argv[++i];
-        }
-        else if (arg == "--containerd-socket") {
-            if (i + 1 >= argc) {
-                HNG_LOG_ERROR("--containerd-socket requires a value");
+            args.config_path = argv[++i];
+            if (args.config_path.empty()) {
+                HNG_LOG_ERROR("--config requires a non-empty value");
                 return false;
             }
-            args.options.containerd_socket_path = argv[++i];
-        }
-        else if (arg == "--no-collect") {
-            args.options.collect = false;
-        }
-        else if (arg == "--no-systemd") {
-            args.options.enable_systemd = false;
-        }
-        else if (arg == "--no-containerd") {
-            args.options.enable_containerd = false;
-        }
-        else if (arg == "--no-cli") {
-            args.cli_disabled = true;
-        }
-        else if (arg == "--cli-socket") {
-            if (i + 1 >= argc) {
-                HNG_LOG_ERROR("--cli-socket requires a value");
-                return false;
-            }
-            if (!kCliCompiled) {
-                HNG_LOG_ERROR(
-                    "--cli-socket unavailable: CLI server is not compiled in; "
-                    "rebuild with -DHNG_ENABLE_CLI_SERVER=ON");
-                return false;
-            }
-            args.cli_options.unix_socket_path = argv[++i];
         }
         else {
             HNG_LOG_ERROR("unknown argument: {}", arg);
@@ -169,24 +131,66 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    if (args.role_filter_config_path.empty()) {
+    const hng::ConfigEnvironment environment = hng::collect_environment();
+    hng::AgentConfigSource source;
+    hng::AgentConfig config;
+    try {
+        source = hng::resolve_agent_config_source(args.config_path, environment);
+        config = hng::load_agent_config(source, environment);
+    }
+    catch (const std::exception& error) {
+        HNG_LOG_ERROR("failed to load agent config: {}", error.what());
+        return 1;
+    }
+
+    // 未设置 cli.enabled 时取编译期结果
+    bool cli_enabled = kCliCompiled;
+    if (config.cli.enabled.has_value()) {
+        cli_enabled = *config.cli.enabled;
+    }
+    if (cli_enabled && !kCliCompiled) {
+        HNG_LOG_ERROR(
+            "cli.enabled is true but the CLI server is not compiled in; "
+            "rebuild with -DHNG_ENABLE_CLI_SERVER=ON");
+        return 1;
+    }
+
+    hng::AssemblyOptions options;
+    options.collect                = config.collector.enabled;
+    options.enable_systemd         = config.role_discovery.systemd;
+    options.enable_containerd      = config.role_discovery.containerd;
+    options.containerd_socket_path = config.role_discovery.containerd_socket_path;
+
+    if (config.role_filter_config_path.empty()) {
         HNG_LOG_WARN(
-            "no --role-filter-config given; the empty policy rejects "
+            "no role_filter.path configured; the empty policy rejects "
             "ordinary event collection");
     }
     else {
         try {
-            args.options.role_filter_config =
-                hng::load_role_filter_config(args.role_filter_config_path);
+            options.role_filter_config =
+                hng::load_role_filter_config(config.role_filter_config_path);
         }
         catch (const std::exception& error) {
             HNG_LOG_ERROR("failed to load role filter config {}: {}",
-                          args.role_filter_config_path, error.what());
+                          config.role_filter_config_path, error.what());
             return 1;
         }
     }
 
-    const bool cli_enabled = kCliCompiled && !args.cli_disabled;
+    CLIServerOptions cli_options;
+    if (!config.cli.socket_path.empty()) {
+        cli_options.unix_socket_path = config.cli.socket_path;
+    }
+
+    HNG_LOG_INFO(
+        "agent config: source {}, collect {}, systemd {}, containerd {}, "
+        "role filter {}, cli {}, cli socket {}",
+        source.path.empty() ? "<built-in defaults>" : source.path,
+        options.collect, options.enable_systemd, options.enable_containerd,
+        config.role_filter_config_path.empty() ? "<empty policy>"
+                                               : config.role_filter_config_path,
+        cli_enabled, cli_options.unix_socket_path);
 
     // 构造装配层前阻塞信号，之后创建的线程继承该掩码
     sigset_t signals;
@@ -195,7 +199,7 @@ int main(int argc, char** argv)
     }
 
     try {
-        hng::Assembly assembly(std::move(args.options));
+        hng::Assembly assembly(std::move(options));
         const hng::InitReport report = assembly.start();
         if (report.state == hng::InitState::FAILED) {
             HNG_LOG_ERROR("initialization failed; exiting");
@@ -218,8 +222,8 @@ int main(int argc, char** argv)
             deps.process = services.process;
             deps.subs    = services.subscriber;
             HNG_LOG_INFO("starting cli server on unix socket {}",
-                         args.cli_options.unix_socket_path);
-            RunCliServer(deps, args.cli_options);
+                         cli_options.unix_socket_path);
+            RunCliServer(deps, cli_options);
 #endif
         }
         else {

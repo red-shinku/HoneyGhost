@@ -348,7 +348,7 @@ add_subdirectory(agent/assembly)
 # 一并接入。
 # ============================================================
 add_executable(hng_agent agent/main.cc)
-target_link_libraries(hng_agent PRIVATE hng_assembly)
+target_link_libraries(hng_agent PRIVATE hng_assembly hng_config)
 target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
 
 # ============================================================

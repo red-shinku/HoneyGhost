@@ -1,11 +1,14 @@
 /**
  * @file e2e_agent_cli.cc
- * @brief 真实节点代理的端到端测试
+ * @brief 配置文件驱动的节点代理端到端测试
  * @details
- * 以子进程启动 hng_agent，父进程按进程级契约断言：
+ * 每个用例经 --config 指向自己生成的临时主配置文件，以子进程启动 hng_agent，
+ * 父进程按进程级契约断言：
  *  - CLI 模式：经 Unix socket 查询空系统的控制面，RPC 成功且不带数据；
  *    SIGTERM 后在期限内以 0 退出；
- *  - --no-cli 模式：日志出现 "agent started" 即就绪，SIGTERM 后以 0 退出。
+ *  - CLI 关闭模式（cli.enabled = false）：日志出现 "agent started" 即就绪，
+ *    SIGTERM 后以 0 退出；
+ *  - 旧命令行参数：进程以 1 退出，日志出现 "unknown argument"。
  * @note 不依赖测试框架；需要 /proc 与 /tmp，无特权要求。
  * @author red_shinku
  * @date 2026.10.28
@@ -55,18 +58,49 @@ constexpr char kAgentStarted[]       = "agent started";
 constexpr uint32_t kUnknownPid       = 999999;
 constexpr uint32_t kUnknownContextID = 999999;
 
-/// @brief 单个用例的 socket 与日志路径
+/// 旧命令行参数应在启动前被拒绝
+constexpr std::chrono::seconds kRejectTimeout{5};
+
+/// @brief 单个用例的 socket、日志与主配置文件路径
 struct Paths {
     std::string socket;
     std::string log;
+    std::string config;
 };
 
-/// @brief 生成 /tmp 下带进程号与后缀的 socket 与日志路径
+/// @brief 生成 /tmp 下带进程号与后缀的 socket、日志与主配置文件路径
 Paths MakePaths(const char* suffix)
 {
     const std::string prefix =
         "/tmp/hng-agent-e2e-" + std::to_string(::getpid()) + suffix;
-    return Paths{prefix + ".sock", prefix + ".log"};
+    return Paths{prefix + ".sock", prefix + ".log", prefix + ".conf"};
+}
+
+/**
+ * @brief 写出用例的主配置文件
+ * @param path 主配置文件路径
+ * @param socket CLI 服务端的 socket 路径
+ * @param cli_enabled [cli] enabled 的取值
+ * @return 写入成功为 true
+ */
+bool WriteAgentConfig(const std::string& path, const std::string& socket,
+                      bool cli_enabled)
+{
+    std::FILE* file = std::fopen(path.c_str(), "w");
+    if (file == nullptr) {
+        return false;
+    }
+    std::fprintf(file,
+                 "[collector]\n"
+                 "enabled = false\n"
+                 "[role_discovery]\n"
+                 "systemd = false\n"
+                 "containerd = false\n"
+                 "[cli]\n"
+                 "enabled = %s\n"
+                 "socket_path = %s\n",
+                 cli_enabled ? "true" : "false", socket.c_str());
+    return std::fclose(file) == 0;
 }
 
 /// @brief gRPC 的 deadline 走 system_clock，项目内的计时走 steady_clock
@@ -251,9 +285,10 @@ void RunQueryChecks(hng::clisv::RoleManagerService::Stub& role,
     }
 }
 
-/// @brief 成功时删除日志；失败时保留日志并打印
+/// @brief 删除主配置文件与成功时无用的日志；失败时保留日志并打印
 void FinishCase(const Paths& paths, int failures_before, bool printed)
 {
+    ::unlink(paths.config.c_str());
     if (g_fail == failures_before) {
         ::unlink(paths.log.c_str());
         return;
@@ -272,11 +307,15 @@ void RunCliCase(const std::string& executable)
 
     ::unlink(paths.socket.c_str());
     ::unlink(paths.log.c_str());
+    ::unlink(paths.config.c_str());
+    if (!WriteAgentConfig(paths.config, paths.socket, true)) {
+        CHECK(false, "agent config should be written");
+        FinishCase(paths, failures_before, false);
+        return;
+    }
 
     const pid_t child =
-        StartAgent({executable, "--no-collect", "--no-systemd", "--no-containerd",
-                    "--cli-socket", paths.socket},
-                   paths.log);
+        StartAgent({executable, "--config", paths.config}, paths.log);
     if (child < 0) {
         CHECK(false, "hng_agent should be spawned");
         FinishCase(paths, failures_before, false);
@@ -313,7 +352,7 @@ void RunCliCase(const std::string& executable)
     FinishCase(paths, failures_before, log_printed);
 }
 
-/// @brief 用例 B：--no-cli 模式的就绪日志与信号停机
+/// @brief 用例 B：CLI 关闭模式的就绪日志与信号停机
 void RunNoCliCase(const std::string& executable)
 {
     const int failures_before = g_fail;
@@ -321,10 +360,15 @@ void RunNoCliCase(const std::string& executable)
 
     ::unlink(paths.socket.c_str());
     ::unlink(paths.log.c_str());
+    ::unlink(paths.config.c_str());
+    if (!WriteAgentConfig(paths.config, paths.socket, false)) {
+        CHECK(false, "agent config should be written");
+        FinishCase(paths, failures_before, false);
+        return;
+    }
 
-    const pid_t child = StartAgent({executable, "--no-collect", "--no-systemd",
-                                    "--no-containerd", "--no-cli"},
-                                   paths.log);
+    const pid_t child =
+        StartAgent({executable, "--config", paths.config}, paths.log);
     if (child < 0) {
         CHECK(false, "hng_agent should be spawned");
         FinishCase(paths, failures_before, false);
@@ -357,10 +401,45 @@ void RunNoCliCase(const std::string& executable)
     FinishCase(paths, failures_before, log_printed);
 }
 
+/// @brief 用例 C：旧命令行参数被拒绝
+void RunLegacyArgumentCase(const std::string& executable)
+{
+    const int failures_before = g_fail;
+    const Paths paths         = MakePaths("-legacy");
+
+    ::unlink(paths.log.c_str());
+
+    const pid_t child = StartAgent({executable, "--no-cli"}, paths.log);
+    if (child < 0) {
+        CHECK(false, "hng_agent should be spawned");
+        FinishCase(paths, failures_before, false);
+        return;
+    }
+
+    int exit_code    = -1;
+    bool log_printed = false;
+    if (!WaitForExit(child, kRejectTimeout, &exit_code)) {
+        CHECK(false, "hng_agent should reject --no-cli and exit promptly");
+        PrintLogTail(paths.log);
+        log_printed = true;
+        KillAndReap(child);
+    }
+    else {
+        CHECK(exit_code == 1, "hng_agent should exit with code 1");
+        if (!LogContains(paths.log, "unknown argument")) {
+            CHECK(false, "agent log should report the unknown argument");
+            PrintLogTail(paths.log);
+            log_printed = true;
+        }
+    }
+
+    FinishCase(paths, failures_before, log_printed);
+}
+
 }  // namespace
 
 /**
- * @brief 依次运行 CLI 模式与 --no-cli 模式两个用例
+ * @brief 依次运行 CLI 模式、CLI 关闭模式与旧参数拒绝三个用例
  * @param argc 参数个数
  * @param argv argv[1] 为 hng_agent 可执行文件路径
  * @return 全部断言通过为 0，否则为 1
@@ -380,6 +459,7 @@ int main(int argc, char** argv)
 
     RunCliCase(executable);
     RunNoCliCase(executable);
+    RunLegacyArgumentCase(executable);
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

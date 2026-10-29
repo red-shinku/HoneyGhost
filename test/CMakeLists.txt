@@ -199,12 +199,12 @@ if(TARGET hng_cli_server)
     add_test(NAME e2e_cli_server COMMAND e2e_cli_server)
     set_tests_properties(e2e_cli_server PROPERTIES TIMEOUT 120)
 
-    # 真实 agent：子进程跑 hng_agent，父进程断言查询面与两种停机路径；
+    # 真实 agent：子进程跑 hng_agent，父进程断言查询面、CLI 关闭与旧参数拒绝；
     # 需要 /proc 与 /tmp，无特权
     add_executable(e2e_agent_cli e2e_agent_cli.cc)
     target_link_libraries(e2e_agent_cli PRIVATE hng_cli_server userver::grpc)
     add_test(NAME e2e_agent_cli COMMAND e2e_agent_cli $<TARGET_FILE:hng_agent>)
-    # 就绪判定读 "--no-cli" 模式的 info 日志，固定级别避免宿主环境覆盖
+    # 就绪判定读 CLI 关闭模式的 info 日志，固定级别避免宿主环境覆盖
     set_tests_properties(e2e_agent_cli PROPERTIES
         TIMEOUT 120
         ENVIRONMENT "HNG_LOG_LEVEL=info")
