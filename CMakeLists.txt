@@ -65,6 +65,19 @@ target_link_libraries(hng_log
 target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
 
 # ============================================================
+# 配置来源（通用 INI 文档 + 主配置 schema）
+#
+# 只依赖标准库。本阶段只提供目标与测试，不接入 hng_agent 或其它目标。
+# ============================================================
+add_library(hng_config STATIC
+    agent/config/src/config_document.cc
+    agent/config/src/config_loader.cc
+)
+target_include_directories(hng_config PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
 # 采集聚合（单线程消费多条事件线）
 #
 # 只在 libbpf 与骨架可用时构建；骨架缺失时整目录跳过。
@@ -335,7 +348,7 @@ add_subdirectory(agent/assembly)
 # 一并接入。
 # ============================================================
 add_executable(hng_agent agent/main.cc)
-target_link_libraries(hng_agent PRIVATE hng_assembly)
+target_link_libraries(hng_agent PRIVATE hng_assembly hng_config)
 target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
 
 # ============================================================

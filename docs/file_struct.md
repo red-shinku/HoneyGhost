@@ -6,6 +6,7 @@
   ├── CMakeLists.txt        # C++ 目标定义
   ├── go.work               # 不进版本控制，由 scripts/gen-go-work.sh 生成
   ├── scripts/              # 仓库级脚本（生成 go.work 等）
+  ├── config/               # 默认配置样例：agent.conf、role_filter.conf、cli_server.conf
   ├── proto/
   │   ├── internal/         # 待建：file_event, syscall_event —— 仅 C++，不过 wire
   │   ├── agent_bridge/     # 待建：现 role_containerd_bridge.proto
@@ -13,7 +14,7 @@
   │   └── cli/              # 待建
   ├── agent/                # 节点代理：一个 DaemonSet Pod / 一份 systemd unit = 一次部署
   │   ├── main.cc
-  │   ├── control_plane/ collector/ detector/ semantic/ context_maintainer/ event_data/ util/
+  │   ├── config/ control_plane/ collector/ detector/ semantic/ context_maintainer/ event_data/ util/
   │   │   ├── include/      # 对外头：别的模块可以 include
   │   │   └── src/          # 私有头与源文件；子模块再嵌一层（如 context_maintainer/src/rule/）
   │   └── role_discovery/   # 与 control_plane 同级；内含 Go module containerd_bridge/
