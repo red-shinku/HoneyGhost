@@ -123,6 +123,18 @@ target_link_libraries(test_log PRIVATE hng_log)
 target_compile_definitions(test_log PRIVATE HNG_LOG_TAG="test")
 add_test(NAME test_log COMMAND test_log)
 
+# 配置文档：通用 INI 子集解析与类型读取，无 IO / 无特权
+add_executable(test_config_document test_config_document.cc)
+target_link_libraries(test_config_document PRIVATE hng_config)
+add_test(NAME test_config_document COMMAND test_config_document)
+
+# 主配置：文件、环境变量、路径解析与引用检查；用例从仓库根读 config/agent.conf
+add_executable(test_agent_config test_agent_config.cc)
+target_link_libraries(test_agent_config PRIVATE hng_config)
+add_test(NAME test_agent_config COMMAND test_agent_config)
+set_tests_properties(test_agent_config PROPERTIES
+    WORKING_DIRECTORY ${HNG_SOURCE_DIR})
+
 # 运行时信息过滤器（公共件，header-only；经 event_data 头传递需要 proto 生成物）
 add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
 target_link_libraries(test_runtime_info_filter PRIVATE hng_event_data)
