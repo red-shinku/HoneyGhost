@@ -19,6 +19,14 @@ ARG BUILD_PARALLEL=4
 # 可选：userver 配置阶段建 venv 时用的 pip 源
 ARG PIP_INDEX_URL=
 
+# userver 3.x 要求 fmt 11，而 Debian 13 只有 fmt 10；系统的 spdlog 又是按
+# fmt 10 编译的，两者混进同一次链接就会报未定义符号。故 fmt 与 spdlog 都
+# 从源码装到 /usr/local，并且不安装系统的 -dev 包。
+ARG FMT_VERSION=11.1.4
+ARG SPDLOG_VERSION=1.15.3
+ARG FMT_SOURCE_URL=https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.tar.gz
+ARG SPDLOG_SOURCE_URL=https://github.com/gabime/spdlog/archive/refs/tags/v${SPDLOG_VERSION}.tar.gz
+
 RUN set -eux; \
     if [ "${APT_MIRROR}" != "deb.debian.org" ]; then \
         sed -i "s|deb\.debian\.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
@@ -35,20 +43,50 @@ RUN set -eux; \
         libboost-filesystem-dev libboost-iostreams-dev libboost-locale-dev \
         libboost-program-options-dev libboost-stacktrace-dev \
         libc-ares-dev libcctz-dev libcrypto++-dev libcurl4-openssl-dev \
-        libev-dev libfmt-dev libjemalloc-dev libkrb5-dev libldap2-dev \
-        liblzma-dev libnghttp2-dev libre2-dev libspdlog-dev libssl-dev \
+        libev-dev libjemalloc-dev libkrb5-dev libldap2-dev \
+        liblzma-dev libnghttp2-dev libre2-dev libssl-dev \
         libgtest-dev \
         libgmock-dev \
         libbenchmark-dev \
-        clang-format \ 
+        clang-format \
         liburing-dev libyaml-cpp-dev libzstd-dev zlib1g-dev; \
     rm -rf /var/lib/apt/lists/*
 
-# 探针的 vmlinux.h 由构建机的 BTF 生成；bpftool 拿不到时 CMake 只是静默
-# 跳过 kernel/ 与采集器，故在此提前失败
 RUN test -r /sys/kernel/btf/vmlinux || { \
         echo "cannot find /sys/kernel/btf/vmlinux: eBPF probes need it" >&2; \
         exit 1; }
+
+RUN set -eux; \
+    curl -fsSL "${FMT_SOURCE_URL}" -o /tmp/fmt.tar.gz; \
+    mkdir -p /tmp/fmt; \
+    tar -xzf /tmp/fmt.tar.gz -C /tmp/fmt --strip-components=1; \
+    cmake -S /tmp/fmt -B /tmp/fmt/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DBUILD_SHARED_LIBS=ON \
+        -DFMT_TEST=OFF -DFMT_DOC=OFF; \
+    cmake --build /tmp/fmt/build --parallel "${BUILD_PARALLEL}"; \
+    cmake --install /tmp/fmt/build; \
+    rm -rf /tmp/fmt /tmp/fmt.tar.gz; \
+    curl -fsSL "${SPDLOG_SOURCE_URL}" -o /tmp/spdlog.tar.gz; \
+    mkdir -p /tmp/spdlog; \
+    tar -xzf /tmp/spdlog.tar.gz -C /tmp/spdlog --strip-components=1; \
+    cmake -S /tmp/spdlog -B /tmp/spdlog/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_PREFIX_PATH=/usr/local \
+        -DSPDLOG_BUILD_SHARED=ON \
+        -DSPDLOG_FMT_EXTERNAL=ON \
+        -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_BUILD_TESTS=OFF; \
+    cmake --build /tmp/spdlog/build --parallel "${BUILD_PARALLEL}"; \
+    cmake --install /tmp/spdlog/build; \
+    rm -rf /tmp/spdlog /tmp/spdlog.tar.gz; \
+    ldconfig; \
+    test -f /usr/local/lib/cmake/fmt/fmt-config.cmake; \
+    test -f /usr/local/lib/cmake/spdlog/spdlogConfig.cmake
+
+# userver 的配置阶段与本仓库的配置都要取 /usr/local 的 fmt/spdlog
+ENV CMAKE_PREFIX_PATH=/usr/local
 
 # 先只拷用户态依赖的就位脚本：这一层不随源码改动失效
 COPY scripts/install-userver.sh /src/scripts/install-userver.sh
@@ -69,6 +107,11 @@ COPY . /src
 RUN cmake -S /src -B /build \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_TESTING=OFF
+
+RUN grep -q '^fmt_DIR:PATH=/usr/local/' /build/CMakeCache.txt \
+ && grep -q '^spdlog_DIR:PATH=/usr/local/' /build/CMakeCache.txt \
+ || { echo "fmt/spdlog 未取自 /usr/local，链接会因 fmt 版本错配失败" >&2; exit 1; }
+
 RUN cmake --build /build --target hng_agent --parallel "${BUILD_PARALLEL}"
 
 RUN test -f /src/kernel/files.skel.h \
@@ -101,6 +144,9 @@ COPY deploy/docker/config/ /etc/honeyghost/
 
 # CLI 服务端与 containerd 桥接 socket 的父目录；运行期通常由卷覆盖
 RUN mkdir -p /run/honeyghost
+
+# fmt/spdlog 落在 /usr/local/lib，登记进动态加载器缓存
+RUN ldconfig
 
 # 缺库在构建期就失败，而不是运行期报 "libxxx.so not found"
 RUN ! ldd /usr/local/bin/hng_agent | grep -q 'not found'
