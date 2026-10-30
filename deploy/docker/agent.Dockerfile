@@ -37,6 +37,10 @@ RUN set -eux; \
         libc-ares-dev libcctz-dev libcrypto++-dev libcurl4-openssl-dev \
         libev-dev libfmt-dev libjemalloc-dev libkrb5-dev libldap2-dev \
         liblzma-dev libnghttp2-dev libre2-dev libspdlog-dev libssl-dev \
+        libgtest-dev \
+        libgmock-dev \
+        libbenchmark-dev \
+        clang-format \ 
         liburing-dev libyaml-cpp-dev libzstd-dev zlib1g-dev; \
     rm -rf /var/lib/apt/lists/*
 
@@ -85,7 +89,6 @@ RUN mkdir -p /staging \
         mkdir -p "/staging$dir"; \
         cp -L "$lib" "/staging$dir/$(basename "$lib")"; \
     done < /tmp/libs.txt
-
 
 FROM ${BASE_IMAGE} AS runtime
 

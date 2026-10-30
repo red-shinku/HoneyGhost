@@ -119,6 +119,7 @@ else
             -DCMAKE_BUILD_TYPE="$variant" \
             -DCMAKE_INSTALL_PREFIX="$prefix_dir" \
             -DUSERVER_INSTALL=ON \
+            -DUSERVER_FORCE_DOWNLOAD_FMT=ON \
             -DUSERVER_BUILD_TESTS=OFF \
             -DUSERVER_BUILD_SAMPLES=OFF \
             -DUSERVER_BUILD_ALL_COMPONENTS=OFF \
