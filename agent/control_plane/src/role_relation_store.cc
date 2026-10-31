@@ -342,6 +342,32 @@ std::vector<hng::Process> RoleRelationStore::ownership_processes() const
     return result;
 }
 
+std::vector<hng::Process> RoleRelationStore::members(uint32_t role_id) const
+{
+    std::shared_lock lock(mutex_);
+
+    std::vector<hng::Process> result;
+    auto record = role_table_.find(role_id);
+    if (record == role_table_.end()) {
+        return result;
+    }
+    result.reserve(record->second.entries.size());
+    for (const hng::Process& p : record->second.entries) {
+        auto owned = process_to_role_.find(p);
+        if (owned != process_to_role_.end() && owned->second == role_id) {
+            result.push_back(p);
+        }
+    }
+    std::sort(result.begin(), result.end(),
+              [](const hng::Process& lhs, const hng::Process& rhs) {
+                  if (lhs.pid != rhs.pid) {
+                      return lhs.pid < rhs.pid;
+                  }
+                  return lhs.pid_start_time < rhs.pid_start_time;
+              });
+    return result;
+}
+
 std::optional<hng::Role> RoleRelationStore::role(uint32_t role_id) const
 {
     std::shared_lock lock(mutex_);

@@ -168,6 +168,12 @@ class RoleRelationStore {
     /// @note 供初始化对账遍历归属条目用，不属于对外查询面
     std::vector<hng::Process> ownership_processes() const;
 
+    /// @brief 该角色当前归属的进程，按 pid 升序
+    /// @details 遍历记录的反向索引，并以归属表的当前值核对：反向索引是超集，
+    ///          留存已退出或已改判的键，故不能直接当成员集
+    /// @return 角色不存在时为空
+    std::vector<hng::Process> members(uint32_t role_id) const;
+
     /// @brief 角色的对外视图
     std::optional<hng::Role> role(uint32_t role_id) const;
 
