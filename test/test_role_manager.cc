@@ -11,8 +11,8 @@
  *  - 锚点未变的周期 JOIN 补写成员并产生成员新增通知，不产生生命周期通知；
  *  - 存活过滤：死锚点整条拒绝、死成员不进表、LEAVE 不过滤；
  *  - 等待表容量与 TTL 降级；
- *  - members()：按记录的 cgroup 路径实时重枚举、角色不存在为空、
- *    路径不可读时返回已收集结果且不改动任何表；
+ *  - members()：关系表归属 ∪ cgroup 重读、按身份去重、角色不存在为空、
+ *    路径不可读时仍返回归属部分且不改动任何表；
  *  - 入口幂等重放与未知实例键不产通知；
  *  - 多个下行出口：都恰好收到、按注册顺序、空指针忽略、重复注册即重复通知；
  *  - stop() 幂等、run() 之前 stop() 时 run() 立即返回、已入队的事件仍被落地、
@@ -487,9 +487,19 @@ void run_members()
     std::vector<hng::Process> members = manager.members(role);
     CHECK(seen_path == "/sys/fs/cgroup/system.slice/a.service",
           "members 应使用记录里的 cgroup 路径");
-    CHECK(members.size() == 1 && members[0].pid == 900,
-          "members 应原样返回重枚举结果");
+    CHECK(
+        (members == std::vector<hng::Process>{proc(100, 1000), proc(900, 9000)}),
+        "members 应为归属表与重枚举的并集、按 pid 升序");
     CHECK(manager.members(role + 1).empty(), "未知 roleID 应返回空");
+
+    // fork 继承的成员不在 cgroup 内，必须由归属表补上
+    manager.bind_to_role(proc(901, 9001), proc(100, 1000));
+    CHECK(manager.barrier(std::chrono::milliseconds(1000)), "bind 应落地");
+    members = manager.members(role);
+    CHECK((members == std::vector<hng::Process>{proc(100, 1000), proc(900, 9000),
+                                                proc(901, 9001)}),
+          "不在 cgroup 内的归属进程也应出现在 members 中");
+    CHECK(manager.stats().cgroup_read_empty == 0, "重读非空时不应计数");
 
     // 不注入 probe：真实读取器读不存在的路径，只返回已收集结果
     RecordingSink dead_sink;
@@ -501,18 +511,24 @@ void run_members()
     CHECK(dead_sink.wait_calls(2), "加入应通知一次");
     const uint32_t dead_role = dead_sink.calls()[0].roleID;
 
-    CHECK(dead_manager.members(dead_role).empty(), "不可读路径应返回已收集结果");
+    CHECK((dead_manager.members(dead_role) ==
+           std::vector<hng::Process>{proc(500, 5000), proc(501, 5001)}),
+          "不可读路径应返回归属表部分");
     CHECK(dead_manager.lookup(proc(500, 5000)).value_or(0) == dead_role &&
               dead_manager.lookup(proc(501, 5001)).has_value(),
           "读失败不得改动任何表");
     CHECK(dead_manager.stats().cgroup_read_empty == 1,
-          "重读未返回任何进程应计数");
+          "加入重读为空应计数；查询不计数");
 
     // cgroup 路径为空：不重读、不计数
     RoleEvent no_cgroup = mk_join("n", 600, 6000, {});
     no_cgroup.payload.cgroup_path.clear();
     dead_manager.on_role_event(no_cgroup);
     CHECK(dead_sink.wait_calls(4), "加入应通知一次");
+    const uint32_t no_cgroup_role = dead_sink.calls()[2].roleID;
+    CHECK((dead_manager.members(no_cgroup_role) ==
+           std::vector<hng::Process>{proc(600, 6000)}),
+          "cgroup 路径为空时应只返回归属表部分");
     CHECK(dead_manager.stats().cgroup_read_empty == 1,
           "cgroup 路径为空时不应计数");
 }

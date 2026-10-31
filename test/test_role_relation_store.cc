@@ -102,6 +102,33 @@ void run_join()
           "身份应原样保留");
 }
 
+void run_members()
+{
+    RoleRelationStore store;
+
+    CHECK(store.members(1).empty(), "空表应返回空成员");
+
+    const uint32_t role =
+        join_new(store, "a", 100, 1000, {proc(100, 1000), proc(101, 1001)});
+    CHECK((store.members(role) ==
+           std::vector<hng::Process>{proc(100, 1000), proc(101, 1001)}),
+          "成员应含锚点并按 pid 升序");
+    CHECK(store.members(role + 1).empty(), "未知 roleID 应返回空");
+
+    // 反向索引留存退出的键，成员集不得含它
+    store.on_process_exited(proc(101, 1001));
+    CHECK((store.members(role) == std::vector<hng::Process>{proc(100, 1000)}),
+          "已退出进程不得留在成员集");
+
+    // 归属改判：原角色的反向索引仍留键，成员集必须按归属表当前值过滤
+    const uint32_t other = join_new(store, "b", 200, 2000, {});
+    store.adopt_members(other, {proc(100, 1000)});
+    CHECK(store.members(role).empty(), "改判后原角色应无成员");
+    CHECK((store.members(other) ==
+           std::vector<hng::Process>{proc(100, 1000), proc(200, 2000)}),
+          "改判后新角色应含该进程");
+}
+
 void run_roles_snapshot()
 {
     RoleRelationStore store;
@@ -663,6 +690,7 @@ void run_member_changes()
 int main()
 {
     run_join();
+    run_members();
     run_roles_snapshot();
     run_supervision();
     run_idempotent();

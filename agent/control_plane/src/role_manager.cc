@@ -414,14 +414,19 @@ std::optional<hng::role::RoleIdentity> RoleManager::identity(
 
 std::vector<hng::Process> RoleManager::members(uint32_t role_id) const
 {
+    std::vector<hng::Process> result       = store_.members(role_id);
+
     std::optional<std::string> cgroup_path = store_.cgroup_path(role_id);
     if (!cgroup_path || cgroup_path->empty()) {
-        return {};
+        return result;
     }
-    if (probe_.read_members) {
-        return probe_.read_members(*cgroup_path);
-    }
-    return hng::role::RoleCgroupReader::read(*cgroup_path);
+    const std::vector<hng::Process> reread =
+        probe_.read_members ? probe_.read_members(*cgroup_path)
+                            : hng::role::RoleCgroupReader::read(*cgroup_path);
+    result.insert(result.end(), reread.begin(), reread.end());
+    std::sort(result.begin(), result.end(), process_less);
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 RoleManagerStats RoleManager::stats() const

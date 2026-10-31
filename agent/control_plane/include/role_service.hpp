@@ -47,9 +47,11 @@ class RoleLookupService {
     virtual std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const                                       = 0;
 
-    /// @brief 按 cgroup 实时重枚举该角色的当前进程
-    /// @note 锚点见 main_process()；不是任何内部缓存；路径不可读时返回已收集
-    ///       结果，调用方不得把空结果读成「没有成员」
+    /// @brief 该角色的当前进程集：关系表的归属 ∪ 按 cgroup 的实时重枚举
+    /// @note 以归属表为准，故 lookup() 命中该角色的进程必在结果中；cgroup 重读
+    ///       补上归属事件漏收的进程
+    /// @note 锚点见 main_process()；结果按 pid 升序、按身份去重；cgroup 路径为空
+    ///       或不可读时只返回归属部分，调用方不得把空结果读成「没有成员」
     virtual std::vector<hng::Process> members(uint32_t roleID) const = 0;
 
     /// @brief 异常态观测快照
