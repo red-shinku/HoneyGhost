@@ -242,14 +242,15 @@ int trace_process_birth(struct pt_regs *ctx)
         return 0;
     }
 
-    //! @note 仅"新线程组"构成新进程：线程（clone 共享 tgid）与内核线程不产生进程上下文
+    //! @note 仅"新线程组"构成新进程：线程（clone 共享
+    //! tgid）与内核线程不产生进程上下文
     __u32 child_pid  = BPF_CORE_READ(child, pid);
     __u32 child_tgid = BPF_CORE_READ(child, tgid);
     if (child_pid != child_tgid) {
-        return 0;  /** @note 线程创建。 */
+        return 0; /** @note 线程创建。 */
     }
     if (BPF_CORE_READ(child, flags) & PF_KTHREAD) {
-        return 0;  /** @note 内核线程。 */
+        return 0; /** @note 内核线程。 */
     }
 
     struct task_struct *parent = BPF_CORE_READ(child, real_parent);
@@ -262,13 +263,14 @@ int trace_process_birth(struct pt_regs *ctx)
         return 0;
     }
     /**
-     * @note 事件头 = 新进程自身：与子进程后续事件经 init_event_head 产出的头部一致，
-     * (pid/pid_start_time, ppid/ppid_start_time) 可精确作为 Process 键与父进程键
+     * @note 事件头 = 新进程自身：与子进程后续事件经 init_event_head
+     * 产出的头部一致， (pid/pid_start_time, ppid/ppid_start_time) 可精确作为
+     * Process 键与父进程键
      */
-    event->hdr.head.pid             = child_tgid;
+    event->hdr.head.pid = child_tgid;
     event->hdr.head.pid_start_time =
         BPF_CORE_READ(child, start_boottime) / NSEC_PER_USER_HZ;
-    event->hdr.head.ppid            = BPF_CORE_READ(parent, tgid);
+    event->hdr.head.ppid = BPF_CORE_READ(parent, tgid);
     event->hdr.head.ppid_start_time =
         BPF_CORE_READ(parent, start_boottime) / NSEC_PER_USER_HZ;
 
