@@ -31,8 +31,8 @@ struct {
  * 路径参数是在调用进程的挂载命名空间视图中解释的，容器内与宿主机对同一路径的
  * 语义不同。通过 task->nsproxy->mnt_ns->ns.inum 读取当前挂载命名空间的 inode：
  * 初始挂载命名空间的 inode 恒为 0xF0000000（4026531840，宿主根命名空间，各内核
- * 版本稳定），其余为容器 / 自定义命名空间（inode 或大于或小于该值，故用精确比较）。
- * 读取失败按"不在命名空间中"保守处理。
+ * 版本稳定），其余为容器 / 自定义命名空间（inode
+ * 或大于或小于该值，故用精确比较）。 读取失败按"不在命名空间中"保守处理。
  * @return 非初始挂载命名空间返回 1，否则返回 0。
  */
 static __always_inline __u8 current_is_innamespace(void)
@@ -61,7 +61,8 @@ static __always_inline __u8 current_is_innamespace(void)
 static __always_inline struct file_access_data *init_file_access_data(void)
 {
     if (!hng_should_collect()) return NULL;
-    struct file_access_data *data = bpf_ringbuf_reserve(&file_access_events, sizeof(struct file_access_data), 0);
+    struct file_access_data *data = bpf_ringbuf_reserve(
+        &file_access_events, sizeof(struct file_access_data), 0);
     if (!data) {
         return NULL;
     }
@@ -83,7 +84,8 @@ int trace_file_openat(struct trace_event_raw_sys_enter *ctx)
     if (!data) return 0;
 
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
-    bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[1]);
+    bpf_probe_read_user_str(&data->filename, sizeof(data->filename),
+                            (void *)ctx->args[1]);
     data->flags = ctx->args[2];
 
     bpf_ringbuf_submit(data, 0);
@@ -103,7 +105,8 @@ int trace_file_open(struct trace_event_raw_sys_enter *ctx)
     if (!data) return 0;
 
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
-    bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
+    bpf_probe_read_user_str(&data->filename, sizeof(data->filename),
+                            (void *)ctx->args[0]);
     data->flags = ctx->args[1];
 
     bpf_ringbuf_submit(data, 0);
@@ -123,7 +126,8 @@ int trace_file_creat(struct trace_event_raw_sys_enter *ctx)
     if (!data) return 0;
 
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
-    bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[0]);
+    bpf_probe_read_user_str(&data->filename, sizeof(data->filename),
+                            (void *)ctx->args[0]);
     data->flags = O_CREAT | O_WRONLY | O_TRUNC;
 
     bpf_ringbuf_submit(data, 0);
@@ -151,7 +155,8 @@ int trace_file_openat2(struct trace_event_raw_sys_enter *ctx)
     if (!data) return 0;
 
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
-    bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (void *)ctx->args[1]);
+    bpf_probe_read_user_str(&data->filename, sizeof(data->filename),
+                            (void *)ctx->args[1]);
 
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
