@@ -93,7 +93,7 @@ const char* syscall_name_str(enum syscall_event_name name)
 
 /**
  * @brief 进程生命周期事件 → process_semantic_data
- * @details 纯搬运 exit_code（exit_group 有效）。进程诞生事件无载荷字段，新进程
+ * @details 纯搬运 exit_code（进程退出事件有效）。进程诞生事件无载荷字段，新进程
  * 身份由事件头给出（head.pid/pid_start_time=新进程，ppid=父进程）。
  */
 void process_to_semantic(const struct syscall_event& raw,

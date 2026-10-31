@@ -279,18 +279,47 @@ int trace_process_birth(struct pt_regs *ctx)
 }
 
 /**
- * @brief 处理 sys_enter_exit_group 事件并提交采集结果。
- * @param[in] ctx 系统调用入口的 tracepoint 上下文。
- * @return 始终返回 0；未命中采集条件或无法构造事件时跳过提交。
+ * @brief 处理 sched_process_exit 事件并提交采集结果。
+ * @return 始终返回 0；非线程组末线程、内核线程或无法构造事件时跳过提交。
+ * @note 以线程组末线程的退出代表进程退出：exit_group 与信号终止两条路径都会
+ *       经过该 tracepoint，故覆盖面与退出原因无关。
+ * @note 6.14 起该 tracepoint 只带退出任务一个参数，线程组是否终结改由
+ *       signal_struct::live 判定：do_exit 在触发 tracepoint 前已把它减到 0。
+ * @note 事件头取自线程组首领，而不是触发退出的线程：多线程进程最后退出的往往
+ *       不是首领，按当前线程填启动时间会与 fork 事件记录的进程身份不一致。
+ * @note 事件名沿用 SYSCALL_EVENT_EXIT_GROUP；exit_code 正常退出时为退出状态码，
+ *       被信号终止时为终止信号的负数。
  */
-SEC("tracepoint/syscalls/sys_enter_exit_group")
-int trace_exit_group(struct trace_event_raw_sys_enter *ctx)
+SEC("tracepoint/sched/sched_process_exit")
+int trace_process_exit(void *ctx)
 {
+    (void)ctx;
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (BPF_CORE_READ(task, flags) & PF_KTHREAD) return 0;
+
+    struct signal_struct *sig = BPF_CORE_READ(task, signal);
+    if (!sig || BPF_CORE_READ(sig, live.counter) != 0) return 0;
+
     struct syscall_event *event = init_process_event(SYSCALL_EVENT_EXIT_GROUP);
     if (!event) return 0;
 
-    //! @note args[0]: int error_code
-    event->process_event.exit_code = (s32)ctx->args[0];
+    struct task_struct *leader = BPF_CORE_READ(task, group_leader);
+    event->hdr.head.pid        = BPF_CORE_READ(leader, tgid);
+    event->hdr.head.pid_start_time =
+        BPF_CORE_READ(leader, start_boottime) / NSEC_PER_USER_HZ;
+    event->hdr.head.ppid = BPF_CORE_READ(leader, real_parent, tgid);
+    event->hdr.head.ppid_start_time =
+        BPF_CORE_READ(leader, real_parent, start_boottime) / NSEC_PER_USER_HZ;
+
+    //! @note 低 7 位非零表示被信号终止，否则高位是退出状态码
+    s32 code = BPF_CORE_READ(task, exit_code);
+    if (code & 0x7f) {
+        event->process_event.exit_code = -(code & 0x7f);
+    }
+    else {
+        event->process_event.exit_code = code >> 8;
+    }
 
     bpf_ringbuf_submit(event, 0);
     return 0;
