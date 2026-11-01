@@ -2,7 +2,7 @@
  * @file verify_starttime.cc
  * @brief 校验：事件头 pid_start_time 与 /proc 字段 22 相等
  * @details
- * 加载 syscalls.bpf.o，附着 wake_up_new_task kprobe 与 sys_enter_exit_group
+ * 加载 syscalls.bpf.o，附着 wake_up_new_task kprobe 与 sched_process_exit
  * tracepoint，从 ringbuf 取事件，与其 /proc 取值比对。覆盖两个入口 × 两条路径
  * 共四处填法：
  *   - fork 事件显式填法：pid 路径（子进程）、ppid 路径（子进程的 real_parent）
@@ -217,7 +217,7 @@ int run(const char *obj_path)
     bpf_program *prog_fork =
         bpf_object__find_program_by_name(obj, "trace_process_birth");
     bpf_program *prog_exit =
-        bpf_object__find_program_by_name(obj, "trace_exit_group");
+        bpf_object__find_program_by_name(obj, "trace_process_exit");
     bpf_map *map = bpf_object__find_map_by_name(obj, "syscall_events");
     if (!prog_fork || !prog_exit || !map) {
         std::fprintf(stderr,
@@ -260,7 +260,7 @@ int run(const char *obj_path)
         return 2;
     }
     if (ck.subject == 0) {
-        // 子进程：稍候退出以触发 exit_group；父进程不回收，让 /proc 仍可读
+        // 子进程：稍候退出以触发退出事件；父进程不回收，让 /proc 仍可读
         ::usleep(1500 * 1000);
         ::_exit(0);
     }
