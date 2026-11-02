@@ -56,34 +56,14 @@ RUN test -r /sys/kernel/btf/vmlinux || { \
         echo "cannot find /sys/kernel/btf/vmlinux: eBPF probes need it" >&2; \
         exit 1; }
 
-RUN set -eux; \
-    curl -fsSL "${FMT_SOURCE_URL}" -o /tmp/fmt.tar.gz; \
-    mkdir -p /tmp/fmt; \
-    tar -xzf /tmp/fmt.tar.gz -C /tmp/fmt --strip-components=1; \
-    cmake -S /tmp/fmt -B /tmp/fmt/build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=/usr/local \
-        -DBUILD_SHARED_LIBS=ON \
-        -DFMT_TEST=OFF -DFMT_DOC=OFF; \
-    cmake --build /tmp/fmt/build --parallel "${BUILD_PARALLEL}"; \
-    cmake --install /tmp/fmt/build; \
-    rm -rf /tmp/fmt /tmp/fmt.tar.gz; \
-    curl -fsSL "${SPDLOG_SOURCE_URL}" -o /tmp/spdlog.tar.gz; \
-    mkdir -p /tmp/spdlog; \
-    tar -xzf /tmp/spdlog.tar.gz -C /tmp/spdlog --strip-components=1; \
-    cmake -S /tmp/spdlog -B /tmp/spdlog/build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=/usr/local \
-        -DCMAKE_PREFIX_PATH=/usr/local \
-        -DSPDLOG_BUILD_SHARED=ON \
-        -DSPDLOG_FMT_EXTERNAL=ON \
-        -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_BUILD_TESTS=OFF; \
-    cmake --build /tmp/spdlog/build --parallel "${BUILD_PARALLEL}"; \
-    cmake --install /tmp/spdlog/build; \
-    rm -rf /tmp/spdlog /tmp/spdlog.tar.gz; \
-    ldconfig; \
-    test -f /usr/local/lib/cmake/fmt/fmt-config.cmake; \
-    test -f /usr/local/lib/cmake/spdlog/spdlogConfig.cmake
+# fmt 与 spdlog：与开发容器共用 scripts/install-fmt-spdlog.sh，装到 /usr/local
+COPY scripts/install-fmt-spdlog.sh /tmp/install-fmt-spdlog.sh
+RUN FMT_VERSION="${FMT_VERSION}" \
+    SPDLOG_VERSION="${SPDLOG_VERSION}" \
+    FMT_SOURCE_URL="${FMT_SOURCE_URL}" \
+    SPDLOG_SOURCE_URL="${SPDLOG_SOURCE_URL}" \
+    BUILD_PARALLEL="${BUILD_PARALLEL}" \
+    sh /tmp/install-fmt-spdlog.sh
 
 # userver 的配置阶段与本仓库的配置都要取 /usr/local 的 fmt/spdlog
 ENV CMAKE_PREFIX_PATH=/usr/local

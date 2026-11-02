@@ -82,6 +82,17 @@ JetBrains IDE 跑在 Windows 下用不了开发容器（经 WSL 连接不识别 
 
 2. **`kernel/include/vmlinux.h` 由宿主 BTF 生成**，宿主内核不同则内容不同，故不同宿主上产出的构建产物不可逐字比对。
 
+3. **fmt 与 spdlog 由源码提供，不用发行版包**：userver 的 `cmake/SetupFmt.cmake`
+   固定 fmt 11.1.4，而 trixie 只有 fmt 10，系统的 spdlog 又按 fmt 10 编译；三者混进
+   同一次链接会在链接 `hng_agent` 时报未定义符号。镜像内由
+   `scripts/install-fmt-spdlog.sh` 把两者装进 `/usr/local`，供 userver 与
+   `hng_agent` 共用。升级到本镜像后，既有容器须各做一次（重建镜像不会清掉卷）：
+
+   ```sh
+   scripts/install-userver.sh --force   # 旧卷里的 userver 是按 fmt 10 编的
+   rm -rf build-agent                   # CMakeCache 里的 fmt_DIR 已指向不存在的路径
+   ```
+
 ## 4. 装配取值
 
 `Dockerfile` 定工具链与依赖版本，`devcontainer.json` 定挂载、语言服务器、格式化与 CMake 集成。其中需要注意的取值：
@@ -97,7 +108,7 @@ JetBrains IDE 跑在 Windows 下用不了开发容器（经 WSL 连接不识别 
 
 `remoteUser` 与 Dockerfile 的 `ARG USERNAME` 是同一个值的两处，改其一须同步改另一处（注意uid）。
 
-依赖版本对齐 Debian 13 (trixie)，故 Dockerfile 中的 apt 包不写版本号；构建期会打印一次全部版本。
+依赖版本对齐 Debian 13 (trixie)，故 Dockerfile 中的 apt 包不写版本号；构建期会打印一次全部版本。fmt 与 spdlog 是唯一例外：按固定版本从源码安装，原因见第 3 节第 3 条。
 
 clangd 取 trixie main 里的 `clangd-22`，而不是不带版本号的 `clangd` 元包——后者在 trixie 仍指向 19，而 Doxygen 注释渲染需要 ≥ 22。
 
