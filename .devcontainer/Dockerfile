@@ -82,7 +82,6 @@ RUN set -eux; \
         libcrypto++-dev \
         libcurl4-openssl-dev \
         libev-dev \
-        libfmt-dev \
         libgmock-dev \
         libgtest-dev \
         libjemalloc-dev \
@@ -91,7 +90,6 @@ RUN set -eux; \
         liblzma-dev \
         libnghttp2-dev \
         libre2-dev \
-        libspdlog-dev \
         libssl-dev \
         liburing-dev \
         libyaml-cpp-dev \
@@ -99,6 +97,12 @@ RUN set -eux; \
         zlib1g-dev \
         netbase; \
     rm -rf /var/lib/apt/lists/*
+
+# fmt 与 spdlog 与部署镜像同源：userver 固定要 fmt 11.1.4，而 trixie 只有
+# fmt 10，系统的 spdlog 又按 fmt 10 编译。装进 /usr/local 供 userver 与
+# hng_agent 共用，系统的 -dev 包不再安装。
+COPY scripts/install-fmt-spdlog.sh /tmp/install-fmt-spdlog.sh
+RUN sh /tmp/install-fmt-spdlog.sh && rm -f /tmp/install-fmt-spdlog.sh
 
 # Go 下载源同样逐档兜底，语义与上面的 apt 源一致
 ARG GO_DOWNLOAD_BASE=https://go.dev/dl

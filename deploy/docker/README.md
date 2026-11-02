@@ -14,6 +14,12 @@ docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 代理镜像构建的主要耗时是编译 userver（Release 变体，默认并行度 4），首次数十分钟；源码改动不会让该层失效。内存不足时用
 `--build-arg USERVER_BUILD_PARALLEL=2` 降低并行度。
 
+Debian 13 只带 fmt 10，而 userver 3.x 固定 fmt 11.1.4；系统的 spdlog 又是按 fmt 10
+编译的，两者混进同一次链接会报未定义符号。镜像内因此把 fmt 与 spdlog（external fmt）
+从源码装进 `/usr/local`，与开发容器共用 `scripts/install-fmt-spdlog.sh`；版本由
+`FMT_VERSION` / `SPDLOG_VERSION` 指定，且不安装系统的 `libfmt-dev` / `libspdlog-dev`。
+配置阶段会断言 `find_package` 取到的就是这两份，取错立即失败。
+
 ## 运行
 
 ```sh
