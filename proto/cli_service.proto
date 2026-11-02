@@ -1,0 +1,325 @@
+syntax = "proto3";
+
+package hng.clisv;
+
+import "file_event.proto";
+import "syscall_event.proto";
+
+message role
+{
+    uint32 roleID    = 1;
+    string roleLabel = 2;
+}
+
+message pidList
+{
+    repeated uint32 pid = 1;
+}
+
+// =============================================
+// RoleManagerService
+// =============================================
+
+enum RM_ShowOption {
+    // 获取节点上出现的全部角色
+    RM_SHOW_ALL         = 0;
+    // 只获取系统监管的角色
+    RM_SHOW_SUPERVISION = 1;
+}
+
+message RM_GetRolesRequest
+{
+    RM_ShowOption showoption = 1;
+}
+
+message RM_GetRolesResponse
+{
+    repeated role r = 1;
+}
+
+message RM_GetProcessSetRequest
+{
+    uint32 roleID = 1;
+}
+
+message RM_GetProcessSetResponse
+{
+    uint32 root_pid       = 1;
+    optional pidList pids = 2;
+}
+
+message RM_GetContextSetRequest
+{
+    uint32 roleID = 1;
+}
+
+message RM_GetContextSetResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message RM_GetStatsRequest {}
+
+message RM_GetStatsResponse
+{
+    // 累计：来自RoleDiscovery的通知被拒收
+    optional uint64 rejected             = 1;
+    // 累计：收到 LEAVE 或锚点更换通知时，管理器内不存在相应实例键
+    optional uint64 unknown_instance     = 2;
+    // 累计：进程成员写入时已归属另一个角色
+    optional uint64 owner_conflict       = 3;
+    // 角色锚点已删除而角色未退出（快照值）
+    optional uint64 anchors_removed      = 4;
+    // 累计：cgroup 读失败 / 或返回空
+    optional uint64 cgroup_read_empty    = 5;
+    // 累计：对管理器的写通知被拒
+    optional uint64 queue_rejected       = 6;
+    // 累计：fork 继承的归属因父进程尚未归属而暂存
+    optional uint64 bind_deferred        = 7;
+    // 累计：暂存的归属在父进程落地后被应用
+    optional uint64 bind_resolved        = 8;
+    // 累计：暂存的归属被丢弃，因进程已退出、角色已释放或表已满
+    optional uint64 bind_rejected        = 9;
+    // 累计：暂存的归属超过寿命被丢弃
+    optional uint64 bind_expired         = 10;
+    // 累计：归属到达时子进程已有归属，本次不改写
+    optional uint64 bind_ignored         = 11;
+    // 累计：成员写入因该进程已有退出记录而跳过
+    optional uint64 late_adopt_rejected  = 12;
+    // 快照值：未过期的已退出进程记录数
+    optional uint64 tombstone_depth      = 13;
+    // 累计：成员因已知退出未进入角色
+    optional uint64 dead_member_rejected = 14;
+    // 累计：加入或锚点变更因锚点已知退出而整条拒绝
+    optional uint64 dead_anchor_rejected = 15;
+}
+
+message RM_WhichRoleRequest
+{
+    uint32 pid = 1;
+}
+
+message RM_WhichRoleResponse
+{
+    optional uint32 roleID = 1;
+}
+
+// 查询服务：角色相关信息和系统状态
+service RoleManagerService
+{
+    // 获取系统中角色的快照
+    rpc GetRoles(RM_GetRolesRequest) returns (RM_GetRolesResponse);
+    // 获取某角色的进程集合
+    rpc GetProcessSet(RM_GetProcessSetRequest) returns (RM_GetProcessSetResponse);
+    // 获取某角色上下文集合
+    rpc GetContextSet(RM_GetContextSetRequest) returns (RM_GetContextSetResponse);
+    // 查询角色管理器状态
+    rpc GetStats(RM_GetStatsRequest) returns (RM_GetStatsResponse);
+    // 查询进程所属角色
+    rpc WhichRole(RM_WhichRoleRequest) returns (RM_WhichRoleResponse);
+}
+
+// =============================================
+// ContextManagerService
+// =============================================
+
+message CM_GetExcepCtxRequest {}
+
+message CM_GetExcepCtxResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message CM_GetExtraCtxRequest {}
+
+message CM_GetExtraCtxResponse
+{
+    repeated uint32 contextID = 1;
+}
+
+message CM_GetProcessSetRequest
+{
+    uint32 contextID = 1;
+}
+
+message CM_GetProcessSetResponse
+{
+    uint32 root_pid       = 1;
+    optional pidList pids = 2;
+}
+
+message CM_GetStatsRequest {}
+
+message CM_GetStatsResponse
+{
+    // 累计：ctx 绑定父 ctx 时，父 ctx 尚未落定
+    uint64 ctxroot_parent_unsettled = 1;
+    // 累计：注销了不存在的context
+    uint64 unknown_unregister       = 2;
+    // 累计：父未落定时暂存到延迟关系表的父链接与挂靠
+    uint64 pending_deferred         = 3;
+    // 累计：从延迟关系表取出并成功应用的条数
+    uint64 pending_resolved         = 4;
+    // 累计：延迟关系表已满或同一等待方重复而入表被拒
+    uint64 pending_rejected         = 5;
+    // 累计：延迟关系超过寿命而被取出丢弃
+    uint64 pending_expired          = 6;
+    // 累计：主动取消的延迟关系条数
+    uint64 pending_cancelled        = 7;
+    // 快照值：延迟关系表中的条数
+    uint64 pending_depth            = 8;
+    // 累计：挂靠因父目标消失而无归属
+    uint64 bind_orphaned            = 9;
+    // 累计：无主 context 的附属登记被丢弃
+    uint64 extra_orphaned           = 10;
+    // 累计：父 context 无法解析，父链接按森林根处理
+    uint64 parent_missing           = 11;
+    // 累计：注册命中退出记录而被拒
+    uint64 late_register            = 12;
+    // 累计：挂靠命中退出记录而被拒
+    uint64 late_bind                = 13;
+    // 累计：同一根进程重复注册主 context；保留首条
+    uint64 duplicate_context        = 14;
+    // 累计：进程已有不同 context 归属时的改绑尝试；保留首条
+    uint64 ownership_conflict       = 15;
+    // 累计：退出记录查询命中次数
+    uint64 tombstone_hits           = 16;
+    // 快照值：退出记录表中的条数
+    uint64 tombstone_depth          = 17;
+}
+
+message CM_WhichContextRequest
+{
+    uint32 pid = 1;
+}
+
+message CM_WhichContextResponse
+{
+    optional uint32 contextID = 1;
+}
+
+// 查询服务：Context 相关信息和系统状态
+service ContextManagerService
+{
+    // 查询系统中的异常 Context
+    rpc GetExcepCtx(CM_GetExcepCtxRequest) returns (CM_GetExcepCtxResponse);
+    // 查询系统中的附属 Context
+    rpc GetExtraCtx(CM_GetExtraCtxRequest) returns (CM_GetExtraCtxResponse);
+    // 获取某context进程集合
+    rpc GetProcessSet(CM_GetProcessSetRequest) returns (CM_GetProcessSetResponse);
+    // 查询Context管理器状态
+    rpc GetStats(CM_GetStatsRequest) returns (CM_GetStatsResponse);
+    // 查询进程所属context
+    rpc WhichContext(CM_WhichContextRequest) returns (CM_WhichContextResponse);
+}
+
+// =============================================
+// ProcessManagerService
+// =============================================
+
+message PM_GetStatsRequest {}
+
+message PM_GetStatsResponse
+{
+    // 累计：注册时该 pid 的旧实例仍在实进程树中（pid 已被复用）
+    optional uint64 pid_reused      = 1;
+    // 累计：注册的进程已有退出记录，本次注册被丢弃
+    optional uint64 stale_add       = 2;
+    // 累计：注册时父进程既不在实进程树也不在虚拟根中
+    optional uint64 parent_missing  = 3;
+    // 快照值：退出记录表中的条数
+    optional uint64 tombstone_depth = 4;
+}
+
+// 查询服务：进程相关信息和系统状态
+service ProcessManagerService
+{
+    // 查询进程管理器状态
+    rpc GetStats(PM_GetStatsRequest) returns (PM_GetStatsResponse);
+}
+
+// =============================================
+// RuntimeService
+// =============================================
+
+// 顶层事件大类，取值与 hng::EventType 一一对应
+enum EventType {
+    EVENT_TYPE_SYSCALL = 0;
+    EVENT_TYPE_FILE    = 1;
+    EVENT_TYPE_NETWORK = 2;
+    EVENT_TYPE_IPC     = 3;
+}
+
+// 命令行 -i 选项的取值；未设置的维度表示该维度不限
+message runtimeinfo
+{
+    repeated uint32 roleID    = 1;
+    // 与 roleID 同属「角色」维度，两者取并集
+    repeated string roleLabel = 2;
+    repeated uint32 contextID = 3;
+    repeated uint32 pid       = 4;
+}
+
+message ReceiveEventRequest
+{
+    // 命令行选项 -t
+    repeated EventType etype  = 1;
+    // 命令行选项 -i
+    optional runtimeinfo info = 2;
+}
+
+message syscall_event_data
+{
+    oneof s_data
+    {
+        process_semantic_data process_data       = 1;
+        exec_semantic_data exec_data             = 2;
+        credential_semantic_data credential_data = 3;
+        namespace_semantic_data namespace_data   = 4;
+        file_syscall_semantic_data file_data     = 5;
+        memory_semantic_data memory_data         = 6;
+        network_syscall_semantic_data net_data   = 7;
+        kernel_semantic_data kernel_data         = 8;
+    }
+}
+
+// CLI订阅流事件的头
+message eventhead
+{
+    // 归属未落定时为空
+    string roleLabel       = 1;
+
+    // 未落定时值为 0
+    uint32 roleID          = 2;
+    uint32 contextID       = 3;
+    uint32 pid             = 4;
+
+    uint64 pid_start_time  = 5;
+    uint32 ppid            = 6;
+    uint64 ppid_start_time = 7;
+    EventType type         = 8;
+}
+
+// 本流丢弃事件的累计计数，可多次上报
+message streamstats
+{
+    uint64 dropped_events = 1;
+}
+
+message ReceiveEventResponse
+{
+    eventhead head = 1;
+    oneof event
+    {
+        syscall_event_data syscall_ev = 2;
+        file_event_data file_ev       = 3;
+        streamstats stats             = 4;
+    }
+}
+
+// 查询服务：运行时的信息
+service RuntimeService
+{
+    // 流式获取事件
+    rpc ReceiveEvent(ReceiveEventRequest) returns (stream ReceiveEventResponse);
+}

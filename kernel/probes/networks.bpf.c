@@ -4,32 +4,34 @@
  * @details
  *
  * 仅收集特定角色的出站连接的数据，即 TCP connect、UDP sendto / sendmsg。
- * 在内核态程序区分一个出站连接是否属于特定角色的方法是：通过 eBPF map，查询当前 PID
- * 是否属于特定角色。具体归属由用户态负责。
+ * 在内核态通过 eBPF map 查询当前进程的 TGID 与组长启动时间，
+ * 判定是否允许采集。角色归属及名单更新由用户态负责。
  * 入站流量（服务端接收）由对端随机发起、高度分散，无法形成稳定的语义与基线，不收集。
  *
  * 全部使用 sys_enter tracepoint，sys_exit 事件在新版内核中不携带系统调用参数。
- * 所以由于 connect 的本地源端口（作为客户端的临时端口）在进入系统调用时尚未分配，src_port 可能为 0，
- * 但这并不影响语义。
+ * 所以由于 connect
+ * 的本地源端口（作为客户端的临时端口）在进入系统调用时尚未分配，src_port 可能为
+ * 0， 但这并不影响语义。
  *
  * 这个模块不考虑系统层和云原生语义层的网络连接的区分，直接从相关系统调用中获取数据并上交。
- * 考虑云环境网络访问的影响。例如，通常随着 Pod 的重新调度，访问该 Pod 的物理 IP 也会变化，
- * 这时候这些 IP 都不具备稳定特征可供学习，无法成为基线。
+ * 考虑云环境网络访问的影响。例如，通常随着 Pod 的重新调度，访问该 Pod 的物理 IP
+ * 也会变化， 这时候这些 IP 都不具备稳定特征可供学习，无法成为基线。
  * 这些问题，包括eBPF难以捕捉到的其他云语义网络信息，都在用户态解决。
  *
  * @author red_shinku
  * @date 2026.08.07
  */
 
-#include "../include/vmlinux.h"
-#include "../include/networks_type.h"
+#include "kernel/include/vmlinux.h"
+#include "kernel/include/role_filter.bpf.h"
+#include "kernel/include/networks_type.h"
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-// vmlinux.h 只提供类型定义，不提供宏常量，此处自行定义
+//! @note vmlinux.h 只提供类型定义，不提供宏常量，此处自行定义
 #ifndef AF_INET
 #define AF_INET 2
 #endif
@@ -48,12 +50,14 @@ struct {
 
 /**
  * @brief 网络事件数据结构的初始化函数
- * @return NULL 初始化失败
- * @return struct network_data* 初始化成功，返回指针
+ * @return 初始化成功时返回 ringbuf 事件指针；角色被过滤或空间不足时返回 NULL。
+ * @note 调用者须对返回的事件执行提交或丢弃，完成 ringbuf 资源处理。
  */
 static __always_inline struct network_data *init_network_data(void)
 {
-    struct network_data *data = bpf_ringbuf_reserve(&network_events, sizeof(struct network_data), 0);
+    if (!hng_should_collect()) return NULL;
+    struct network_data *data =
+        bpf_ringbuf_reserve(&network_events, sizeof(struct network_data), 0);
     if (!data) {
         return NULL;
     }
@@ -69,14 +73,17 @@ static __always_inline struct network_data *init_network_data(void)
 
 /**
  * @brief 解析用户态 sockaddr 地址，提取地址族、IP 与端口
- * @param addr       用户态 sockaddr 指针
- * @param addrlen    sockaddr 长度
- * @param ip_out     输出的 IP 地址（IPv4 使用 [0]，IPv6 使用 [0..3]）
- * @param port_out   输出的端口（主机字节序）
- * @param family_out 输出的地址族
- * @return true 解析成功且为 IPv4 / IPv6 地址族
+ * @param[in] addr       用户态 sockaddr 指针
+ * @param[in] addrlen    sockaddr 长度
+ * @param[out] ip_out     输出的 IP 地址（IPv4 使用 [0]，IPv6 使用 [0..3]）
+ * @param[out] port_out   输出的端口（主机字节序）
+ * @param[out] family_out 输出的地址族
+ * @return 解析成功且为 IPv4 / IPv6 地址族时返回 true，否则返回 false。
+ * @note 仅在成功返回时使用输出参数中的地址和端口。
  */
-static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen, u32 ip_out[4], u16 *port_out, u32 *family_out)
+static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
+                                           u32 ip_out[4], u16 *port_out,
+                                           u32 *family_out)
 {
     if (!addr) {
         return false;
@@ -124,8 +131,9 @@ static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen, u32 ip
  * @brief 通过当前进程的 fd 获取套接字指针
  * @details 从 task_struct 的文件描述符表逐层读取（CO-RE），返回 fd 对应的
  *          struct sock *，任一环节读取失败均返回 NULL。
- * @param fd 文件描述符
- * @return struct sock* 套接字指针，失败返回 NULL
+ * @param[in] fd 文件描述符
+ * @return 内核持有的套接字指针，失败返回 NULL。
+ * @note 返回值仅用于本次探针中的读取，不转移所有权。
  */
 static __always_inline struct sock *get_socket_sk(u32 fd)
 {
@@ -172,10 +180,11 @@ static __always_inline struct sock *get_socket_sk(u32 fd)
 
 /**
  * @brief 从套接字读取本地信息（源端口、协议号）并写入事件
- * @param sk   套接字指针，允许为 NULL
- * @param data 网络事件数据
+ * @param[in] sk   套接字指针，允许为 NULL
+ * @param[in,out] data 网络事件数据，仅更新本地端口与协议号。
  */
-static __always_inline void fill_local_info(struct sock *sk, struct network_data *data)
+static __always_inline void fill_local_info(struct sock *sk,
+                                            struct network_data *data)
 {
     if (!sk) {
         return;
@@ -184,54 +193,73 @@ static __always_inline void fill_local_info(struct sock *sk, struct network_data
     data->protocol = BPF_CORE_READ(sk, sk_protocol);
 }
 
-// ============================================================================
-// 出站流量：全部拦截
-// ============================================================================
+/**
+ * @name 出站网络事件探针
+ * @details 仅提交进程白名单允许的出站连接事件。
+ * @{
+ */
 
+/**
+ * @brief 处理 sys_enter_connect 事件并提交采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过提交。
+ */
 SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_network_connect(struct trace_event_raw_sys_enter *ctx)
 {
     struct network_data *data = init_network_data();
     if (!data) return 0;
 
-    // args[0]: sockfd, args[1]: 目标 sockaddr, args[2]: addrlen
-    if (!parse_sockaddr((const void *)ctx->args[1], (u32)ctx->args[2], data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+    //! @note args[0]: sockfd, args[1]: 目标 sockaddr, args[2]: addrlen
+    if (!parse_sockaddr((const void *)ctx->args[1], (u32)ctx->args[2],
+                        data->dst_ip, &data->dst_port, &data->family)) {
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
-    // 源端口为本地临时端口，sys_enter 阶段可能尚未分配，为 0
+    //! @note 源端口为本地临时端口，sys_enter 阶段可能尚未分配，为 0
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_sendto 事件并提交采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过提交。
+ */
 SEC("tracepoint/syscalls/sys_enter_sendto")
 int trace_network_sendto(struct trace_event_raw_sys_enter *ctx)
 {
     struct network_data *data = init_network_data();
     if (!data) return 0;
 
-    // args[0]: sockfd, args[4]: 目标 sockaddr, args[5]: addrlen
-    if (!parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5], data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+    //! @note args[0]: sockfd, args[4]: 目标 sockaddr, args[5]: addrlen
+    if (!parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5],
+                        data->dst_ip, &data->dst_port, &data->family)) {
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_sendmsg 事件并提交采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过提交。
+ */
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int trace_network_sendmsg(struct trace_event_raw_sys_enter *ctx)
 {
     struct network_data *data = init_network_data();
     if (!data) return 0;
 
-    // args[0]: sockfd, args[1]: struct msghdr*, args[2]: flags
+    //! @note args[0]: sockfd, args[1]: struct msghdr*, args[2]: flags
     const void *dest_addr = NULL;
     u32 addrlen           = 0;
     struct msghdr msg;
@@ -240,14 +268,20 @@ int trace_network_sendmsg(struct trace_event_raw_sys_enter *ctx)
         addrlen   = (u32)msg.msg_namelen;
     }
 
-    // 已 connect 的套接字可传 NULL 的 msg_name，此时跳过（连接信息已由 connect 事件记录）
-    if (!parse_sockaddr(dest_addr, addrlen, data->dst_ip, &data->dst_port, &data->family)) {
-        bpf_ringbuf_discard(data, BPF_RB_NO_WAKEUP);
+    //! @note 已 connect 的套接字可传 NULL 的 msg_name，此时跳过（连接信息已由
+    //! connect 事件记录）
+    if (!parse_sockaddr(dest_addr, addrlen, data->dst_ip, &data->dst_port,
+                        &data->family)) {
+        bpf_ringbuf_discard(data, 0);
         return 0;
     }
 
     fill_local_info(get_socket_sk((u32)ctx->args[0]), data);
 
-    bpf_ringbuf_submit(data, BPF_RB_NO_WAKEUP);
+    bpf_ringbuf_submit(data, 0);
     return 0;
 }
+
+/** @} */
+
+char LICENSE[] SEC("license") = "GPL";

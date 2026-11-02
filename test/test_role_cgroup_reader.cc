@@ -2,7 +2,7 @@
  * @file test_role_cgroup_reader.cc
  * @brief cgroup 递归枚举与 stat 解析的表驱动单元测试
  * @details
- * 覆盖 agent/control_plane/role_discovery 的 RoleCgroupReader：
+ * 覆盖 agent/role_discovery 的 RoleCgroupReader：
  *  - 递归枚举：嵌套子 cgroup、中间层无 cgroup.procs 的子树均被完整枚举；
  *  - 容错：路径不存在 / 非目录、进程在枚举期间退出、cgroup.procs 不可读或内容脏、
  *    子目录消失（以悬空符号链接模拟），均不崩溃且返回已收集结果；
@@ -13,7 +13,7 @@
  * @date 2026.9.11
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
 
 #include <cstdio>
 #include <cstdlib>

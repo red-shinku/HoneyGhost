@@ -15,7 +15,7 @@
  * 从仓库根手动执行：
  *
  *   sudo /usr/local/go/bin/go run
- * ./agent/control_plane/role_discovery/containerd_bridge/cmd/containerd-bridge &
+ * ./agent/role_discovery/containerd_bridge/cmd/containerd-bridge &
  *   sudo build-agent/test/verify_role_containerd
  *
  * 另开一个终端制造事件：
@@ -27,8 +27,8 @@
  * @date 2026.9.13
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_containerd_discoverer.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_containerd_discoverer.hpp"
 
 #include <algorithm>
 #include <csignal>
@@ -73,11 +73,11 @@ void check_members(const hng::role::RolePayload& payload, const char* action)
         return;
     }
     for (const hng::Process& process : live) {
-        const bool found = std::any_of(
-            payload.member_processes.begin(), payload.member_processes.end(),
-            [&process](const hng::Process& candidate) {
-                return hng::role::same_process(candidate, process);
-            });
+        const bool found = std::any_of(payload.member_processes.begin(),
+                                       payload.member_processes.end(),
+                                       [&process](const hng::Process& candidate) {
+                                           return candidate == process;
+                                       });
         if (!found) {
             ++g_fail;
             std::fprintf(stderr, "[FAIL] %s：成员缺 pid=%u\n", action,
@@ -87,7 +87,7 @@ void check_members(const hng::role::RolePayload& payload, const char* action)
     const bool has_main = std::any_of(
         payload.member_processes.begin(), payload.member_processes.end(),
         [&payload](const hng::Process& candidate) {
-            return hng::role::same_process(candidate, payload.main_process);
+            return candidate == payload.main_process;
         });
     if (!has_main) {
         ++g_fail;
@@ -161,6 +161,15 @@ void on_signal(int)
     }
 }
 
+/// 事件的接收方，把发现器送出的事件逐条交给自校验
+class VerifySink : public hng::role::RoleEventSink {
+   public:
+    void on_role_event(const hng::role::RoleEvent& event) override
+    {
+        on_event(event);
+    }
+};
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -169,9 +178,9 @@ int main(int argc, char** argv)
     if (argc > 1) {
         config.socket_path = argv[1];
     }
-    config.on_event = on_event;
 
-    hng::role::ContainerdRoleDiscoverer discoverer(config);
+    VerifySink sink;
+    hng::role::ContainerdRoleDiscoverer discoverer(sink, config);
     g_discoverer = &discoverer;
 
     std::signal(SIGINT, on_signal);

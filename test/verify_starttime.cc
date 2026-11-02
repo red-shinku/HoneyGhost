@@ -2,15 +2,16 @@
  * @file verify_starttime.cc
  * @brief 校验：事件头 pid_start_time 与 /proc 字段 22 相等
  * @details
- * 加载 syscalls.bpf.o，附着 wake_up_new_task kprobe 与 sys_enter_exit_group
+ * 加载 syscalls.bpf.o，附着 wake_up_new_task kprobe 与 sched_process_exit
  * tracepoint，从 ringbuf 取事件，与其 /proc 取值比对。覆盖两个入口 × 两条路径
  * 共四处填法：
  *   - fork 事件显式填法：pid 路径（子进程）、ppid 路径（子进程的 real_parent）
  *   - init_event_head 公共填法：pid 路径（事件主体）、ppid 路径（real_parent）
  *
- * 校验方式是 fork 一个已知 pid 的子进程，比对其存活期间（含僵尸态）的 /proc
- * 取值；子进程消失则该处记 SKIP，不计为通过。退出码 0 仅在四处全部比对通过时
- * 给出。
+ * 校验方式是 fork 一个已知子进程，先读取其 /proc 字段 22，再按启动时间识别
+ * 事件。eBPF 的 tgid 是内核全局 pid；测试进程位于 PID 命名空间时事件 pid 在
+ * /proc 不可见，此时只比对启动时间，pid 比对仅在事件 pid 可见时执行。退出码 0
+ * 仅在四处启动时间全部比对通过时给出。
  *
  * 需 root 与 BPF 权限，故不注册为 ctest 用例。从仓库根手动执行：
  *   sudo build-agent/test/verify_starttime [syscalls.bpf.o 路径]
@@ -64,7 +65,9 @@ const char *site_name(int bit)
 struct Checker {
     pid_t subject;  ///< 被观测的子进程，也是事件的 pid 路径对象
     pid_t parent;   ///< 本进程，即子进程的 real_parent，也是事件的 ppid 路径对象
-    int pending;    ///< 尚未比对的填法位（Site 位掩码）
+    uint64_t subject_start;  ///< 子进程的 /proc 字段 22
+    uint64_t parent_start;   ///< 本进程的 /proc 字段 22
+    int pending;             ///< 尚未比对的填法位（Site 位掩码）
     int ok;
     int skipped;
     int fails;
@@ -121,12 +124,13 @@ bool proc_start_time(uint32_t pid, uint64_t *out)
 /**
  * @brief 比对一处填法
  * @param bit         填法标记，比对后从 pending 中清除
- * @param expect_pid  该路径本应指向的进程，用于确认路径取对了对象
- * @param got_pid     事件中该路径给出的 pid
- * @param got_start   事件中该路径给出的 pid_start_time
+ * @param expect_pid   该路径本应指向的进程，仅在事件 pid 可见时比对
+ * @param expect_start 该路径本应给出的 pid_start_time
+ * @param got_pid      事件中该路径给出的 pid
+ * @param got_start    事件中该路径给出的 pid_start_time
  */
-void check_site(Checker *c, int bit, uint32_t expect_pid, uint32_t got_pid,
-                uint64_t got_start)
+void check_site(Checker *c, int bit, uint32_t expect_pid, uint64_t expect_start,
+                uint32_t got_pid, uint64_t got_start)
 {
     if (!(c->pending & bit)) {
         return;
@@ -134,32 +138,30 @@ void check_site(Checker *c, int bit, uint32_t expect_pid, uint32_t got_pid,
     c->pending       &= ~bit;
     const char *name  = site_name(bit);
 
-    if (got_pid != expect_pid) {
+    if (got_start != expect_start) {
+        ++c->fails;
+        std::printf(
+            "[FAIL] %s  pid=%-7u eBPF=%-10" PRIu64 " /proc=%-10" PRIu64
+            " 差值 %" PRId64 "\n",
+            name, got_pid, got_start, expect_start,
+            static_cast<int64_t>(got_start) - static_cast<int64_t>(expect_start));
+        return;
+    }
+
+    // eBPF 的 tgid 是内核全局 pid；本进程若在 PID 命名空间内，事件 pid 在
+    // /proc 不可见。只有事件 pid 确实指向同一个进程时才做 pid 比对。
+    uint64_t local_start = 0;
+    if (proc_start_time(got_pid, &local_start) && local_start == got_start &&
+        got_pid != expect_pid) {
         ++c->fails;
         std::printf("[FAIL] %s  事件 pid=%u，应为 %u\n", name, got_pid,
                     expect_pid);
         return;
     }
 
-    uint64_t want = 0;
-    if (!proc_start_time(got_pid, &want)) {
-        ++c->skipped;
-        std::printf("[SKIP] %s  pid=%u 已消失，无法比对\n", name, got_pid);
-        return;
-    }
-
-    if (want == got_start) {
-        ++c->ok;
-        std::printf("[ OK ] %s  pid=%-7u eBPF=%-10" PRIu64 " /proc=%" PRIu64 "\n",
-                    name, got_pid, got_start, want);
-    }
-    else {
-        ++c->fails;
-        std::printf("[FAIL] %s  pid=%-7u eBPF=%-10" PRIu64 " /proc=%-10" PRIu64
-                    " 差值 %" PRId64 "\n",
-                    name, got_pid, got_start, want,
-                    static_cast<int64_t>(got_start) - static_cast<int64_t>(want));
-    }
+    ++c->ok;
+    std::printf("[ OK ] %s  pid=%-7u eBPF=%-10" PRIu64 " /proc=%" PRIu64 "\n",
+                name, got_pid, got_start, expect_start);
 }
 
 int on_event(void *ctx, void *data, size_t size)
@@ -171,23 +173,25 @@ int on_event(void *ctx, void *data, size_t size)
     auto *ev                   = static_cast<struct syscall_event *>(data);
     const struct event_head &h = ev->hdr.head;
 
-    // 只关心本进程观测的那一个子进程，其余进程的事件全部忽略
-    if (h.pid != static_cast<uint32_t>(c->subject)) {
+    // 以子进程的启动时间识别事件。eBPF 的 pid 是内核全局 pid，在 PID
+    // 命名空间内与 /proc 的 pid 不同，启动时间则不受影响。不能用 ppid 的
+    // 启动时间过滤，否则该字段填错时只会表现为 MISS，无法定位。
+    if (h.pid_start_time != c->subject_start) {
         return 0;
     }
 
     switch (ev->hdr.name) {
         case SYSCALL_EVENT_FORK:
-            check_site(c, SITE_FORK_PID, static_cast<uint32_t>(c->subject), h.pid,
-                       h.pid_start_time);
+            check_site(c, SITE_FORK_PID, static_cast<uint32_t>(c->subject),
+                       c->subject_start, h.pid, h.pid_start_time);
             check_site(c, SITE_FORK_PPID, static_cast<uint32_t>(c->parent),
-                       h.ppid, h.ppid_start_time);
+                       c->parent_start, h.ppid, h.ppid_start_time);
             break;
         case SYSCALL_EVENT_EXIT_GROUP:
-            check_site(c, SITE_INIT_PID, static_cast<uint32_t>(c->subject), h.pid,
-                       h.pid_start_time);
+            check_site(c, SITE_INIT_PID, static_cast<uint32_t>(c->subject),
+                       c->subject_start, h.pid, h.pid_start_time);
             check_site(c, SITE_INIT_PPID, static_cast<uint32_t>(c->parent),
-                       h.ppid, h.ppid_start_time);
+                       c->parent_start, h.ppid, h.ppid_start_time);
             break;
         default:
             break;
@@ -213,7 +217,7 @@ int run(const char *obj_path)
     bpf_program *prog_fork =
         bpf_object__find_program_by_name(obj, "trace_process_birth");
     bpf_program *prog_exit =
-        bpf_object__find_program_by_name(obj, "trace_exit_group");
+        bpf_object__find_program_by_name(obj, "trace_process_exit");
     bpf_map *map = bpf_object__find_map_by_name(obj, "syscall_events");
     if (!prog_fork || !prog_exit || !map) {
         std::fprintf(stderr,
@@ -223,8 +227,14 @@ int run(const char *obj_path)
     }
 
     Checker ck{};
-    ck.pending      = SITE_ALL;
-    ck.parent       = ::getpid();
+    ck.pending = SITE_ALL;
+    ck.parent  = ::getpid();
+    if (!proc_start_time(ck.parent, &ck.parent_start)) {
+        std::fprintf(stderr, "读取本进程启动时间失败：%s\n",
+                     std::strerror(errno));
+        bpf_object__close(obj);
+        return 2;
+    }
 
     ring_buffer *rb = ring_buffer__new(bpf_map__fd(map), on_event, &ck, nullptr);
     if (!rb) {
@@ -250,22 +260,26 @@ int run(const char *obj_path)
         return 2;
     }
     if (ck.subject == 0) {
-        // 子进程：稍候退出以触发 exit_group；父进程不回收，让 /proc 仍可读
+        // 子进程：稍候退出以触发退出事件；父进程不回收，让 /proc 仍可读
         ::usleep(1500 * 1000);
         ::_exit(0);
+    }
+
+    if (!proc_start_time(ck.subject, &ck.subject_start)) {
+        std::fprintf(stderr, "读取子进程启动时间失败：%s\n",
+                     std::strerror(errno));
+        return 2;
     }
 
     std::printf("对象：%s\n主体：pid=%d  父进程：pid=%d\n\n", obj_path,
                 ck.subject, ck.parent);
 
-    // 探针一律以 BPF_RB_NO_WAKEUP 提交，不产生唤醒，故不能用 ring_buffer__poll
-    // （epoll 永不就绪），必须主动轮询消费
+    // 探针以默认唤醒提交，ring_buffer__poll 会阻塞到事件到达或超时。
     for (int waited = 0; ck.pending && waited < 5000; waited += 10) {
-        if (int n = ring_buffer__consume(rb); n < 0) {
+        if (int n = ring_buffer__poll(rb, 10); n < 0) {
             std::fprintf(stderr, "ringbuf 读取失败：%s\n", std::strerror(-n));
             break;
         }
-        ::usleep(10 * 1000);
     }
 
     for (int bit = 1; bit <= SITE_INIT_PPID; bit <<= 1) {

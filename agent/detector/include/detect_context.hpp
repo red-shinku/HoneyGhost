@@ -12,8 +12,8 @@
 
 #include <unordered_set>
 
-#include "agent/event_data/file_event.hpp"
-#include "agent/event_data/syscall_event.hpp"
+#include "agent/event_data/include/file_event.hpp"
+#include "agent/event_data/include/syscall_event.hpp"
 #include "agent/detector/include/score.hpp"
 
 /**

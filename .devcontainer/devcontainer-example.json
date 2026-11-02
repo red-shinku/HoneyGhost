@@ -1,0 +1,39 @@
+{
+  "name": "HoneyGhost Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/HoneyGhost,type=bind",
+  "workspaceFolder": "/workspaces/HoneyGhost",
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  "mounts": [
+    "source=hng-go-mod,target=/home/dev/go/pkg/mod,type=volume",
+    "source=hng-go-build,target=/home/dev/.cache/go-build,type=volume",
+    "source=hng-userver,target=/opt/userver,type=volume"
+  ],
+  "postCreateCommand": "cmake -S . -B build-agent",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "xaver.clang-format",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "golang.go"
+      ],
+      "settings": {
+        "clangd.path": "/usr/bin/clangd-22",
+        "clangd.arguments": [
+          "--compile-commands-dir=${workspaceFolder}/build-agent",
+          "--background-index"
+        ],
+        "cmake.buildDirectory": "${workspaceFolder}/build-agent",
+        "cmake.generator": "Unix Makefiles",
+        "cmake.configureOnOpen": true,
+        "C_Cpp.intelliSenseEngine": "disabled"
+      }
+    }
+  }
+}

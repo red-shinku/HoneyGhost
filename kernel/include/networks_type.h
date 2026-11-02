@@ -1,7 +1,7 @@
 #ifndef _BPF_NETWORK_TYPE_H_
 #define _BPF_NETWORK_TYPE_H_
 
-#include "./event_head.h"
+#include "kernel/include/event_head.h"
 
 struct network_data {
     struct event_head head;

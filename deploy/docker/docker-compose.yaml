@@ -1,0 +1,75 @@
+# ============================================================
+# HoneyGhost 单机部署示例
+#
+#   sudo mkdir -p /run/honeyghost
+#   docker compose -f deploy/docker/docker-compose.yaml up -d --build
+# ============================================================
+name: honeyghost
+
+services:
+  agent:
+    image: hng/agent:${HNG_IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/agent.Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-debian:13-slim}
+        USERVER_VERSION: ${USERVER_VERSION:-3.2}
+    restart: unless-stopped
+    command: ["--config", "/etc/honeyghost/agent.conf"]
+    # 给 CLI 服务端的 drain 留出时间（配置里的 drain_timeout 为 10s）
+    stop_grace_period: 30s
+
+    pid: host
+    cgroup: host
+    # 当前确定可用的方式；最小权限集合见 README「权限」
+    privileged: true
+
+    volumes:
+      - ./config:/etc/honeyghost:ro
+      # 与桥接进程共享的 socket 目录，也是宿主机 CLI 的接入点
+      - /run/honeyghost:/run/honeyghost
+      # 订阅宿主 systemd 的 unit 事件
+      - type: bind
+        source: /run/dbus/system_bus_socket
+        target: /run/dbus/system_bus_socket
+        read_only: true
+        bind:
+          # 缺该 socket 时直接报错，而不是在宿主上建出一个同名目录
+          create_host_path: false
+      # tracepoint 的 id 只存在于 tracefs，容器内默认看不到
+      - type: bind
+        source: /sys/kernel/tracing
+        target: /sys/kernel/tracing
+        read_only: true
+        bind:
+          create_host_path: false
+
+    ulimits:
+      memlock: -1
+
+    depends_on:
+      - containerd-bridge
+
+  containerd-bridge:
+    image: hng/containerd-bridge:${HNG_IMAGE_TAG:-latest}
+    build:
+      context: ../../agent/role_discovery/containerd_bridge
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-debian:13-slim}
+    restart: unless-stopped
+    # 宿主 socket 为 root:root 0660
+    user: "0:0"
+    command:
+      - -socket=/run/honeyghost/containerd-bridge.sock
+      - -containerd=/run/containerd/containerd.sock
+
+    volumes:
+      - /run/honeyghost:/run/honeyghost
+      - type: bind
+        source: /run/containerd/containerd.sock
+        target: /run/containerd/containerd.sock
+        read_only: true
+        bind:
+          # 缺 socket 时直接报错：短语法会静默建出目录，毁掉宿主上的 socket 路径
+          create_host_path: false

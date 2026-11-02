@@ -2,7 +2,7 @@
  * @file test_role_systemd_discoverer.cc
  * @brief systemd 角色发现器的表驱动单元测试
  * @details
- * 覆盖 agent/control_plane/role_discovery 的 SystemdSignalTranslator 与
+ * 覆盖 agent/role_discovery 的 SystemdSignalTranslator 与
  * SystemdRoleDiscoverer：
  *  - 信号翻译：首次 MainPID 非 0 触发加入、activating 且 MainPID 为 0 不产出、
  *    自动重启产出 LEAVE + JOIN、无 LEAVE 介入的 MainPID 变化产出主进程更换；
@@ -21,7 +21,7 @@
  *  - 重启判据：**仅在锚点变化时**才问「交接还是重启」——该值前进即 LEAVE +
  *    JOIN；原地交接与 reload 该值不动，走主进程更换 / 无动作；锚点未变时该值
  *    前进（同一进程走完 activating → active）不得展开；
- *  - 对外形态：stop() 先于 run()、stop() 幂等、run() 返回后不再产出事件。
+ *  - 对外形态：stop() 先于 run()、stop() 幂等、run() 返回后事件出口不再被调用。
  *
  * 消息序列录自本机真实 systemd 257：
  *   sudo busctl monitor --match="type='signal',sender='org.freedesktop.systemd1'"
@@ -33,13 +33,16 @@
  * @date 2026.9.12
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_systemd_discoverer.hpp"
+#include "agent/role_discovery/include/role_source_barrier.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_systemd_discoverer.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -938,30 +941,67 @@ void test_stale_delta_is_dropped_by_cookie()
 // 17. 对外形态：run() / stop()
 // ============================================================
 
+/// 记录型事件出口：只数产出，用于断言 run() 返回后出口不再被调用
+/// @note 本源的 run() 无 system bus 时不产出事件，故这里只覆盖出口的生命周期
+/// 一侧。「产出全在 run() 的调用栈上、结算与 submit 同出口同序」由容器源那条
+/// 带真实 socket 与真实 run() 的接线测试端到端覆盖，两侧共用同一个出口形状。
+class RecordingSink : public hng::role::RoleEventSink {
+   public:
+    void on_role_event(const RoleEvent&) override { ++count_; }
+    std::size_t count() const { return count_; }
+
+   private:
+    std::size_t count_ = 0;
+};
+
 void test_run_stop_contract()
 {
-    int emitted = 0;
+    RecordingSink sink;
     SystemdRoleDiscoverer::Config config;
-    config.on_event = [&emitted](const RoleEvent&) { ++emitted; };
 
     // stop() 先于 run()：run() 立即返回，不阻塞
     {
-        SystemdRoleDiscoverer discoverer(config);
+        SystemdRoleDiscoverer discoverer(sink, config);
         discoverer.stop();
         discoverer.stop();  // 幂等
         discoverer.run();
         CHECK(true, "run() 之前调用 stop() 时 run() 立即返回");
-        CHECK(emitted == 0, "run() 返回后不再产出事件");
+        CHECK(sink.count() == 0, "run() 返回后不再产出事件");
     }
+
+    // 出口契约：run() 返回之后不得再有产出
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(sink.count() == 0, "run() 返回后出口不得被调用");
 
     // 反复 stop() 与析构不崩
     {
-        SystemdRoleDiscoverer discoverer(config);
+        SystemdRoleDiscoverer discoverer(sink, config);
         for (int i = 0; i < 8; ++i) {
             discoverer.stop();
         }
-        CHECK(emitted == 0, "未运行时不产出事件");
+        CHECK(sink.count() == 0, "未运行时不产出事件");
     }
+}
+
+/// 源屏障：无 system bus 时首个快照结论为不可用，且不是超时
+void test_source_barrier_unavailable()
+{
+    RecordingSink sink;
+    RoleSourceBarrier barrier;
+    barrier.expect(hng::role::RoleSource::SYSTEMD);
+
+    SystemdRoleDiscoverer::Config config;
+    config.barrier = &barrier;
+
+    SystemdRoleDiscoverer discoverer(sink, config);
+    std::thread runner([&discoverer] { discoverer.run(); });
+    CHECK(!barrier.wait(std::chrono::milliseconds(1000)),
+          "无 system bus 时角色源应上报不可用");
+    CHECK(!barrier.timed_out(), "不可用应由 ready() 给出，不是超时");
+    CHECK(sink.count() == 0, "源不可用期间不产出事件");
+
+    discoverer.stop();
+    runner.join();
 }
 
 }  // namespace
@@ -990,6 +1030,7 @@ int main()
     test_stale_delta_is_dropped_by_cookie();
     test_reload_does_not_look_like_restart();
     test_run_stop_contract();
+    test_source_barrier_unavailable();
 
     if (g_fail == 0) {
         std::printf("test_role_systemd_discoverer：全部通过\n");

@@ -14,7 +14,7 @@
 #ifndef _BPF_SYSCALL_TYPE_H_
 #define _BPF_SYSCALL_TYPE_H_
 
-#include "../include/syscall_event_head.h"
+#include "kernel/include/syscall_event_head.h"
 
 // syscall参数最大长度
 #define MAX_ARG_LEN 64
@@ -24,7 +24,7 @@
 struct process_event {
     // （kprobe wake_up_new_task），事件头 head 即新进程，因此不再携带
     // clone_flags（原用于区分 clone 创建线程/进程，现由 head 语义替代）。
-    __s32 exit_code;  ///< exit_group 的退出码
+    __s32 exit_code;  ///< 进程退出码；正常退出为状态码，被信号终止为信号编号的负数
 };
 
 struct exec_event {

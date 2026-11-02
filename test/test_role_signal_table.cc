@@ -2,7 +2,7 @@
  * @file test_role_signal_table.cc
  * @brief 角色存活状态表的表驱动单元测试
  * @details
- * 覆盖 agent/control_plane/role_discovery 的 RoleSignalTable：
+ * 覆盖 agent/role_discovery 的 RoleSignalTable：
  *  - 进入观察的三条分支：不存在→加入、锚点相同→无产出、锚点不同→主进程更换；
  *  - 离开观察的三条分支：存活→退出、未知实例→无产出、重复离开→无产出；
  *  - 观察量序列：乱序、重复、重连后重放快照均不产出多余动作；
@@ -14,7 +14,7 @@
  * @date 2026.9.11
  */
 
-#include "agent/control_plane/role_discovery/include/role_signal_table.hpp"
+#include "agent/role_discovery/src/role_signal_table.hpp"
 
 #include <cstdio>
 #include <optional>
@@ -261,8 +261,7 @@ void run_payload_cache()
                   "加入应带 cgroup 路径");
             CHECK(event->payload.member_processes.size() == 1,
                   "加入应带成员列表");
-            CHECK(hng::role::same_process(event->payload.main_process,
-                                          sent.main_process),
+            CHECK(event->payload.main_process == sent.main_process,
                   "加入应带锚点");
         }
         CHECK(table.is_alive("a"), "加入后应存活");

@@ -32,8 +32,8 @@
  * @date 2026.9.12
  */
 
-#include "agent/control_plane/role_discovery/include/role_cgroup_reader.hpp"
-#include "agent/control_plane/role_discovery/include/role_systemd_discoverer.hpp"
+#include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/role_discovery/src/role_systemd_discoverer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -214,6 +214,12 @@ void on_signal(int)
     }
 }
 
+/// 事件的接收方，把发现器送出的事件逐条交给自校验
+class VerifySink : public hng::role::RoleEventSink {
+   public:
+    void on_role_event(const RoleEvent& event) override { on_event(event); }
+};
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -221,13 +227,13 @@ int main(int argc, char** argv)
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // 事件与跟踪按真实时序交错
 
     SystemdRoleDiscoverer::Config config;
-    config.on_event = on_event;
     // 可选：周期快照间隔（毫秒），传 0 关掉。调小可以观察结算健康度累积
     if (argc > 1) {
         config.snapshot_interval = std::chrono::milliseconds(std::atoi(argv[1]));
     }
 
-    SystemdRoleDiscoverer discoverer(config);
+    VerifySink sink;
+    SystemdRoleDiscoverer discoverer(sink, config);
     g_discoverer = &discoverer;
 
     std::signal(SIGINT, on_signal);

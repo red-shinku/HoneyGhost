@@ -3,6 +3,8 @@ project(HoneyGhostAgent LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# 供 clangd 等语言服务器使用：导出编译数据库到构建目录
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
@@ -10,6 +12,13 @@ add_compile_options(-Wall -Wextra)
 
 # 仓库根目录作为 include 根，统一以 repo-root-relative 形式包含头文件
 set(HNG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+
+# ============================================================
+# eBPF 探针与骨架
+#
+# 不依赖任何 C++ 目标，产物落源码树；clang / bpftool 缺失时整个子目录为空目标。
+# ============================================================
+add_subdirectory(kernel)
 
 # ============================================================
 # 事件数据结构：proto 生成载荷 + 手写组合结构
@@ -35,26 +44,75 @@ protobuf_generate(TARGET hng_event_data LANGUAGE cpp
 )
 
 # ============================================================
-# 语义化模块
+# 统一日志
+#
+# 公共头只依赖 fmt；spdlog 仅出现在 log.cc。系统 spdlog 为 external fmt
+# 构建，与 fmt 10 同版本，故不切换到 header-only 或内置 fmt。
 # ============================================================
+find_package(fmt REQUIRED)
+find_package(spdlog REQUIRED)
+add_library(hng_log STATIC
+    agent/util/src/log.cc
+)
+target_include_directories(hng_log PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_log
+    PUBLIC fmt::fmt
+    PRIVATE spdlog::spdlog
+)
+# log.cc 自身的告警（如无法识别的 HNG_LOG_LEVEL）以 "log" 为模块名
+target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
+
+# ============================================================
+# 配置来源（通用 INI 文档 + 主配置 schema）
+#
+# 只依赖标准库。本阶段只提供目标与测试，不接入 hng_agent 或其它目标。
+# ============================================================
+add_library(hng_config STATIC
+    agent/config/src/config_document.cc
+    agent/config/src/config_loader.cc
+)
+target_include_directories(hng_config PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
+# 采集聚合（单线程消费多条事件线）
+#
+# 只在 libbpf 与骨架可用时构建；骨架缺失时整目录跳过。
+# ============================================================
+add_subdirectory(agent/collector)
+
+# ============================================================
+# 语义化模块（无状态工具 + 单线程语义聚合）
+# ============================================================
+find_package(Threads REQUIRED)
 add_library(hng_semantic STATIC
-    agent/semantic/path/path_normalizer.cc
-    agent/semantic/path/path_rule.cc
-    agent/semantic/path/token_validator.cc
-    agent/semantic/semantic_file.cc
-    agent/semantic/semantic_syscall.cc
+    agent/semantic/src/path/path_normalizer.cc
+    agent/semantic/src/path/path_rule.cc
+    agent/semantic/src/path/token_validator.cc
+    agent/semantic/src/semantic.cc
+    agent/semantic/src/semantic_component.cc
+    agent/semantic/src/semantic_file.cc
+    agent/semantic/src/semantic_syscall.cc
 )
 target_include_directories(hng_semantic PUBLIC
     ${HNG_SOURCE_DIR}
 )
-target_link_libraries(hng_semantic PUBLIC hng_event_data)
+target_link_libraries(hng_semantic
+    PUBLIC hng_event_data
+           Threads::Threads
+)
+target_link_libraries(hng_semantic PRIVATE hng_log)
+target_compile_definitions(hng_semantic PRIVATE HNG_LOG_TAG="semantic")
 
 # ============================================================
 # context 派生规则模块
 # ============================================================
 add_library(hng_context_rule STATIC
-    agent/context/rule/derive_types.cc
-    agent/context/rule/pending_table.cc
+    agent/context_maintainer/src/rule/derive_types.cc
+    agent/context_maintainer/src/rule/pending_table.cc
 )
 target_include_directories(hng_context_rule PUBLIC
     ${HNG_SOURCE_DIR}
@@ -65,26 +123,31 @@ target_link_libraries(hng_context_rule PUBLIC hng_event_data)
 # context 维护模块（ContextMaintainer，消费 rule 派生规则，经 ContextService 接入）
 # ============================================================
 add_library(hng_context_maintainer STATIC
-    agent/context/context_maintainer.cc
+    agent/context_maintainer/src/context_maintainer.cc
 )
 target_include_directories(hng_context_maintainer PUBLIC
     ${HNG_SOURCE_DIR}
 )
-target_link_libraries(hng_context_maintainer PUBLIC
-    hng_context_rule
-    hng_event_data
+target_link_libraries(hng_context_maintainer
+    PUBLIC
+        hng_context_rule
+        hng_event_data
+    PRIVATE
+        hng_log
 )
+target_compile_definitions(hng_context_maintainer
+    PRIVATE HNG_LOG_TAG="context_maintainer")
 
 # ============================================================
 # 角色发现模块（公共骨架：状态表与 cgroup 读取）
 #
 # 无第三方依赖，也不链接 hng_event_data——锚点类型 hng::Process 所在的
-# agent/event_data/process.hpp 是 header-only 且只依赖 <cstdint>。
+# agent/event_data/include/process.hpp 是 header-only 且只依赖 <cstdint>。
 # 各发现源按源再配一个 STATIC 库（libsystemd / gRPC）。
 # ============================================================
 add_library(hng_role_discovery STATIC
-    agent/control_plane/role_discovery/role_signal_table.cc
-    agent/control_plane/role_discovery/role_cgroup_reader.cc
+    agent/role_discovery/src/role_signal_table.cc
+    agent/role_discovery/src/role_cgroup_reader.cc
 )
 target_include_directories(hng_role_discovery PUBLIC
     ${HNG_SOURCE_DIR}
@@ -122,7 +185,7 @@ if(HNG_ENABLE_ROLE_SYSTEMD)
 
     if(HNG_SYSTEMD_DEP)
         add_library(hng_role_systemd STATIC
-            agent/control_plane/role_discovery/role_systemd_discoverer.cc
+            agent/role_discovery/src/role_systemd_discoverer.cc
         )
         target_include_directories(hng_role_systemd PUBLIC
             ${HNG_SOURCE_DIR}
@@ -130,7 +193,10 @@ if(HNG_ENABLE_ROLE_SYSTEMD)
         target_link_libraries(hng_role_systemd
             PUBLIC hng_role_discovery
             PRIVATE ${HNG_SYSTEMD_DEP}
+                    hng_log
         )
+        target_compile_definitions(hng_role_systemd
+            PRIVATE HNG_LOG_TAG="role_systemd")
     else()
         message(STATUS "libsystemd 未找到，跳过 hng_role_systemd")
     endif()
@@ -140,8 +206,8 @@ endif()
 # containerd 角色发现源（经翻译进程，无 gRPC）
 #
 # C++ 侧只连翻译进程的 Unix socket，协议 .proto 由本仓库双端生成：C++ 侧在
-# 构建时生成，Go 侧产物入库（见 containerd_bridge/gen.sh）。
-# 翻译进程的构建不接 CMake，见 containerd_bridge/README.md。
+# 构建时生成，Go 侧产物入库（见 agent/role_discovery/containerd_bridge/gen.sh）。
+# 翻译进程的构建不接 CMake，见 agent/role_discovery/containerd_bridge/README.md。
 # ============================================================
 option(HNG_ENABLE_ROLE_CONTAINERD "构建 containerd 角色发现器（需 protobuf）" ON)
 if(HNG_ENABLE_ROLE_CONTAINERD)
@@ -149,7 +215,7 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
     file(MAKE_DIRECTORY ${ROLE_BRIDGE_GEN_DIR})
 
     add_library(hng_role_containerd STATIC
-        agent/control_plane/role_discovery/role_containerd_discoverer.cc
+        agent/role_discovery/src/role_containerd_discoverer.cc
     )
     target_include_directories(hng_role_containerd PUBLIC
         ${HNG_SOURCE_DIR}
@@ -160,12 +226,180 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
     target_link_libraries(hng_role_containerd
         PUBLIC hng_role_discovery
                protobuf::libprotobuf
+        PRIVATE hng_log
     )
+    target_compile_definitions(hng_role_containerd
+        PRIVATE HNG_LOG_TAG="role_containerd")
     protobuf_generate(TARGET hng_role_containerd LANGUAGE cpp
         PROTOS proto/role_containerd_bridge.proto
         IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
         PROTOC_OUT_DIR ${ROLE_BRIDGE_GEN_DIR}
     )
+endif()
+
+# ============================================================
+# 角色发现组件（工厂 + 运行期句柄）
+#
+# 包装 systemd 与 containerd 两个发现源。可用性宏只对本目标 PRIVATE，不进入
+# 公共头；源未编入构建时对应工厂方法返回空指针。
+# ============================================================
+add_library(hng_role_discovery_component STATIC
+    agent/role_discovery/src/role_discovery_component.cc
+)
+target_include_directories(hng_role_discovery_component PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_role_discovery_component PUBLIC hng_role_discovery)
+if(TARGET hng_role_systemd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_systemd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_SYSTEMD=1)
+endif()
+if(TARGET hng_role_containerd)
+    target_link_libraries(hng_role_discovery_component
+        PUBLIC hng_role_containerd)
+    target_compile_definitions(hng_role_discovery_component
+        PRIVATE HNG_HAVE_ROLE_CONTAINERD=1)
+endif()
+
+# ============================================================
+# 控制平面（角色关系表 + 角色管理器 + 角色组件句柄 + 聚合句柄）
+#
+# 依赖角色发现公共骨架（RoleEvent / RolePayload 类型与 RoleCgroupReader）。
+# ProcessManager / ContextManager 在各自目标中；聚合句柄经链接依赖取用，
+# 装配三个组件后完成控制面内部接线。
+# ============================================================
+add_library(hng_control_plane STATIC
+    agent/control_plane/src/control_plane.cc
+    agent/control_plane/src/role_component.cc
+    agent/control_plane/src/role_label_builder.cc
+    agent/control_plane/src/role_manager.cc
+    agent/control_plane/src/role_relation_store.cc
+)
+target_include_directories(hng_control_plane PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_control_plane PUBLIC
+    hng_role_discovery
+    hng_process_manager
+    hng_context_manager
+)
+
+# ============================================================
+# 控制平面（进程管理器）
+#
+# 只依赖 event_data 与两个服务接口（均 header-only），不含 ContextManager。
+# ============================================================
+add_library(hng_process_manager STATIC
+    agent/control_plane/src/process_component.cc
+    agent/control_plane/src/process_manager.cc
+    agent/control_plane/src/process_store.cc
+)
+target_include_directories(hng_process_manager PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
+# 控制平面（上下文管理器）
+#
+# 只依赖 event_data 与 context 服务接口（均 header-only）；
+# 工作平面的 ContextMaintainer 不在本目标内。
+# ============================================================
+add_library(hng_context_manager STATIC
+    agent/control_plane/src/context_component.cc
+    agent/control_plane/src/context_manager.cc
+    agent/control_plane/src/context_store.cc
+)
+target_include_directories(hng_context_manager PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
+# 用户态角色过滤
+#
+# 只依赖公共头与线程库；本阶段只纳入构建目标，组件接口在后续阶段接入。
+# ============================================================
+add_subdirectory(agent/role_filter)
+
+# ============================================================
+# 运行时引擎（语义事件流的分发中枢）
+#
+# 依赖 event_data 的事件契约（含 proto 生成物）、context_maintainer 的派生决策
+# 与控制平面的两个服务接口（header-only）。本模块对外接口在 include/，实现细节
+# 在 src/。
+# ============================================================
+add_library(hng_runtime_engine STATIC
+    agent/runtime_engine/src/runtime_engine.cc
+    agent/runtime_engine/src/runtime_engine_component.cc
+    agent/runtime_engine/src/runtime_event_dispatcher.cc
+    agent/runtime_engine/src/runtime_packaging.cc
+    agent/runtime_engine/src/runtime_pipeline.cc
+)
+target_include_directories(hng_runtime_engine PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+target_link_libraries(hng_runtime_engine PUBLIC
+    hng_context_maintainer
+    hng_event_data
+)
+target_link_libraries(hng_runtime_engine PRIVATE hng_log)
+target_compile_definitions(hng_runtime_engine PRIVATE
+    HNG_LOG_TAG="runtime_engine")
+
+# ============================================================
+# 装配层
+#
+# 构造组件、跨模块接线、线程与启停顺序；初始化协调器与 /proc 快照在
+# 本目标内。放在运行时引擎之后，以便链接各模块目标。
+# ============================================================
+add_subdirectory(agent/assembly)
+
+# ============================================================
+# 节点代理可执行目标
+#
+# 参数解析、角色过滤配置加载、信号处理与装配层启停；CLI 服务端编入构建时
+# 一并接入。
+# ============================================================
+add_executable(hng_agent agent/main.cc)
+target_link_libraries(hng_agent PRIVATE hng_assembly hng_config)
+target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
+
+# ============================================================
+# CLI 服务端
+# ============================================================
+option(HNG_ENABLE_CLI_SERVER "构建 CLI 服务端模块（需 userver）" ON)
+if(HNG_ENABLE_CLI_SERVER)
+    # 临时抬 c++ 标准
+    set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
+    set(CMAKE_CXX_STANDARD 20)
+    get_property(HNG_COMPILE_OPTIONS_SAVED DIRECTORY PROPERTY COMPILE_OPTIONS)
+
+    find_package(userver QUIET COMPONENTS core grpc)
+
+    set(CMAKE_CXX_STANDARD "${HNG_CXX_STANDARD_SAVED}")
+
+    set(CMAKE_CXX_STANDARD "${HNG_CXX_STANDARD_SAVED}")
+    unset(CMAKE_CXX_EXTENSIONS)             # userver 置 OFF；本项目未使用该变量
+    unset(CMAKE_VISIBILITY_INLINES_HIDDEN)  # userver 置 ON；同上
+    set_property(DIRECTORY PROPERTY COMPILE_OPTIONS "${HNG_COMPILE_OPTIONS_SAVED}")
+    unset(HNG_CXX_STANDARD_SAVED)
+    unset(HNG_COMPILE_OPTIONS_SAVED)
+
+    if(NOT userver_FOUND)
+        message(FATAL_ERROR
+            "未找到 userver（find_package(userver COMPONENTS core grpc) 失败）。\n"
+            "  容器内：先执行 scripts/install-userver.sh，见 .devcontainer/README.md 第 3 节\n"
+            "  容器外：给 -Duserver_ROOT=<userver 安装前缀>，或设同名环境变量\n"
+            "  只想要其余模块：-DHNG_ENABLE_CLI_SERVER=OFF")
+    endif()
+
+    add_subdirectory(agent/cli_server)
+
+    if(TARGET hng_agent)
+        target_link_libraries(hng_agent PRIVATE hng_cli_server)
+        target_compile_definitions(hng_agent PRIVATE HNG_HAVE_CLI_SERVER=1)
+    endif()
 endif()
 
 # ============================================================

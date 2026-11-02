@@ -3,6 +3,11 @@
 *.skel.h
 build/
 build-agent/
+bin/
 *.pb.h
 *.pb.cc
+*.pb.go
 vmlinux.h
+go.work
+go.work.sum
+.devcontainer/devcontainer.json
