@@ -19,19 +19,19 @@ struct network_data;
 namespace hng {
 
 template <class T>
-class SPSC_Queue;
+class EventChannelWriter;
 
 /**
  * @brief 采集组件的构造选项。
- * @details 三条原始事件队列由装配层创建并持有；空指针表示该线未接线。
+ * @details 三条原始事件通道由装配层创建并持有；空指针表示该线未接线。
  */
 struct CollectorOptions {
-    /// 文件原始事件队列
-    hng::SPSC_Queue<::file_access_data>* file_queue = nullptr;
-    /// 系统调用原始事件队列
-    hng::SPSC_Queue<::syscall_event>* syscall_queue = nullptr;
-    /// 网络原始事件队列
-    hng::SPSC_Queue<::network_data>* network_queue  = nullptr;
+    /// 文件原始事件通道写端
+    hng::EventChannelWriter<::file_access_data>* file_sink = nullptr;
+    /// 系统调用原始事件通道写端
+    hng::EventChannelWriter<::syscall_event>* syscall_sink = nullptr;
+    /// 网络原始事件通道写端
+    hng::EventChannelWriter<::network_data>* network_sink  = nullptr;
 };
 
 /**

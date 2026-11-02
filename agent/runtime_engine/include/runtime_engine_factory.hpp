@@ -20,9 +20,10 @@ class RuntimeEngineFactory {
    public:
     /**
      * @brief 构造运行时引擎组件。
-     * @param options 语义队列与控制平面服务的借用指针；空表示未接线
+     * @param options 语义通道读端与控制平面服务的借用指针；空表示未接线
      * @return 状态为 READY 的组件
      * @throws std::logic_error 已有经本方法创建的实例存活
+     * @throws std::system_error 事件循环或命令唤醒 fd 创建失败
      */
     static std::unique_ptr<RuntimeEngineComponent> create(
         RuntimeEngineOptions options = {});

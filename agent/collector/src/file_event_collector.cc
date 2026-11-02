@@ -25,8 +25,9 @@ struct FileCollectorState {
 };
 }  // namespace hng::detail
 
-FileEventCollector::FileEventCollector(hng::SPSC_Queue<file_access_data>& queue)
-    : file_rawevent_queue(queue)
+FileEventCollector::FileEventCollector(
+    hng::EventChannelWriter<file_access_data>& sink)
+    : file_sink(sink)
 {
 }
 
@@ -35,7 +36,8 @@ FileEventCollector::~FileEventCollector() = default;
 /**
  * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
  * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以
- * NUL 结束。队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
+ * NUL 结束。通道满时沿用原有丢弃行为，丢弃计数在通道内；返回 0 让 libbpf
+ * 继续消费后续事件。
  */
 int FileEventCollector::handle_rb_event(void* ctx, void* data,
                                         std::size_t data_sz) noexcept
@@ -47,7 +49,7 @@ int FileEventCollector::handle_rb_event(void* ctx, void* data,
     file_access_data event;
     std::memcpy(&event, data, sizeof(event));
     auto* self = static_cast<FileEventCollector*>(ctx);
-    self->file_rawevent_queue.push(event);
+    self->file_sink.push(event);
     return 0;
 }
 

@@ -52,7 +52,7 @@ struct AssemblyOptions {
 
 /**
  * @brief 装配层
- * @details 独占持有五条事件队列、全部组件、组件线程与角色源屏障；对外只
+ * @details 独占持有五条事件通道、全部组件、组件线程与角色源屏障；对外只
  *          提供启动、停机、运行状态、初始化报告与服务接口。构造后不构造
  *          组件、不启动线程。
  * @note 组件线程由本层创建并 join，stop() 会 join 组件线程，不得从组件线
@@ -61,8 +61,9 @@ struct AssemblyOptions {
  */
 class Assembly final {
    public:
-    /// @brief 保存选项并按容量创建五条事件队列
-    /// @param options 队列容量与启动参数
+    /// @brief 保存选项并按容量创建五条事件通道
+    /// @param options 通道容量与启动参数
+    /// @throws std::system_error 通道唤醒 fd 创建失败
     explicit Assembly(AssemblyOptions options);
 
     /// @brief 未 stop() 时按停机顺序收尾

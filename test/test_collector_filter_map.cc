@@ -103,11 +103,11 @@ bool same_event(const Event& left, const Event& right)
 template <class Collector, class Event>
 void verify()
 {
-    hng::SPSC_Queue<Event> queue(4);
+    hng::EventChannel<Event> channel(4);
     reset_consume();
     // prepare 只加载骨架、建 ringbuf 并取 map fd；探针未挂载前不消费。
     {
-        Collector collector(queue);
+        Collector collector(channel.writer());
         REQUIRE(collector.role_filter_map_fd() == -1);
         REQUIRE(collector.epoll_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
@@ -173,7 +173,7 @@ void verify()
 
     // 独立 attach 失败保留已准备资源，重试成功；析构仍回收全部资源。
     {
-        Collector collector(queue);
+        Collector collector(channel.writer());
         REQUIRE(collector.prepare());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
@@ -192,7 +192,7 @@ void verify()
     REQUIRE(!hng_test_bad_cleanup_order);
 
     {
-        Collector collector(queue);
+        Collector collector(channel.writer());
         REQUIRE(collector.role_filter_map_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
@@ -244,7 +244,7 @@ void verify()
         REQUIRE(ring->callback(ring->context, &event, 0) == -EINVAL);
         REQUIRE(ring->callback(ring->context, &event, sizeof(event) - 1) ==
                 -EINVAL);
-        REQUIRE(queue.empty());
+        REQUIRE(channel.empty());
 
         alignas(Event) std::array<unsigned char, sizeof(Event) + 9> payload{};
         std::memcpy(payload.data() + 1, &event, sizeof(event));
@@ -257,14 +257,16 @@ void verify()
         // 回调后覆写 ringbuf 借用内存，队列仍须持有独立事件值。
         payload.fill(0);
         Event received{};
-        REQUIRE(queue.pop(received) && same_event(received, event));
-        REQUIRE(queue.empty());
+        REQUIRE(channel.reader().try_pop(received) &&
+                same_event(received, event));
+        REQUIRE(channel.empty());
 
         // 对更长载荷只复制已知 ABI 前缀。
         std::memcpy(payload.data() + 1, &event, sizeof(event));
         REQUIRE(ring->callback(ring->context, payload.data() + 1,
                                payload.size() - 1) == 0);
-        REQUIRE(queue.pop(received) && same_event(received, event));
+        REQUIRE(channel.reader().try_pop(received) &&
+                same_event(received, event));
 
         // 满队列不覆写已有元素，也不向 libbpf 报错。
         for (int i = 0; i < 4; ++i)
@@ -272,10 +274,11 @@ void verify()
         Event different{};
         REQUIRE(ring->callback(ring->context, &different, sizeof(different)) ==
                 0);
-        REQUIRE(queue.size() == 4);
+        REQUIRE(channel.size() == 4);
         for (int i = 0; i < 4; ++i)
-            REQUIRE(queue.pop(received) && same_event(received, event));
-        REQUIRE(queue.empty());
+            REQUIRE(channel.reader().try_pop(received) &&
+                    same_event(received, event));
+        REQUIRE(channel.empty());
 
         reset_consume();
         hng_test_consume_error = -EIO;
@@ -289,7 +292,7 @@ void verify()
         REQUIRE(collector.consume(1) == -EINVAL);
         REQUIRE(hng_test_callback_result == -EINVAL);
         REQUIRE(hng_test_consume_calls == 1);
-        REQUIRE(queue.empty());
+        REQUIRE(channel.empty());
         reset_consume();
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
@@ -298,14 +301,14 @@ void verify()
     // 0 是有效 fd，不能按布尔值判断有效性。
     hng_test_filter_fd_override = 0;
     {
-        Collector collector(queue);
+        Collector collector(channel.writer());
         REQUIRE(collector.init());
         REQUIRE(collector.role_filter_map_fd() == 0);
     }
     hng_test_filter_fd_override.reset();
     hng_test_event_fd_override = 0;
     {
-        Collector collector(queue);
+        Collector collector(channel.writer());
         REQUIRE(collector.init());
         REQUIRE(hng_test_last_ring->map_fd == 0);
     }
@@ -316,14 +319,14 @@ void verify()
 
 void verify_multiple_instances()
 {
-    hng::SPSC_Queue<file_access_data> files(1), more_files(1);
-    hng::SPSC_Queue<syscall_event> syscalls(1);
-    hng::SPSC_Queue<network_data> networks(1);
+    hng::EventChannel<file_access_data> files(1), more_files(1);
+    hng::EventChannel<syscall_event> syscalls(1);
+    hng::EventChannel<network_data> networks(1);
     std::unique_ptr<CollectorType> first =
-        std::make_unique<FileEventCollector>(files);
-    auto second = std::make_unique<FileEventCollector>(more_files);
-    auto third  = std::make_unique<SyscallEventCollector>(syscalls);
-    auto fourth = std::make_unique<NetworkEventCollector>(networks);
+        std::make_unique<FileEventCollector>(files.writer());
+    auto second = std::make_unique<FileEventCollector>(more_files.writer());
+    auto third  = std::make_unique<SyscallEventCollector>(syscalls.writer());
+    auto fourth = std::make_unique<NetworkEventCollector>(networks.writer());
     REQUIRE(first->init() && second->init() && third->init() && fourth->init());
     REQUIRE(hng_test_live_skeletons == 4 && hng_test_live_rings == 4);
     first.reset();  // 验证虚析构；其余采集器的资源仍然存活。

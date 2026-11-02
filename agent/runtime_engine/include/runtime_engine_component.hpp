@@ -23,7 +23,7 @@ class RoleLookupService;
 namespace hng {
 
 template <class T>
-class SPSC_Queue;
+class EventChannelReader;
 
 struct file_semantic_data;
 struct syscall_semantic_data;
@@ -36,28 +36,34 @@ struct RuntimeEngineStats {
     uint64_t peak_cli_streams = 0;
     /// 累计：stop() 之后的订阅 / 注销命令入队被拒绝
     uint64_t queue_rejected   = 0;
+    /// 累计：引擎线程进入阻塞等待的次数；为空闲时不增长
+    uint64_t idle_waits       = 0;
+    /// 累计：系统调用语义通道未入队的元素数（队列满与通道关闭合计）
+    uint64_t syscall_dropped  = 0;
+    /// 累计：文件语义通道未入队的元素数（队列满与通道关闭合计）
+    uint64_t file_dropped     = 0;
 };
 
 /**
  * @brief 运行时引擎组件的构造选项。
- * @details 语义队列与控制平面服务均不拥有；队列为空表示该线未接线，维护器
- *          与服务须活到组件析构。
+ * @details 语义通道与控制平面服务均不拥有；通道读端为空表示该线未接线，
+ *          读端、维护器与服务须活到组件析构。
  */
 struct RuntimeEngineOptions {
-    /// 系统调用语义队列
-    hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue = nullptr;
-    /// 文件语义队列
-    hng::SPSC_Queue<hng::file_semantic_data>* file_queue       = nullptr;
+    /// 系统调用语义通道读端
+    hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input = nullptr;
+    /// 文件语义通道读端
+    hng::EventChannelReader<hng::file_semantic_data>* file_input       = nullptr;
     /// 上下文维护模块
-    ContextMaintainer* ctx_maintainer                          = nullptr;
+    ContextMaintainer* ctx_maintainer                                  = nullptr;
     /// 控制平面进程注册接口
-    ProcessJoinService* process_join                           = nullptr;
+    ProcessJoinService* process_join                                   = nullptr;
     /// 控制平面进程镜像更新接口
-    ProcessUpdateService* process_update                       = nullptr;
+    ProcessUpdateService* process_update                               = nullptr;
     /// 控制平面角色归属接口
-    RoleJoinService* role_join                                 = nullptr;
+    RoleJoinService* role_join                                         = nullptr;
     /// 控制平面角色查询接口
-    RoleLookupService* role_lookup                             = nullptr;
+    RoleLookupService* role_lookup                                     = nullptr;
 };
 
 /**
@@ -65,8 +71,8 @@ struct RuntimeEngineOptions {
  * @details 转发订阅服务、系统 sink、统计与引擎线程；组件不持线程，线程由
  *          装配层创建并 join。
  * @note 构造后为 READY；run() 进入 RUNNING，stop() 置 STOPPED。在 STOPPED 上
- *       再次 run() 只落地已入队命令并清空订阅表，不进入 RUNNING；不支持并发
- *       的 run()。
+ *       再次 run() 只排空已入队命令与事件并清空订阅表，不进入 RUNNING；不支持
+ *       并发的 run()。
  * @see hng::Component, RuntimeEngineOptions, RuntimeEngineFactory
  */
 class RuntimeEngineComponent final : public hng::Component {
