@@ -15,39 +15,54 @@
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
-#include "agent/util/include/spsc_queue.hpp"
+#include "agent/util/include/event_channel.hpp"
 
 /// @brief 一条待分发的事件，及本条事件引发的 context 派生决策
 struct RuntimeDraft {
-    hng::RuntimeEvent event;         ///< 已填齐运行时信息快照的事件
-    ContextDeriveDecision decision;  ///< 本条事件的派生决策；无决策时 kind 为 NONE
+    hng::RuntimeEvent event;  ///< 已填齐运行时信息快照的事件
+    ContextDeriveDecision
+        decision;  ///< 本条事件的派生决策；无决策时 kind 为 NONE
 };
 
 /**
  * @brief 取出语义事件消费的流水线
- * @details 由引擎线程独占使用，自身不加锁。每轮按固定优先级轮询队列
+ * @details 由引擎线程独占使用，自身不加锁。每轮按固定优先级轮询通道
  */
 class RuntimePipeline {
    public:
-    /// @param syscall_queue 系统调用语义队列，未接线传 nullptr
-    /// @param file_queue 文件语义队列，未接线传 nullptr
+    /// @param syscall_input 系统调用语义通道读端，未接线传 nullptr
+    /// @param file_input 文件语义通道读端，未接线传 nullptr
     /// @param ctx_maintainer 上下文维护模块，非拥有
     /// @param process_join 控制平面进程注册接口，非拥有
     /// @param process_update 控制平面进程镜像更新接口，非拥有
     /// @param role_join 控制平面角色归属接口，非拥有
     /// @param role_lookup 控制平面角色查询接口，非拥有
-    RuntimePipeline(hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue,
-                    hng::SPSC_Queue<hng::file_semantic_data>* file_queue,
-                    ContextMaintainer* ctx_maintainer,
-                    ProcessJoinService* process_join,
-                    ProcessUpdateService* process_update,
-                    RoleJoinService* role_join, RoleLookupService* role_lookup);
+    RuntimePipeline(
+        hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
+        hng::EventChannelReader<hng::file_semantic_data>* file_input,
+        ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
+        ProcessUpdateService* process_update, RoleJoinService* role_join,
+        RoleLookupService* role_lookup);
 
     /// @brief 取一轮事件并组装草稿
-    /// @param[out] out 本轮产物，槽位数不得少于已接线队列数；可跨轮复用
+    /// @param[out] out 本轮产物，槽位数不得少于已接线通道数；可跨轮复用
     /// @param[in] capacity out 的槽位数
     /// @return 本次写入的草稿条数
     std::size_t take_round(RuntimeDraft* out, std::size_t capacity);
+
+    /// @brief 系统调用语义通道的唤醒 fd；未接线为 -1
+    /// @note 调用方不得关闭
+    int syscall_fd() const noexcept;
+
+    /// @brief 文件语义通道的唤醒 fd；未接线为 -1
+    /// @note 调用方不得关闭
+    int file_fd() const noexcept;
+
+    /// @brief 系统调用语义通道未入队的元素数（队列满与通道关闭合计）
+    std::uint64_t syscall_dropped() const noexcept;
+
+    /// @brief 文件语义通道未入队的元素数（队列满与通道关闭合计）
+    std::uint64_t file_dropped() const noexcept;
 
    private:
     /// syscall 语义载荷的 variant 索引，与 hng::syscall_event_type 一一对应
@@ -72,14 +87,14 @@ class RuntimePipeline {
     /// @brief 上下文归属快照，未落定时为 0
     uint32_t context_id_of(const hng::Process& p) const;
 
-    hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue_ = nullptr;
-    hng::SPSC_Queue<hng::file_semantic_data>* file_queue_       = nullptr;
+    hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input_ = nullptr;
+    hng::EventChannelReader<hng::file_semantic_data>* file_input_       = nullptr;
     // TODO: 未来 ContextMaintainer 在栈上构造
-    ContextMaintainer* ctx_maintainer_                          = nullptr;
-    ProcessJoinService* process_join_                           = nullptr;
-    ProcessUpdateService* process_update_                       = nullptr;
-    RoleJoinService* role_join_                                 = nullptr;
-    RoleLookupService* role_lookup_                             = nullptr;
+    ContextMaintainer* ctx_maintainer_                                  = nullptr;
+    ProcessJoinService* process_join_                                   = nullptr;
+    ProcessUpdateService* process_update_                               = nullptr;
+    RoleJoinService* role_join_                                         = nullptr;
+    RoleLookupService* role_lookup_                                     = nullptr;
 };
 
 #endif  // HNG_RUNTIME_PIPELINE_HPP_

@@ -20,7 +20,7 @@ class CollectorFactory {
    public:
     /**
      * @brief 构造采集组件。
-     * @param options 三条原始事件队列的借用指针；空表示该线未接线
+     * @param options 三条原始事件通道写端的借用指针；空表示该线未接线
      * @return 状态为 CONSTRUCTED 的组件
      * @throws std::logic_error 已有经本方法创建的实例存活
      */

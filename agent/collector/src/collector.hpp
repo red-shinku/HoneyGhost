@@ -6,7 +6,7 @@
 #define COLLECTOR_HPP
 
 #include "agent/util/include/component.hpp"
-#include "agent/util/include/spsc_queue.hpp"
+#include "agent/util/include/event_channel.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
 #include "kernel/include/syscalls_type.h"
@@ -64,11 +64,11 @@ class CollectorType {
      */
     virtual void detach()                           = 0;
     /**
-     * @brief 把 ringbuf 中就绪的记录搬到输出队列。
+     * @brief 把 ringbuf 中就绪的记录搬到输出通道。
      * @param budget 本次最多消费的记录数；实现可忽略该上限
-     * @return 搬到输出队列的记录数；负值为 ringbuf 错误
+     * @return 搬到输出通道的记录数；负值为 ringbuf 错误
      * @note 未 prepare() 或从未 attach() 成功时返回 0，不访问 ringbuf；
-     *       detach() 后仍可继续消费剩余记录。
+     *       detach() 后仍可继续消费剩余记录。通道满时记录被丢弃，计数在通道内。
      */
     virtual int consume(std::size_t budget)         = 0;
     /**
@@ -85,11 +85,11 @@ class CollectorType {
 };
 
 /**
- * @brief 采集聚合：单线程消费多条事件线并写入各自原始事件队列。
+ * @brief 采集聚合：单线程消费多条事件线并写入各自原始事件通道。
  * @details 线程由装配层创建；本类不持 std::thread。run() 用 epoll 等待各线
  *          ringbuf 的 eventfd，stop() 用 eventfd 唤醒。
  * @note 生命周期为 CONSTRUCTED → READY → RUNNING → STOPPED。所有线须由装配层
- *       构造并移交所有权；队列须比聚合对象活得更久。run() 返回前不得析构。
+ *       构造并移交所有权；通道写端须比聚合对象活得更久。run() 返回前不得析构。
  * @see hng::Component
  */
 class Collector final : public hng::Component {
@@ -155,10 +155,10 @@ class Collector final : public hng::Component {
     int stop_event_fd_ = -1;  ///< eventfd，stop() 写、run() 的 epoll 等待
 };
 
-/** @brief 文件事件采集线；借用的队列必须比采集器活得更久。 */
+/** @brief 文件事件采集线；借用的通道写端必须比采集器活得更久。 */
 class FileEventCollector : public CollectorType {
    public:
-    explicit FileEventCollector(hng::SPSC_Queue<file_access_data>& queue);
+    explicit FileEventCollector(hng::EventChannelWriter<file_access_data>& sink);
     ~FileEventCollector() override;
 
     bool prepare() override;
@@ -170,16 +170,16 @@ class FileEventCollector : public CollectorType {
     int role_filter_map_fd() const noexcept override;
 
    private:
-    hng::SPSC_Queue<file_access_data>& file_rawevent_queue;
+    hng::EventChannelWriter<file_access_data>& file_sink;
     std::unique_ptr<hng::detail::FileCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;
 };
 
-/** @brief 系统调用事件采集线；借用的队列必须比采集器活得更久。 */
+/** @brief 系统调用事件采集线；借用的通道写端必须比采集器活得更久。 */
 class SyscallEventCollector : public CollectorType {
    public:
-    explicit SyscallEventCollector(hng::SPSC_Queue<syscall_event>& queue);
+    explicit SyscallEventCollector(hng::EventChannelWriter<syscall_event>& sink);
     ~SyscallEventCollector() override;
 
     bool prepare() override;
@@ -191,16 +191,16 @@ class SyscallEventCollector : public CollectorType {
     int role_filter_map_fd() const noexcept override;
 
    private:
-    hng::SPSC_Queue<syscall_event>& syscall_rawevent_queue;
+    hng::EventChannelWriter<syscall_event>& syscall_sink;
     std::unique_ptr<hng::detail::SyscallCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;
 };
 
-/** @brief 网络事件采集线；借用的队列必须比采集器活得更久。 */
+/** @brief 网络事件采集线；借用的通道写端必须比采集器活得更久。 */
 class NetworkEventCollector : public CollectorType {
    public:
-    explicit NetworkEventCollector(hng::SPSC_Queue<network_data>& queue);
+    explicit NetworkEventCollector(hng::EventChannelWriter<network_data>& sink);
     ~NetworkEventCollector() override;
 
     bool prepare() override;
@@ -212,7 +212,7 @@ class NetworkEventCollector : public CollectorType {
     int role_filter_map_fd() const noexcept override;
 
    private:
-    hng::SPSC_Queue<network_data>& network_rawevent_queue;
+    hng::EventChannelWriter<network_data>& network_sink;
     std::unique_ptr<hng::detail::NetworkCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;

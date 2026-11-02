@@ -19,24 +19,24 @@ namespace {
 
 /**
  * @brief 按选项构造标准事件线。
- * @param options 各线借用的队列；空项对应的线不构造
+ * @param options 各线借用的通道写端；空项对应的线不构造
  * @return 构造出的事件线；全部为空时为空
  */
 std::vector<std::unique_ptr<::CollectorType>> build_lines(
     const CollectorOptions& options)
 {
     std::vector<std::unique_ptr<::CollectorType>> lines;
-    if (options.file_queue) {
+    if (options.file_sink) {
         lines.push_back(
-            std::make_unique<::FileEventCollector>(*options.file_queue));
+            std::make_unique<::FileEventCollector>(*options.file_sink));
     }
-    if (options.syscall_queue) {
+    if (options.syscall_sink) {
         lines.push_back(
-            std::make_unique<::SyscallEventCollector>(*options.syscall_queue));
+            std::make_unique<::SyscallEventCollector>(*options.syscall_sink));
     }
-    if (options.network_queue) {
+    if (options.network_sink) {
         lines.push_back(
-            std::make_unique<::NetworkEventCollector>(*options.network_queue));
+            std::make_unique<::NetworkEventCollector>(*options.network_sink));
     }
     return lines;
 }
@@ -47,7 +47,7 @@ struct CollectorComponent::Impl {
     /**
      * @brief 先占用存活名额，再按选项构造事件线并交给聚合。
      * @param taken 本创建方法的存活标志
-     * @param options 各线借用的队列
+     * @param options 各线借用的通道写端
      * @throws std::logic_error 名额已被占用
      */
     Impl(std::atomic<bool>& taken, const CollectorOptions& options)

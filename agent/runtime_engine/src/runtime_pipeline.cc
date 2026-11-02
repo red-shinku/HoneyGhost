@@ -21,13 +21,13 @@ constexpr char kExitGroupName[] = "exit_group";
 }  // namespace
 
 RuntimePipeline::RuntimePipeline(
-    hng::SPSC_Queue<hng::syscall_semantic_data>* syscall_queue,
-    hng::SPSC_Queue<hng::file_semantic_data>* file_queue,
+    hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
+    hng::EventChannelReader<hng::file_semantic_data>* file_input,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
     ProcessUpdateService* process_update, RoleJoinService* role_join,
     RoleLookupService* role_lookup)
-    : syscall_queue_(syscall_queue),
-      file_queue_(file_queue),
+    : syscall_input_(syscall_input),
+      file_input_(file_input),
       ctx_maintainer_(ctx_maintainer),
       process_join_(process_join),
       process_update_(process_update),
@@ -42,23 +42,47 @@ std::size_t RuntimePipeline::take_round(RuntimeDraft* out, std::size_t capacity)
     // 低优先级队列的名额
     std::size_t taken = 0;
 
-    if (syscall_queue_ != nullptr && taken < capacity) {
+    if (syscall_input_ != nullptr && taken < capacity) {
         hng::syscall_semantic_data src;
-        if (syscall_queue_->pop(src)) {
+        if (syscall_input_->try_pop(src)) {
             handle_syscall(std::move(src), out[taken]);
             ++taken;
         }
     }
 
-    if (file_queue_ != nullptr && taken < capacity) {
+    if (file_input_ != nullptr && taken < capacity) {
         hng::file_semantic_data src;
-        if (file_queue_->pop(src)) {
+        if (file_input_->try_pop(src)) {
             handle_file(std::move(src), out[taken]);
             ++taken;
         }
     }
 
     return taken;
+}
+
+int RuntimePipeline::syscall_fd() const noexcept
+{
+    return syscall_input_ == nullptr ? -1 : syscall_input_->fd();
+}
+
+int RuntimePipeline::file_fd() const noexcept
+{
+    return file_input_ == nullptr ? -1 : file_input_->fd();
+}
+
+std::uint64_t RuntimePipeline::syscall_dropped() const noexcept
+{
+    return syscall_input_ == nullptr
+               ? 0
+               : syscall_input_->dropped() + syscall_input_->rejected();
+}
+
+std::uint64_t RuntimePipeline::file_dropped() const noexcept
+{
+    return file_input_ == nullptr
+               ? 0
+               : file_input_->dropped() + file_input_->rejected();
 }
 
 void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
@@ -110,8 +134,8 @@ void RuntimePipeline::handle_file(hng::file_semantic_data src, RuntimeDraft& out
 
     const ContextDeriveDecision decision = ctx_maintainer_->on_event(self);
 
-    RoleSnapshot role = role_of(self);
-    out.event         = RuntimePackaging::pack(
+    RoleSnapshot role                    = role_of(self);
+    out.event                            = RuntimePackaging::pack(
         std::move(src), role.id, std::move(role.label), context_id_of(self));
     out.decision = decision;
 }

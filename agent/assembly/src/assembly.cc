@@ -34,8 +34,8 @@
 #include "agent/runtime_engine/include/runtime_engine_factory.hpp"
 #include "agent/semantic/include/semantic_component.hpp"
 #include "agent/semantic/include/semantic_factory.hpp"
+#include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/log.hpp"
-#include "agent/util/include/spsc_queue.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
 #include "kernel/include/syscalls_type.h"
@@ -51,16 +51,17 @@ namespace hng {
 
 struct Assembly::Impl {
     /**
-     * @brief 保存选项并按容量创建五条事件队列
-     * @param opts 队列容量与启动参数
+     * @brief 保存选项并按容量创建五条事件通道
+     * @param opts 通道容量与启动参数
+     * @throws std::system_error 通道唤醒 fd 创建失败
      */
     explicit Impl(AssemblyOptions opts)
         : options(std::move(opts)),
-          raw_file_q(options.raw_queue_capacity),
-          raw_syscall_q(options.raw_queue_capacity),
-          raw_network_q(options.raw_queue_capacity),
-          semantic_file_q(options.semantic_queue_capacity),
-          semantic_syscall_q(options.semantic_queue_capacity)
+          raw_file_ch(options.raw_queue_capacity),
+          raw_syscall_ch(options.raw_queue_capacity),
+          raw_network_ch(options.raw_queue_capacity),
+          semantic_file_ch(options.semantic_queue_capacity),
+          semantic_syscall_ch(options.semantic_queue_capacity)
     {
     }
 
@@ -101,11 +102,11 @@ struct Assembly::Impl {
     void release_components();
 
     AssemblyOptions options;
-    hng::SPSC_Queue<::file_access_data> raw_file_q;
-    hng::SPSC_Queue<::syscall_event> raw_syscall_q;
-    hng::SPSC_Queue<::network_data> raw_network_q;
-    hng::SPSC_Queue<hng::file_semantic_data> semantic_file_q;
-    hng::SPSC_Queue<hng::syscall_semantic_data> semantic_syscall_q;
+    hng::EventChannel<::file_access_data> raw_file_ch;
+    hng::EventChannel<::syscall_event> raw_syscall_ch;
+    hng::EventChannel<::network_data> raw_network_ch;
+    hng::EventChannel<hng::file_semantic_data> semantic_file_ch;
+    hng::EventChannel<hng::syscall_semantic_data> semantic_syscall_ch;
     ::ContextMaintainer maintainer;
     /// @brief 控制面三个组件的聚合句柄
     std::unique_ptr<hng::ControlPlane> control_plane;
@@ -143,15 +144,17 @@ void Assembly::Impl::build_pipeline()
 {
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
-        collector = CollectorFactory::create(
-            {&raw_file_q, &raw_syscall_q, &raw_network_q});
-        semantic = SemanticFactory::create(
-            {&raw_file_q, &raw_syscall_q, &semantic_file_q, &semantic_syscall_q});
+        collector = CollectorFactory::create({&raw_file_ch.writer(),
+                                              &raw_syscall_ch.writer(),
+                                              &raw_network_ch.writer()});
+        semantic  = SemanticFactory::create(
+            {&raw_file_ch.reader(), &raw_syscall_ch.reader(),
+              &semantic_file_ch.writer(), &semantic_syscall_ch.writer()});
     }
 #endif
 
     engine = RuntimeEngineFactory::create(
-        {&semantic_syscall_q, &semantic_file_q, &maintainer,
+        {&semantic_syscall_ch.reader(), &semantic_file_ch.reader(), &maintainer,
          &control_plane->process().join_service(),
          &control_plane->process().update_service(),
          &control_plane->role().join_service(),

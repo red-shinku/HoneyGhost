@@ -26,8 +26,9 @@ struct NetworkCollectorState {
 };
 }  // namespace hng::detail
 
-NetworkEventCollector::NetworkEventCollector(hng::SPSC_Queue<network_data>& queue)
-    : network_rawevent_queue(queue)
+NetworkEventCollector::NetworkEventCollector(
+    hng::EventChannelWriter<network_data>& sink)
+    : network_sink(sink)
 {
 }
 
@@ -36,7 +37,8 @@ NetworkEventCollector::~NetworkEventCollector() = default;
 /**
  * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
  * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以
- * NUL 结束。队列满时沿用原有丢弃行为；返回 0 让 libbpf 继续消费后续事件。
+ * NUL 结束。通道满时沿用原有丢弃行为，丢弃计数在通道内；返回 0 让 libbpf
+ * 继续消费后续事件。
  */
 int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
                                            std::size_t data_sz) noexcept
@@ -48,7 +50,7 @@ int NetworkEventCollector::handle_rb_event(void* ctx, void* data,
     network_data event;
     std::memcpy(&event, data, sizeof(event));
     auto* self = static_cast<NetworkEventCollector*>(ctx);
-    self->network_rawevent_queue.push(event);
+    self->network_sink.push(event);
     return 0;
 }
 

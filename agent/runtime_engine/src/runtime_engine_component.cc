@@ -18,12 +18,13 @@ struct RuntimeEngineComponent::Impl {
     /**
      * @brief 先占用存活名额，再按选项接线引擎。
      * @param taken 本创建方法的存活标志
-     * @param options 语义队列与控制平面服务的借用指针
+     * @param options 语义通道读端与控制平面服务的借用指针
      * @throws std::logic_error 名额已被占用
+     * @throws std::system_error 事件循环或命令唤醒 fd 创建失败
      */
     Impl(std::atomic<bool>& taken, const RuntimeEngineOptions& options)
         : guard(taken, "RuntimeEngineComponent"),
-          engine(options.syscall_queue, options.file_queue,
+          engine(options.syscall_input, options.file_input,
                  options.ctx_maintainer, options.process_join,
                  options.process_update, options.role_join, options.role_lookup)
     {

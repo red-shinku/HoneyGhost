@@ -2,7 +2,7 @@
  * @file test_runtime_engine.cc
  * @brief RuntimeEngine 主循环、订阅协议与统计的单测
  * @details
- * 控制平面注入点全部走替身，语义队列为真实 SPSC 队列，引擎独占一条测试线程，
+ * 控制平面注入点全部走替身，语义通道为真实事件通道，引擎独占一条测试线程，
  * 无 IO / 无特权。覆盖：
  *  - 订阅命令的落地：登记后事件送达，过滤器未命中则不投递；
  *  - 销号回执：摘表时回调，回执后不再有该流的投递；
@@ -15,6 +15,7 @@
  */
 
 #include "agent/runtime_engine/src/runtime_engine.hpp"
+#include "agent/util/include/event_channel.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -245,19 +246,20 @@ class AckStub final : public UnsubscribeAck {
 
 // ---- 装配 ----
 
-/// 替身 + 真实 SPSC 队列 + 被测引擎；引擎不拥有任何注入点
+/// 替身 + 真实事件通道 + 被测引擎；引擎不拥有任何注入点
 struct Env {
     FakeContextService ctx_svc;
     FakeProcessJoin process_join;
     FakeProcessUpdate process_update;
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
-    hng::SPSC_Queue<hng::syscall_semantic_data> sys_q{64};
-    hng::SPSC_Queue<hng::file_semantic_data> file_q{64};
+    hng::EventChannel<hng::syscall_semantic_data> sys_ch{64};
+    hng::EventChannel<hng::file_semantic_data> file_ch{64};
 
     ContextMaintainer cm;
-    RuntimeEngine engine{&sys_q,          &file_q,    &cm,         &process_join,
-                         &process_update, &role_join, &role_lookup};
+    RuntimeEngine engine{&sys_ch.reader(), &file_ch.reader(), &cm,
+                         &process_join,    &process_update,   &role_join,
+                         &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -391,7 +393,7 @@ void run_live_delivery()
           "文件流入队被接受");
 
     for (int i = 0; i < 300 && all_cli.calls.load() == 0; ++i) {
-        env.sys_q.push(make_credential(1001, 10));
+        env.sys_ch.writer().push(make_credential(1001, 10));
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(all_cli.calls.load() > 0, "全选流应收到事件");
@@ -400,7 +402,7 @@ void run_live_delivery()
     CHECK(sys.last_pid.load() == 1001, "系统订阅者收到事件主体");
 
     for (int i = 0; i < 300 && file_cli.calls.load() == 0; ++i) {
-        env.file_q.push(make_file(3003, 30, "/tmp/a"));
+        env.file_ch.writer().push(make_file(3003, 30, "/tmp/a"));
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(file_cli.calls.load() > 0, "命中过滤器应收到");
@@ -413,7 +415,7 @@ void run_live_delivery()
     const int calls_after_ack = all_cli.calls.load();
 
     const int sys_before      = sys.calls.load();
-    env.sys_q.push(make_credential(1001, 10));
+    env.sys_ch.writer().push(make_credential(1001, 10));
     CHECK(
         wait_until([&sys, sys_before] { return sys.calls.load() > sys_before; }),
         "注销后引擎仍在消费事件");
@@ -426,6 +428,33 @@ void run_live_delivery()
 
     // 峰值只增不减：注销后表内只剩一条，峰值仍是两条
     CHECK(env.engine.stats().peak_cli_streams == 2, "订阅流峰值只增不减");
+}
+
+// ---- 空闲阻塞（known_issues #2 的回归）----
+
+/// 空闲时引擎必须阻塞在事件循环上，且入队能唤醒它
+void run_idle_blocks()
+{
+    Env env;
+    DecisionSinkStub sys;
+    env.engine.add_system_sink(&sys);
+
+    std::thread engine_thread([&env] { env.engine.run(); });
+
+    CHECK(wait_until([&env] { return env.engine.stats().idle_waits >= 1; }),
+          "引擎应进入阻塞等待");
+    const uint64_t idle = env.engine.stats().idle_waits;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(env.engine.stats().idle_waits == idle, "空闲 50ms 内引擎不应继续自旋");
+    CHECK(sys.calls.load() == 0, "空闲时不应有投递");
+
+    // 一条入队必须唤醒阻塞中的引擎
+    env.sys_ch.writer().push(make_credential(6006, 60));
+    CHECK(wait_until([&sys] { return sys.calls.load() == 1; }),
+          "入队应唤醒阻塞中的引擎");
+
+    env.engine.stop();
+    engine_thread.join();
 }
 
 // ---- 统计口径 ----
@@ -446,10 +475,10 @@ void run_stats_unsettled()
     const int kUnsettled = 3;
     const int kSettled   = 2;
     for (int i = 0; i < kUnsettled; ++i) {
-        env.sys_q.push(make_credential(1001, 10));
+        env.sys_ch.writer().push(make_credential(1001, 10));
     }
     for (int i = 0; i < kSettled; ++i) {
-        env.sys_q.push(make_credential(2002, 20));
+        env.sys_ch.writer().push(make_credential(2002, 20));
     }
 
     CHECK(
@@ -484,9 +513,9 @@ void run_lifecycle_dispatch()
     birth.head.ppid_start_time = 100;
     birth.head.type            = hng::EventType::SYSCALL_EVENT;
     birth.data.emplace<hng::process_semantic_data>().set_syscall_name("fork");
-    env.sys_q.push(std::move(birth));
+    env.sys_ch.writer().push(std::move(birth));
 
-    env.sys_q.push(make_credential(4004, 40));
+    env.sys_ch.writer().push(make_credential(4004, 40));
     CHECK(wait_until([&sys] { return sys.calls.load() >= 2; }),
           "两条事件应被消费");
 
@@ -503,7 +532,7 @@ void run_exec_image_update()
     Env env;
     std::thread engine_thread([&env] { env.engine.run(); });
 
-    env.sys_q.push(make_exec(5005, 50, "/bin/sh"));
+    env.sys_ch.writer().push(make_exec(5005, 50, "/bin/sh"));
     CHECK(wait_until([&env] { return env.process_update.calls.load() >= 1; }),
           "exec 应驱动进程镜像更新");
 
@@ -525,6 +554,7 @@ int main()
     run_ack_from_clear_on_rejected_unsubscribe();
     run_reject_subscribe_after_stop();
     run_live_delivery();
+    run_idle_blocks();
     run_stats_unsettled();
     run_lifecycle_dispatch();
     run_exec_image_update();

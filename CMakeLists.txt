@@ -332,6 +332,9 @@ target_link_libraries(hng_runtime_engine PUBLIC
     hng_context_maintainer
     hng_event_data
 )
+target_link_libraries(hng_runtime_engine PRIVATE hng_log)
+target_compile_definitions(hng_runtime_engine PRIVATE
+    HNG_LOG_TAG="runtime_engine")
 
 # ============================================================
 # 装配层

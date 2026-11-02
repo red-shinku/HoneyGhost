@@ -117,6 +117,12 @@ add_executable(test_spsc_queue test_spsc_queue.cc)
 target_include_directories(test_spsc_queue PRIVATE ${HNG_SOURCE_DIR})
 add_test(NAME test_spsc_queue COMMAND test_spsc_queue)
 
+# 事件通道与事件循环（公共件，header-only）：合并唤醒、关闭与按 tag 报就绪
+add_executable(test_event_channel test_event_channel.cc)
+target_include_directories(test_event_channel PRIVATE ${HNG_SOURCE_DIR})
+target_link_libraries(test_event_channel PRIVATE Threads::Threads)
+add_test(NAME test_event_channel COMMAND test_event_channel)
+
 # 统一日志（公共件，spdlog 后端）：重定向 stderr 断言输出，无 IO / 无特权
 add_executable(test_log test_log.cc)
 target_link_libraries(test_log PRIVATE hng_log)

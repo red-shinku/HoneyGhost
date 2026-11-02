@@ -2,7 +2,7 @@
  * @file test_runtime_pipeline.cc
  * @brief RuntimePipeline 取事件 / 分派 / 组装草稿的单测
  * @details
- * 四个控制平面注入点全部走替身，语义队列为真实 SPSC 队列，无 IO / 无特权。
+ * 四个控制平面注入点全部走替身，语义通道为真实事件通道，无 IO / 无特权。
  * 覆盖：
  *  - 空队列与未接线队列：不取任何事件；
  *  - 生命周期分派：诞生 → 注册 + 角色继承 + 开窗，退出 → 注销 + 关窗；
@@ -173,7 +173,7 @@ class FakeRoleLookup final : public RoleLookupService {
 
 // ---- 装配 ----
 
-/// 替身 + 真实 SPSC 队列 + 被测流水线
+/// 替身 + 真实事件通道 + 被测流水线
 /// @note 流水线不拥有任何注入点；context 服务替身是同一个对象，装入
 /// ContextMaintainer 供其查询与登记
 struct Env {
@@ -182,12 +182,13 @@ struct Env {
     FakeProcessUpdate process_update;
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
-    hng::SPSC_Queue<hng::syscall_semantic_data> sys_q{16};
-    hng::SPSC_Queue<hng::file_semantic_data> file_q{16};
+    hng::EventChannel<hng::syscall_semantic_data> sys_ch{16};
+    hng::EventChannel<hng::file_semantic_data> file_ch{16};
 
     ContextMaintainer cm;
-    RuntimePipeline pipe{&sys_q,          &file_q,    &cm,         &process_join,
-                         &process_update, &role_join, &role_lookup};
+    RuntimePipeline pipe{&sys_ch.reader(), &file_ch.reader(), &cm,
+                         &process_join,    &process_update,   &role_join,
+                         &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -294,7 +295,7 @@ void run_birth()
     env.ctx_svc.seed(parent, 100);  // 父进程已有 context
 
     env.role_lookup.role_of_pid[5000] = 7;
-    env.sys_q.push(make_lifecycle(5000, 500, 50, 500, "fork"));
+    env.sys_ch.writer().push(make_lifecycle(5000, 500, 50, 500, "fork"));
 
     RuntimeDraft drafts[2]{};
     CHECK(env.pipe.take_round(drafts, 2) == 1, "诞生事件取出一条");
@@ -325,8 +326,8 @@ void run_exit()
     env.ctx_svc.seed(parent, 100);
 
     // 先诞生再退出：退出应关窗，此后不再归父
-    env.sys_q.push(make_lifecycle(6000, 600, 50, 500, "fork"));
-    env.sys_q.push(make_lifecycle(6000, 600, 50, 500, "exit_group"));
+    env.sys_ch.writer().push(make_lifecycle(6000, 600, 50, 500, "fork"));
+    env.sys_ch.writer().push(make_lifecycle(6000, 600, 50, 500, "exit_group"));
 
     RuntimeDraft drafts[2]{};
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与退出分两轮各取出一条");
@@ -350,8 +351,8 @@ void run_exec_derive()
     const hng::Process parent = mk(50, 500);
     env.ctx_svc.seed(parent, 100);
 
-    env.sys_q.push(make_lifecycle(7000, 700, 50, 500, "fork"));
-    env.sys_q.push(make_exec(7000, 700, 50, 500, "/bin/bash"));
+    env.sys_ch.writer().push(make_lifecycle(7000, 700, 50, 500, "fork"));
+    env.sys_ch.writer().push(make_exec(7000, 700, 50, 500, "/bin/bash"));
 
     RuntimeDraft drafts[2]{};
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与 exec 分两轮各取出一条");
@@ -374,9 +375,9 @@ void run_exec_keep_keeps_snapshot()
     const hng::Process parent = mk(50, 500);
     env.ctx_svc.seed(parent, 100);
 
-    env.sys_q.push(make_lifecycle(8000, 800, 50, 500, "fork"));
-    env.sys_q.push(make_exec(8000, 800, 50, 500, "/bin/bash"));
-    env.sys_q.push(make_exec(8000, 800, 50, 500, "/usr/bin/ls"));
+    env.sys_ch.writer().push(make_lifecycle(8000, 800, 50, 500, "fork"));
+    env.sys_ch.writer().push(make_exec(8000, 800, 50, 500, "/bin/bash"));
+    env.sys_ch.writer().push(make_exec(8000, 800, 50, 500, "/usr/bin/ls"));
 
     RuntimeDraft drafts[3]{};
     CHECK(drain(env.pipe, drafts, 3) == 3, "三次事件分三轮取出");
@@ -400,19 +401,19 @@ void run_plain_event()
     // 窗口配额 2：窗口期内无 exec 的普通事件连续消耗配额，末次触发 NO_EXEC 派生
     ContextMaintainer cm(2);
     cm.set_context_service(&env.ctx_svc, &env.ctx_svc, &env.ctx_svc);
-    RuntimePipeline pipe(&env.sys_q, nullptr, &cm, &env.process_join,
+    RuntimePipeline pipe(&env.sys_ch.reader(), nullptr, &cm, &env.process_join,
                          &env.process_update, &env.role_join, &env.role_lookup);
 
     const hng::Process worker = mk(9100, 910);
     cm.on_birth(worker, parent);
 
-    env.sys_q.push(make_credential(9100, 910, 50, 500));
+    env.sys_ch.writer().push(make_credential(9100, 910, 50, 500));
     RuntimeDraft drafts[2]{};
     CHECK(pipe.take_round(drafts, 2) == 1, "普通事件取出一条");
     CHECK(is_default_decision(drafts[0].decision), "配额未耗尽无派生");
     CHECK(drafts[0].event.runtimeInfo.contextID == 100, "窗口期内归父 context");
 
-    env.sys_q.push(make_credential(9100, 910, 50, 500));
+    env.sys_ch.writer().push(make_credential(9100, 910, 50, 500));
     CHECK(pipe.take_round(drafts, 2) == 1, "普通事件取出一条(2)");
     CHECK(drafts[0].decision.kind == ContextDecisionKind::DERIVE,
           "配额耗尽应由普通事件触发派生");
@@ -427,11 +428,13 @@ void run_file_event()
     env.ctx_svc.seed(parent, 100);
 
     // 只接线文件队列：syscall 队列为空指针
-    RuntimePipeline pipe(nullptr, &env.file_q, &env.cm, &env.process_join,
-                         &env.process_update, &env.role_join, &env.role_lookup);
+    RuntimePipeline pipe(nullptr, &env.file_ch.reader(), &env.cm,
+                         &env.process_join, &env.process_update, &env.role_join,
+                         &env.role_lookup);
 
-    env.sys_q.push(make_lifecycle(1, 1, 0, 0, "fork"));  // 未接线，应被忽略
-    env.file_q.push(make_file(5500, 555, "/etc/passwd"));
+    env.sys_ch.writer().push(
+        make_lifecycle(1, 1, 0, 0, "fork"));  // 未接线，应被忽略
+    env.file_ch.writer().push(make_file(5500, 555, "/etc/passwd"));
 
     RuntimeDraft drafts[2]{};
     CHECK(pipe.take_round(drafts, 2) == 1, "只取已接线队列的事件");
@@ -445,7 +448,7 @@ void run_file_event()
 
     // 窗口外进程的文件事件不推进决策
     CHECK(is_default_decision(d.decision), "窗口外进程的文件事件无派生");
-    CHECK(env.file_q.empty(), "已取出的文件事件不再滞留");
+    CHECK(env.file_ch.empty(), "已取出的文件事件不再滞留");
 }
 
 // ---- 轮询纪律 ----
@@ -453,10 +456,10 @@ void run_file_event()
 void run_round_discipline()
 {
     Env env;
-    env.sys_q.push(make_credential(1, 10, 0, 0));
-    env.sys_q.push(make_credential(1, 10, 0, 0));
-    env.file_q.push(make_file(2, 20, "/a"));
-    env.file_q.push(make_file(3, 30, "/b"));
+    env.sys_ch.writer().push(make_credential(1, 10, 0, 0));
+    env.sys_ch.writer().push(make_credential(1, 10, 0, 0));
+    env.file_ch.writer().push(make_file(2, 20, "/a"));
+    env.file_ch.writer().push(make_file(3, 30, "/b"));
 
     RuntimeDraft drafts[2]{};
     CHECK(env.pipe.take_round(drafts, 2) == 2, "每轮每条队列各取至多一条");
@@ -471,12 +474,12 @@ void run_round_discipline()
     CHECK(env.pipe.take_round(drafts, 2) == 0, "空队列不再产出草稿");
 
     // 只有一条槽位时只取最高优先级的一条
-    env.sys_q.push(make_credential(4, 40, 0, 0));
-    env.file_q.push(make_file(5, 50, "/c"));
+    env.sys_ch.writer().push(make_credential(4, 40, 0, 0));
+    env.file_ch.writer().push(make_file(5, 50, "/c"));
     CHECK(env.pipe.take_round(drafts, 1) == 1, "槽位不足时只取一条");
     CHECK(drafts[0].event.runtimeInfo.process == mk(4, 40), "取的是最高优先级");
     CHECK(env.pipe.take_round(drafts, 0) == 0, "槽位为 0 时不取事件");
-    CHECK(env.file_q.size() == 1, "槽位不足时未取走的事件仍在队列");
+    CHECK(env.file_ch.size() == 1, "槽位不足时未取走的事件仍在队列");
 }
 
 // ---- 角色归属未命中 ----
@@ -484,7 +487,7 @@ void run_round_discipline()
 void run_role_miss()
 {
     Env env;
-    env.sys_q.push(make_credential(1, 10, 0, 0));
+    env.sys_ch.writer().push(make_credential(1, 10, 0, 0));
 
     RuntimeDraft drafts[1]{};
     CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
