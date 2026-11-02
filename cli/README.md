@@ -1,5 +1,7 @@
 # hghost
 
+[English](README.en.md) | **简体中文**
+
 HoneyGhost 的本地命令行客户端。它通过本地 Unix socket 查询角色、上下文与系统计数，
 并以流式方式输出运行时事件。
 
@@ -158,8 +160,7 @@ scripts/test-cli-e2e.sh   # 与 C++ CLIServer 的端到端联调
 
 ## 已知问题
 
-工作区存在 `go.work` 时，Go workspace 模式可能报 ambiguous import，使 `make go` 失败
-（见 `docs/累积注意事项.md`）。临时兜底：
+工作区存在 `go.work` 时，Go workspace 模式可能报 ambiguous import，使 `make go` 失败。临时兜底：
 
 ```sh
 GOWORK=off go -C cli build ./cmd/hghost

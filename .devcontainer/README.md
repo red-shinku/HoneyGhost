@@ -1,5 +1,7 @@
 # 开发容器
 
+[English](README.en.md) | **简体中文**
+
 `.devcontainer/`。提供「编码 → 构建 → 单测」的可复现 Linux 环境。
 
 ## 1. 用途与边界
