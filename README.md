@@ -17,6 +17,8 @@ to the `hghost` command-line client.
 > **Project status:** Currently, only the basic architecture has been completed. Advanced features are still in planning/development and are expected to include security policies, intrusion detection, etc. Configuration, CLI output, and protocol formats may change across versions. For currently available capabilities, see [Project status](#project-status)
 > for what works today.
 
+> I hope it can be a sweet-honey-softly ghost on your server... in the future. There is a far way to go, and for me, still many things to know.
+
 ## Features
 
 - **Kernel-side collection** — eBPF probes for syscalls, file access and
