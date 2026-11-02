@@ -108,9 +108,9 @@ func (srv *Server) serveConn(ctx context.Context, conn net.Conn) {
 	srv.cancel = cancel
 	srv.mu.Unlock()
 
-	srv.Log.Info("C++ 发现器已连接", "peer", conn.RemoteAddr().String())
+	srv.Log.Info("C++ discoverer connected", "peer", conn.RemoteAddr().String())
 	NewSession(srv.Config, &connWriter{conn: conn}).Run(sessionCtx)
-	srv.Log.Info("C++ 发现器连接结束", "peer", conn.RemoteAddr().String())
+	srv.Log.Info("C++ discoverer disconnected", "peer", conn.RemoteAddr().String())
 }
 
 // connWriter 是会话的帧出口。

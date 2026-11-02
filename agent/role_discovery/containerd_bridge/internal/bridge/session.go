@@ -116,7 +116,7 @@ func (s *Session) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		src, err := s.dial(ctx)
 		if err != nil {
-			s.log.Warn("连接 containerd 失败", "err", err, "退避", backoff(s.cfg, attempt))
+			s.log.Warn("failed to connect to containerd", "err", err, "backoff", backoff(s.cfg, attempt))
 			if !sleep(ctx, backoff(s.cfg, attempt)) {
 				return
 			}
@@ -130,14 +130,14 @@ func (s *Session) Run(ctx context.Context) {
 			return
 		}
 		if errors.Is(err, ErrOutputClosed) {
-			s.log.Warn("与 C++ 的连接已断开，会话结束", "err", err)
+			s.log.Warn("connection to C++ closed; session ended", "err", err)
 			return
 		}
 		if settled {
 			attempt = 0 // 后端跑完过一次完整快照，退避从头开始
 		}
 		if err != nil {
-			s.log.Warn("containerd 会话结束，重连", "err", err, "退避", backoff(s.cfg, attempt))
+			s.log.Warn("containerd session ended; reconnecting", "err", err, "backoff", backoff(s.cfg, attempt))
 		}
 		if !sleep(ctx, backoff(s.cfg, attempt)) {
 			return
@@ -237,7 +237,7 @@ func (s *Session) snapshotSegment(
 
 // retireSegment 为一个已消失的 namespace 发零项段，清除其残留条目。
 func (s *Session) retireSegment(src source.Source, namespace string) error {
-	s.log.Info("namespace 已消失，发零项段清除其残留条目", "namespace", namespace)
+	s.log.Info("namespace disappeared; sending an empty segment to clear its entries", "namespace", namespace)
 	if err := s.send(&protocol.Frame{Body: &protocol.Frame_SnapshotBegin{
 		SnapshotBegin: &protocol.SnapshotBegin{
 			Source:         sourceName,
@@ -275,7 +275,7 @@ func (s *Session) pump(
 			}
 			observation, err := s.translateLive(ctx, tr, env, streams)
 			if err != nil {
-				s.log.Warn("跳过一条事件", "topic", env.Topic, "err", err)
+				s.log.Warn("skipping event", "topic", env.Topic, "err", err)
 				continue
 			}
 			if observation == nil {
@@ -307,7 +307,7 @@ func (s *Session) translateLive(
 		return nil, err
 	}
 	if decoded.Kind == translator.KindOOM {
-		s.log.Warn("容器主进程被 OOM killer 杀死",
+		s.log.Warn("container main process killed by the OOM killer",
 			"namespace", decoded.Namespace, "container", decoded.ContainerID)
 		return nil, nil
 	}
@@ -340,7 +340,7 @@ func (s *Session) reconcileNamespaces(
 	existing, err := src.Namespaces(ctx)
 	if err != nil {
 		// 核对失败不是会话结束的理由：订阅流若真断了，会由 errs 通道报出来
-		s.log.Warn("核对 namespace 失败", "err", err)
+		s.log.Warn("failed to reconcile namespaces", "err", err)
 		return nil
 	}
 	live := make(map[string]bool, len(existing))
@@ -364,7 +364,7 @@ func (s *Session) reconcileNamespaces(
 		if !live[namespace] || streams.tracked(namespace) {
 			continue
 		}
-		s.log.Info("namespace 出现，开始跟踪", "namespace", namespace)
+		s.log.Info("namespace appeared; starting to track it", "namespace", namespace)
 		if err := streams.add(ctx, namespace); err != nil {
 			return fmt.Errorf("订阅 %s 失败: %w", namespace, err)
 		}
@@ -391,8 +391,8 @@ func (s *Session) sendObservation(observation *protocol.Observation) error {
 // voided 记一次段作废：段开了场却没有收场，C++ 侧不会结算。
 func (s *Session) voided(namespace string, cause error) error {
 	s.voids++
-	s.log.Warn("快照段作废，不发 SnapshotEnd",
-		"namespace", namespace, "连续作废", s.voids, "err", cause)
+	s.log.Warn("snapshot segment voided; not sending SnapshotEnd",
+		"namespace", namespace, "consecutive_voids", s.voids, "err", cause)
 	return cause
 }
 

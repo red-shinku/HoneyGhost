@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <queue>
 #include <unordered_map>
@@ -28,6 +27,7 @@
 
 #include "agent/context_maintainer/src/rule/derive_types.hpp"
 #include "agent/context_maintainer/src/rule/pending_table.hpp"
+#include "agent/util/include/log.hpp"
 
 ContextMaintainer::ContextMaintainer(uint32_t window_size)
     : pending_(std::make_unique<hng::detail::PendingTable>()),
@@ -47,7 +47,9 @@ void ContextMaintainer::set_context_service(ContextLookupService* ctx_lookup_sv,
         ctx_update_service_ = ctx_update_sv;
         return;
     }
-    std::cerr << "pass in nullptr at ContextMaintainer::set_context_service\n";
+    HNG_LOG_ERROR(
+        "ContextMaintainer::set_context_service requires non-null service "
+        "pointers");
     exit(2);
 }
 

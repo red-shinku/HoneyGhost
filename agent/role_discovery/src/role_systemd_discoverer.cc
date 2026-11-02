@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +22,7 @@
 #include <systemd/sd-bus.h>
 
 #include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/util/include/log.hpp"
 
 namespace hng {
 namespace role {
@@ -149,8 +149,7 @@ std::optional<hng::Process> read_proc_process(uint32_t pid)
 
 void report(const char* what, int error_code)
 {
-    std::fprintf(stderr, "[role_systemd] %s：%s\n", what,
-                 std::strerror(-error_code));
+    HNG_LOG_ERROR("{}: {}", what, std::strerror(-error_code));
 }
 
 /// 从 a{sv} 中取出被跟踪的字段，其余跳过
@@ -592,7 +591,7 @@ void SystemdRoleDiscoverer::attach_stream()
     struct sd_bus* bus = nullptr;
     int r              = sd_bus_open_system(&bus);
     if (r < 0) {
-        report("连接 system bus 失败", r);
+        report("failed to connect to the system bus", r);
         return;
     }
     bus_                             = bus;
@@ -627,7 +626,7 @@ void SystemdRoleDiscoverer::attach_stream()
             },
             this);
         if (r < 0) {
-            report("注册 match 规则失败", r);
+            report("failed to register a D-Bus match rule", r);
             detach_stream();
             return;
         }
@@ -660,7 +659,10 @@ bool SystemdRoleDiscoverer::subscribe()
         sd_bus_call_method(bus_, kSystemdService, kManagerPath, kManagerIface,
                            "Subscribe", &error, nullptr, "");
     if (r < 0) {
-        report("调用 Manager.Subscribe 失败（宿主可能不是 systemd init）", r);
+        report(
+            "failed to call Manager.Subscribe (the host may not run "
+            "systemd as init)",
+            r);
         sd_bus_error_free(&error);
         return false;
     }
@@ -688,9 +690,10 @@ void SystemdRoleDiscoverer::prime_from_snapshot()
         // 枚举没走完就不是权威状态，据它结算会误杀仍存活但没枚举到的角色。
         // 退回「只喂不结算」，下一次完整段自会修正；持续作废须可见
         ++voids_;
-        std::fprintf(stderr,
-                     "[role_systemd] 枚举未走完（%zu 行），本次段作废、不结算\n",
-                     rows);
+        HNG_LOG_WARN(
+            "unit enumeration incomplete after {} row(s); segment discarded "
+            "without settlement",
+            rows);
     }
     else {
         for (const RoleEvent& event : table_.end_snapshot()) {
@@ -718,7 +721,7 @@ std::size_t SystemdRoleDiscoverer::enumerate_units(bool& complete)
     int r = sd_bus_call_method(bus_, kSystemdService, kManagerPath, kManagerIface,
                                "ListUnits", &error, &reply, "");
     if (r < 0) {
-        report("调用 Manager.ListUnits 失败", r);
+        report("failed to call Manager.ListUnits", r);
         sd_bus_error_free(&error);
         return 0;
     }
@@ -728,8 +731,7 @@ std::size_t SystemdRoleDiscoverer::enumerate_units(bool& complete)
     r = sd_bus_message_enter_container(reply, 'a', "(ssssssouso)");
     if (r < 0) {
         ++anomalies_;
-        std::fprintf(stderr,
-                     "[role_systemd] ListUnits 应答格式不符，本次段作废\n");
+        HNG_LOG_WARN("unexpected ListUnits reply format; segment discarded");
         sd_bus_message_unref(reply);
         return 0;
     }
@@ -747,10 +749,10 @@ std::size_t SystemdRoleDiscoverer::enumerate_units(bool& complete)
                                 &job_path) < 0) {
             // 逐行读取失败：剩余 unit 全部落下，收尾照常会让人以为枚举完整
             ++anomalies_;
-            std::fprintf(stderr,
-                         "[role_systemd] ListUnits 逐行读取中断于第 %zu 行，"
-                         "本次段作废\n",
-                         rows);
+            HNG_LOG_WARN(
+                "ListUnits reply read interrupted at row {}; segment "
+                "discarded",
+                rows);
             sd_bus_message_unref(reply);
             return rows;
         }
@@ -1108,22 +1110,21 @@ void SystemdRoleDiscoverer::handle_message(sd_bus_message* message)
 
     if (signal.kind == SystemdSignalKind::NAME_OWNER_CHANGED) {
         if (signal.new_owner.empty()) {
-            std::fprintf(stderr, "[role_systemd] systemd 从总线上消失\n");
+            HNG_LOG_WARN("systemd disappeared from the bus");
         }
         else {
-            std::fprintf(stderr, "[role_systemd] systemd 重新出现，重新订阅\n");
+            HNG_LOG_INFO("systemd reappeared; resubscribing");
             resubscribe_requested_ = true;  // 重订阅与重新快照在循环体里做
         }
         return;
     }
 
     if (signal.kind == SystemdSignalKind::JOB_REMOVED) {
-        std::fprintf(stderr, "[role_systemd] 作业结束 %s result=%s\n",
-                     signal.unit_id.c_str(), signal.job_result.c_str());
+        HNG_LOG_INFO("job finished for {}: result={}", signal.unit_id,
+                     signal.job_result);
     }
     if (signal.delta.sub_state && *signal.delta.sub_state == "auto-restart") {
-        std::fprintf(stderr, "[role_systemd] %s 进入自动重启\n",
-                     signal.object_path.c_str());
+        HNG_LOG_INFO("{} entered auto-restart", signal.object_path);
     }
 
     submit(translator_.on_signal(signal));
