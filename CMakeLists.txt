@@ -128,10 +128,15 @@ add_library(hng_context_maintainer STATIC
 target_include_directories(hng_context_maintainer PUBLIC
     ${HNG_SOURCE_DIR}
 )
-target_link_libraries(hng_context_maintainer PUBLIC
-    hng_context_rule
-    hng_event_data
+target_link_libraries(hng_context_maintainer
+    PUBLIC
+        hng_context_rule
+        hng_event_data
+    PRIVATE
+        hng_log
 )
+target_compile_definitions(hng_context_maintainer
+    PRIVATE HNG_LOG_TAG="context_maintainer")
 
 # ============================================================
 # 角色发现模块（公共骨架：状态表与 cgroup 读取）
@@ -188,7 +193,10 @@ if(HNG_ENABLE_ROLE_SYSTEMD)
         target_link_libraries(hng_role_systemd
             PUBLIC hng_role_discovery
             PRIVATE ${HNG_SYSTEMD_DEP}
+                    hng_log
         )
+        target_compile_definitions(hng_role_systemd
+            PRIVATE HNG_LOG_TAG="role_systemd")
     else()
         message(STATUS "libsystemd 未找到，跳过 hng_role_systemd")
     endif()
@@ -218,7 +226,10 @@ if(HNG_ENABLE_ROLE_CONTAINERD)
     target_link_libraries(hng_role_containerd
         PUBLIC hng_role_discovery
                protobuf::libprotobuf
+        PRIVATE hng_log
     )
+    target_compile_definitions(hng_role_containerd
+        PRIVATE HNG_LOG_TAG="role_containerd")
     protobuf_generate(TARGET hng_role_containerd LANGUAGE cpp
         PROTOS proto/role_containerd_bridge.proto
         IMPORT_DIRS ${HNG_SOURCE_DIR}/proto

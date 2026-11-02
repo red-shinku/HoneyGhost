@@ -55,13 +55,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg.Log.Info("containerd 翻译进程启动",
+	cfg.Log.Info("containerd bridge started",
 		"version", version, "containerd", cfg.Address, "socket", *socket,
 		"namespaces", cfg.Namespaces)
 
 	server := &bridge.Server{Socket: *socket, Config: cfg, Log: cfg.Log}
 	if err := server.Serve(ctx); err != nil {
-		cfg.Log.Error("服务退出", "err", err)
+		cfg.Log.Error("server exited", "err", err)
 		os.Exit(1)
 	}
 }

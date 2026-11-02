@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +23,7 @@
 #include <utility>
 
 #include "agent/role_discovery/src/role_cgroup_reader.hpp"
+#include "agent/util/include/log.hpp"
 #include "role_containerd_bridge.pb.h"
 
 namespace hng {
@@ -115,8 +115,7 @@ std::int64_t now_ns()
 
 void report(const char* what)
 {
-    std::fprintf(stderr, "[role_containerd] %s：%s\n", what,
-                 std::strerror(errno));
+    HNG_LOG_ERROR("{}: {}", what, std::strerror(errno));
 }
 
 }  // namespace
@@ -248,10 +247,11 @@ ContainerTranslation ContainerdBridgeTranslator::on_message(
             const ContainerdObservation& observation = message.observation;
             // 段内只应有枚举项，段外只应有流内项；反过来即帧序违约
             if (observation.in_snapshot != in_snapshot_) {
-                out.violations.push_back(observation.attributes.container_id +
-                                         (observation.in_snapshot
-                                              ? "：段外出现枚举项"
-                                              : "：段内出现流内项"));
+                out.violations.push_back(
+                    observation.attributes.container_id +
+                    (observation.in_snapshot
+                         ? ": snapshot entry observed outside a segment"
+                         : ": live entry observed inside a snapshot segment"));
             }
             if (observation.in_snapshot) {
                 ++segment_received_;
@@ -288,10 +288,11 @@ ContainerTranslation ContainerdBridgeTranslator::on_message(
         case ContainerdMessage::Kind::SNAPSHOT_END: {
             const bool complete = segment_received_ == message.declared_count;
             if (!complete) {
-                out.violations.push_back("段内条目数与源侧声明不符：实收 " +
-                                         std::to_string(segment_received_) +
-                                         " 声明 " +
-                                         std::to_string(message.declared_count));
+                out.violations.push_back(
+                    "segment entry count does not match the source "
+                    "declaration: received " +
+                    std::to_string(segment_received_) + ", declared " +
+                    std::to_string(message.declared_count));
             }
             else {
                 // 本段没再见到的待补锚点项：容器已不在运行，撤下
@@ -477,14 +478,13 @@ SettlementStats ContainerdRoleDiscoverer::settlement_stats() const
 bool ContainerdRoleDiscoverer::connect()
 {
     if (config_.socket_path.size() >= sizeof(sockaddr_un::sun_path)) {
-        std::fprintf(stderr, "[role_containerd] socket 路径过长：%s\n",
-                     config_.socket_path.c_str());
+        HNG_LOG_ERROR("socket path too long: {}", config_.socket_path);
         return false;
     }
 
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        report("创建 socket 失败");
+        report("failed to create socket");
         return false;
     }
 
@@ -494,7 +494,7 @@ bool ContainerdRoleDiscoverer::connect()
                  sizeof(address.sun_path) - 1);
     if (::connect(fd, reinterpret_cast<struct sockaddr*>(&address),
                   sizeof(address)) < 0) {
-        report("连接翻译进程失败（socket 未就绪）");
+        report("failed to connect to the bridge process (socket not ready)");
         ::close(fd);
         return false;
     }
@@ -566,7 +566,7 @@ bool ContainerdRoleDiscoverer::read_and_handle()
                           (static_cast<uint32_t>(header[2]) << 8) |
                           static_cast<uint32_t>(header[3]);
     if (size == 0 || size > kMaxFrameBytes) {
-        std::fprintf(stderr, "[role_containerd] 帧长度非法：%u\n", size);
+        HNG_LOG_ERROR("invalid frame length: {}", size);
         return false;
     }
 
@@ -577,14 +577,14 @@ bool ContainerdRoleDiscoverer::read_and_handle()
 
     hng::role_bridge::Frame frame;
     if (!frame.ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
-        std::fprintf(stderr, "[role_containerd] 帧解析失败，连接不可信\n");
+        HNG_LOG_ERROR("failed to parse frame; connection is untrusted");
         return false;
     }
 
     ContainerdMessage message;
     if (!decode_frame(frame, message)) {
         // 不属于本协议的帧只记日志跳过：一条坏消息不得中断整条流
-        std::fprintf(stderr, "[role_containerd] 忽略无法识别的帧\n");
+        HNG_LOG_WARN("ignoring unrecognized frame");
         return true;
     }
 
@@ -595,10 +595,9 @@ bool ContainerdRoleDiscoverer::read_and_handle()
 void ContainerdRoleDiscoverer::handle(const ContainerdMessage& message)
 {
     if (message.kind == ContainerdMessage::Kind::SNAPSHOT_BEGIN) {
-        std::fprintf(stderr,
-                     "[role_containerd] 快照段开场 来源=%s 后端=%s 范围=%zu 个\n",
-                     message.source.c_str(), message.backend_version.c_str(),
-                     message.namespaces.size());
+        HNG_LOG_INFO(
+            "snapshot segment begins: source={} backend={} namespaces={}",
+            message.source, message.backend_version, message.namespaces.size());
     }
     execute(translator_.on_message(message));
 }
@@ -608,8 +607,7 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
     pending_anchors_.store(translator_.pending_anchors());
     for (const std::string& violation : translation.violations) {
         ++anomalies_;
-        std::fprintf(stderr, "[role_containerd] 协议违约：%s\n",
-                     violation.c_str());
+        HNG_LOG_WARN("protocol violation: {}", violation);
     }
 
     for (const ContainerCommand& command : translation.commands) {
@@ -619,10 +617,10 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
                 // 对账其实没在跑，须可见
                 if (segment_open_) {
                     ++voids_;
-                    std::fprintf(stderr,
-                                 "[role_containerd] "
-                                 "上一段未结算即被作废，连续作废 %llu 次\n",
-                                 static_cast<unsigned long long>(voids_.load()));
+                    HNG_LOG_WARN(
+                        "previous segment was voided before settlement; "
+                        "consecutive voids: {}",
+                        static_cast<unsigned long long>(voids_.load()));
                 }
                 segment_open_   = true;
                 session_opened_ = true;
@@ -632,9 +630,9 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
             case ContainerCommand::Kind::SUBMIT: {
                 if (!session_opened_) {
                     ++anomalies_;
-                    std::fprintf(
-                        stderr,
-                        "[role_containerd] 协议违约：会话未以快照段开场\n");
+                    HNG_LOG_WARN(
+                        "protocol violation: session does not begin with a "
+                        "snapshot segment");
                     session_opened_ = true;  // 只报一次，不刷屏
                 }
                 if (std::optional<RoleEvent> event =
@@ -655,16 +653,17 @@ void ContainerdRoleDiscoverer::execute(const ContainerTranslation& translation)
                     // 没有开场的收场：不该发生，且绝不能当成一次成功结算——那会
                     // 把「距上次成功结算的时长」这个唯一的健康度信号刷新掉
                     ++anomalies_;
-                    std::fprintf(
-                        stderr,
-                        "[role_containerd] 协议违约：收场没有对应的开场\n");
+                    HNG_LOG_WARN(
+                        "protocol violation: snapshot end without a matching "
+                        "begin");
                     break;
                 }
                 if (!command.settle) {
                     // 不完整的枚举不是权威状态，据它结算会误杀仍存活但没枚举
                     // 到的角色。退回「只喂不结算」，下次完整段自会修正
-                    std::fprintf(
-                        stderr, "[role_containerd] 段不可结算：实收 %u 声明 %u\n",
+                    HNG_LOG_WARN(
+                        "segment cannot be settled: received {} of {} "
+                        "declared entries",
                         command.received_count, command.declared_count);
                     break;
                 }
