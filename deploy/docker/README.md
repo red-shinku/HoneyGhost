@@ -38,6 +38,21 @@ bin/hghost --socket /run/honeyghost/cli.sock <子命令>
 
 没有 containerd 或 systemd 的节点：在配置里关掉对应发现源，并从 compose 中删掉不需要的服务与挂载。
 
+### 镜像引用
+
+容器角色的标签取镜像引用。宿主 Docker 用传统镜像存储（`docker info` 显示
+`Storage Driver: overlay2`）时，镜像引用不在 containerd 里，桥接进程需要经
+Docker API 回查：
+
+```sh
+docker compose -f deploy/docker/docker-compose.yaml \
+               -f deploy/docker/docker-compose.docker-api.yaml up -d
+```
+
+该覆盖文件给桥接容器挂上只读的 `/var/run/docker.sock` 并开启 `-docker-socket`。
+使用 containerd 镜像存储的宿主（`driver-type: io.containerd.snapshotter.v1`）
+不需要它；不挂 Docker socket 时桥接进程不会访问 Docker。
+
 ## 配置
 
 `deploy/docker/config/` 三个文件挂到容器内 `/etc/honeyghost`：

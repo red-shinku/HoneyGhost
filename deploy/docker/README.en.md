@@ -38,6 +38,17 @@ bin/hghost --socket /run/honeyghost/cli.sock <subcommand>
 
 For nodes without containerd or systemd: disable the corresponding discovery source in the configuration, and remove the unneeded services and mounts from compose.
 
+### Image reference
+
+A container role's label is its image reference. When the host Docker uses the legacy image store (`docker info` shows `Storage Driver: overlay2`), the reference is not recorded in containerd and the bridge has to look it up through the Docker API:
+
+```sh
+docker compose -f deploy/docker/docker-compose.yaml \
+               -f deploy/docker/docker-compose.docker-api.yaml up -d
+```
+
+That override mounts `/var/run/docker.sock` read-only into the bridge container and enables `-docker-socket`. Hosts using the containerd image store (`driver-type: io.containerd.snapshotter.v1`) do not need it; without the Docker socket mount the bridge never talks to Docker.
+
 ## Configuration
 
 The three files in `deploy/docker/config/` are mounted into the container at `/etc/honeyghost`:

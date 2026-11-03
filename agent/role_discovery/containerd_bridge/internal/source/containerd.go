@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types/task"
@@ -41,12 +42,22 @@ func subscribeFilters(topics []string) []string {
 	return filters
 }
 
+// Options 是后端连接的构造选项。
+type Options struct {
+	// DockerSocket 是 Docker API 的 socket 路径；空表示不查询 Docker。
+	DockerSocket string
+	// DockerNamespaces 列出 Docker 管理的 containerd namespace；空表示不限定。
+	DockerNamespaces []string
+	// Log 是日志出口，为空则用默认出口。
+	Log *slog.Logger
+}
+
 // Dial 连上 containerd 并确认其已就绪。
 //
 // 就绪判据不可省：containerd 的 grpc 连接是惰性建立的，socket 不存在时
 // Dial 也会成功，随后把「连不上」表现为空枚举——空枚举一旦被当成权威，
 // 全部存活容器都会被对账掉。故此处先向 health 服务要一次 SERVING。
-func Dial(ctx context.Context, address string) (Source, error) {
+func Dial(ctx context.Context, address string, opts Options) (Source, error) {
 	c, err := client.New(address)
 	if err != nil {
 		return nil, fmt.Errorf("建立 containerd 客户端失败: %w", err)
@@ -68,12 +79,17 @@ func Dial(ctx context.Context, address string) (Source, error) {
 		return nil, fmt.Errorf("取 containerd 版本失败: %w", err)
 	}
 
-	return &containerdSource{client: c, version: version.Version}, nil
+	return &containerdSource{
+		client:  c,
+		version: version.Version,
+		images:  newImageResolver(opts.DockerSocket, opts.DockerNamespaces, opts.Log),
+	}, nil
 }
 
 type containerdSource struct {
 	client  *client.Client
 	version string
+	images  *imageResolver
 }
 
 func (s *containerdSource) BackendVersion() string { return s.version }
@@ -130,7 +146,16 @@ func (s *containerdSource) GetContainer(
 	if err != nil {
 		return Container{}, err
 	}
-	return Container{ID: got.ID, Image: got.Image, Labels: got.Labels}, nil
+	return Container{
+		ID:     got.ID,
+		Image:  s.images.image(ctx, namespace, got),
+		Labels: got.Labels,
+	}, nil
 }
 
-func (s *containerdSource) Close() error { return s.client.Close() }
+func (s *containerdSource) Close() error {
+	if s.images != nil {
+		s.images.close()
+	}
+	return s.client.Close()
+}

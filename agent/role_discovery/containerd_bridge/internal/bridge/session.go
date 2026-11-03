@@ -53,6 +53,14 @@ type Config struct {
 	// 删掉 namespace 不会让该 namespace 上的事件流报错，只能主动核对。
 	NamespacePollInterval time.Duration
 
+	// DockerSocket 是 Docker API 的 socket 路径；空表示不查询 Docker。
+	// 只有传统镜像存储（overlay2 graphdriver）的 Docker 才需要：它不把镜像
+	// 引用写进 containerd，容器角色标签会因此退化成容器 ID。
+	DockerSocket string
+
+	// DockerNamespaces 是 Docker 管理的 containerd namespace；空表示不限定。
+	DockerNamespaces []string
+
 	// Log 是日志出口，为空则用默认出口。
 	Log *slog.Logger
 }
@@ -67,6 +75,7 @@ func DefaultConfig() Config {
 		MetadataAttempts:      3,
 		MetadataRetryDelay:    100 * time.Millisecond,
 		NamespacePollInterval: 30 * time.Second,
+		DockerNamespaces:      []string{"moby"},
 		Log:                   slog.Default(),
 	}
 }
@@ -99,7 +108,11 @@ func NewSession(cfg Config, out FrameWriter) *Session {
 	}
 	session := &Session{cfg: cfg, out: out, log: cfg.Log}
 	session.dial = func(ctx context.Context) (source.Source, error) {
-		return source.Dial(ctx, cfg.Address)
+		return source.Dial(ctx, cfg.Address, source.Options{
+			DockerSocket:     cfg.DockerSocket,
+			DockerNamespaces: cfg.DockerNamespaces,
+			Log:              cfg.Log,
+		})
 	}
 	return session
 }

@@ -3,6 +3,10 @@
 #
 #   sudo mkdir -p /run/honeyghost
 #   docker compose -f deploy/docker/docker-compose.yaml up -d --build
+#
+# 宿主 Docker 用传统镜像存储（overlay2 graphdriver）时追加
+#   -f deploy/docker/docker-compose.docker-api.yaml
+# 以回查容器镜像引用，见 README「镜像引用」。
 # ============================================================
 name: honeyghost
 
