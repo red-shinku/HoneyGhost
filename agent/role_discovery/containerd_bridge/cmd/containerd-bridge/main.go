@@ -38,6 +38,11 @@ func main() {
 		"重连退避的起始时长")
 	flag.DurationVar(&cfg.BackoffMax, "backoff-max", cfg.BackoffMax,
 		"重连退避的上限")
+	flag.StringVar(&cfg.DockerSocket, "docker-socket", cfg.DockerSocket,
+		"Docker API 的 socket 路径；空表示不查询 Docker（仅传统镜像存储的 Docker 需要）")
+	dockerNamespaces := flag.String("docker-namespaces",
+		strings.Join(cfg.DockerNamespaces, ","),
+		"Docker 管理的 containerd namespace，逗号分隔；空表示不限定")
 	logLevel := flag.String("log-level", "info",
 		"日志级别：debug / info / warn / error")
 	showVersion := flag.Bool("version", false, "打印版本后退出")
@@ -49,15 +54,22 @@ func main() {
 	}
 
 	cfg.Namespaces = splitList(*namespaces)
+	cfg.DockerNamespaces = splitList(*dockerNamespaces)
 	cfg.Log = newLogger(*logLevel)
 	slog.SetDefault(cfg.Log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg.Log.Info("containerd bridge started",
+	started := []any{
 		"version", version, "containerd", cfg.Address, "socket", *socket,
-		"namespaces", cfg.Namespaces)
+		"namespaces", cfg.Namespaces,
+	}
+	if cfg.DockerSocket != "" {
+		started = append(started, "docker", cfg.DockerSocket,
+			"docker_namespaces", cfg.DockerNamespaces)
+	}
+	cfg.Log.Info("containerd bridge started", started...)
 
 	server := &bridge.Server{Socket: *socket, Config: cfg, Log: cfg.Log}
 	if err := server.Serve(ctx); err != nil {

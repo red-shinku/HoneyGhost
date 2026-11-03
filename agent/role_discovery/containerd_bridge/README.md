@@ -13,7 +13,7 @@
 | | 本进程 | C++ `ContainerdRoleDiscoverer` |
 | --- | --- | --- |
 | containerd 事件订阅 | ✅ | ❌ |
-| 元数据回查（取标签） | ✅ | ❌ |
+| 元数据回查（取标签与镜像引用） | ✅ | ❌ |
 | 快照枚举 | ✅ | ❌ |
 | 翻译成自有结构 | ✅ | ❌ |
 | 判断加入/退出、维护存活状态 | ❌ | ✅（状态表） |
@@ -23,6 +23,22 @@
 
 元数据回查必须在 Go 侧：否则 C++ 还要直连 containerd 拿标签，方案就白费了。
 过滤在 C++ 侧：self-exclusion 与 namespace 白名单都在那里，本进程全量翻译。
+
+## 镜像引用
+
+容器角色的标签取镜像引用。本进程按以下顺序补齐，取第一个非空值：
+
+1. containerd 容器对象的 `Image`：`ctr` 与启用 containerd 镜像存储的 Docker 会填；
+2. OCI spec 的 CRI 注解：普通容器取 `io.kubernetes.cri.image-name`，沙箱取
+   `io.kubernetes.cri.podsandbox.image-name`——CRI 不把镜像写进容器对象；
+3. Docker API 的 `Config.Image`：仅当配置了 `-docker-socket` 且容器所在
+   namespace 在 `-docker-namespaces` 内时才查。
+
+第 3 条只对传统镜像存储（overlay2 graphdriver）的 Docker 需要：这种 Docker 既不填
+容器对象的 `Image`，也没有 CRI 注解，缺了它角色标签会退化成容器 ID。回查结果按
+容器 ID 缓存，上限 4096 条；查不到按未知处理，不影响容器元数据本身。
+
+k8s 节点不需要第 3 条；Docker 宿主需要时见 `deploy/docker/docker-compose.docker-api.yaml`。
 
 ## 构建与运行
 
@@ -39,6 +55,8 @@ sudo ./containerd-bridge -socket /run/honeyghost/containerd-bridge.sock
 | `-containerd` | `/run/containerd/containerd.sock` | containerd 的 socket 路径 |
 | `-socket` | `/run/honeyghost/containerd-bridge.sock` | 监听给 C++ 发现器的路径 |
 | `-namespaces` | `default,k8s.io,moby` | 跟踪的 namespace，逗号分隔 |
+| `-docker-socket` | 空 | Docker API 的 socket 路径；空表示不查询 Docker |
+| `-docker-namespaces` | `moby` | Docker 管理的 containerd namespace，逗号分隔；空表示不限定 |
 | `-namespace-poll` | `30s` | 重新核对 namespace 存在性的周期 |
 | `-backoff-base` / `-backoff-max` | `200ms` / `30s` | 重连退避的起始值与上限 |
 | `-log-level` | `info` | `debug` / `info` / `warn` / `error` |
