@@ -1,0 +1,24 @@
+{
+  "supervised_role_count": null,
+  "exception_context_count": null,
+  "extra_context_count": null,
+  "role_stats": {
+    "rejected": 1,
+    "unknown_instance": null,
+    "owner_conflict": null,
+    "anchors_removed": null,
+    "cgroup_read_empty": null,
+    "queue_rejected": null,
+    "bind_deferred": null,
+    "bind_resolved": null,
+    "bind_rejected": null,
+    "bind_expired": null,
+    "bind_ignored": null,
+    "late_adopt_rejected": null,
+    "tombstone_depth": null,
+    "dead_member_rejected": null,
+    "dead_anchor_rejected": null
+  },
+  "context_stats": null,
+  "process_stats": null
+}

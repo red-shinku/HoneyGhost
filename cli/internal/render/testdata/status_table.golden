@@ -1,0 +1,45 @@
+SUPERVISED ROLES    12
+EXCEPTION CONTEXTS  3
+EXTRA CONTEXTS      0
+
+ROLE STATS
+  rejected              0
+  unknown_instance      -
+  owner_conflict        2
+  anchors_removed       0
+  cgroup_read_empty     -
+  queue_rejected        5
+  bind_deferred         3
+  bind_resolved         3
+  bind_rejected         -
+  bind_expired          -
+  bind_ignored          0
+  late_adopt_rejected   1
+  tombstone_depth       4
+  dead_member_rejected  -
+  dead_anchor_rejected  0
+
+CONTEXT STATS
+  ctxroot_parent_unsettled  1
+  unknown_unregister        2
+  pending_deferred          3
+  pending_resolved          2
+  pending_rejected          0
+  pending_expired           1
+  pending_cancelled         0
+  pending_depth             1
+  bind_orphaned             0
+  extra_orphaned            0
+  parent_missing            2
+  late_register             1
+  late_bind                 0
+  duplicate_context         1
+  ownership_conflict        0
+  tombstone_hits            9
+  tombstone_depth           1
+
+PROCESS STATS
+  pid_reused       0
+  stale_add        -
+  parent_missing   2
+  tombstone_depth  4

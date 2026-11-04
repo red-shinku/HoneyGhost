@@ -1,0 +1,10 @@
+[
+  {
+    "role_id": 7,
+    "role_label": "nginx:1.25"
+  },
+  {
+    "role_id": 3,
+    "role_label": "ssh"
+  }
+]
