@@ -1,0 +1,17 @@
+{
+  "rejected": 0,
+  "unknown_instance": null,
+  "owner_conflict": 2,
+  "anchors_removed": 0,
+  "cgroup_read_empty": null,
+  "queue_rejected": 5,
+  "bind_deferred": 3,
+  "bind_resolved": 3,
+  "bind_rejected": null,
+  "bind_expired": null,
+  "bind_ignored": 0,
+  "late_adopt_rejected": 1,
+  "tombstone_depth": 4,
+  "dead_member_rejected": null,
+  "dead_anchor_rejected": 0
+}

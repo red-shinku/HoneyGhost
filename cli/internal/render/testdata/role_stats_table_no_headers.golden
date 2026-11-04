@@ -1,0 +1,15 @@
+rejected              0
+unknown_instance      -
+owner_conflict        2
+anchors_removed       0
+cgroup_read_empty     -
+queue_rejected        5
+bind_deferred         3
+bind_resolved         3
+bind_rejected         -
+bind_expired          -
+bind_ignored          0
+late_adopt_rejected   1
+tombstone_depth       4
+dead_member_rejected  -
+dead_anchor_rejected  0

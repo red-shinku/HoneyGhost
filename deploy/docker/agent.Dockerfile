@@ -3,90 +3,35 @@
 #
 # 构建上下文是仓库根：
 #   docker build -f deploy/docker/agent.Dockerfile -t hng/agent:dev .
+#
+# 工具链与 userver 来自 builder 镜像（deploy/ci/builder.Dockerfile），
+# 本文件只编译仓库源码并组装运行时层。
 # ============================================================
 
 ARG BASE_IMAGE=debian:13-slim
+ARG BUILDER_IMAGE=ghcr.io/red-shinku/honeyghost-builder:latest
 
-FROM ${BASE_IMAGE} AS builder
+FROM ${BUILDER_IMAGE} AS builder
 
-ARG DEBIAN_FRONTEND=noninteractive
-ARG APT_MIRROR=deb.debian.org
-# 须与 scripts/install-userver.sh 的默认版本一致
-ARG USERVER_VERSION=3.2
-ARG USERVER_GIT_BASE=https://github.com/userver-framework/userver.git
-ARG USERVER_BUILD_PARALLEL=4
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 ARG BUILD_PARALLEL=4
-# 可选：userver 配置阶段建 venv 时用的 pip 源
-ARG PIP_INDEX_URL=
 
-# userver 3.x 要求 fmt 11，而 Debian 13 只有 fmt 10；系统的 spdlog 又是按
-# fmt 10 编译的，两者混进同一次链接就会报未定义符号。故 fmt 与 spdlog 都
-# 从源码装到 /usr/local，并且不安装系统的 -dev 包。
-ARG FMT_VERSION=11.1.4
-ARG SPDLOG_VERSION=1.15.3
-ARG FMT_SOURCE_URL=https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.tar.gz
-ARG SPDLOG_SOURCE_URL=https://github.com/gabime/spdlog/archive/refs/tags/v${SPDLOG_VERSION}.tar.gz
-
-RUN set -eux; \
-    if [ "${APT_MIRROR}" != "deb.debian.org" ]; then \
-        sed -i "s|deb\.debian\.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
-    fi; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build pkg-config \
-        python3 python3-dev python3-venv \
-        git ca-certificates curl \
-        clang bpftool libbpf-dev libsystemd-dev \
-        protobuf-compiler libprotobuf-dev libprotoc-dev \
-        libgrpc-dev libgrpc++-dev protobuf-compiler-grpc \
-        libboost-dev libboost-context-dev libboost-coroutine-dev \
-        libboost-filesystem-dev libboost-iostreams-dev libboost-locale-dev \
-        libboost-program-options-dev libboost-stacktrace-dev \
-        libc-ares-dev libcctz-dev libcrypto++-dev libcurl4-openssl-dev \
-        libev-dev libjemalloc-dev libkrb5-dev libldap2-dev \
-        liblzma-dev libnghttp2-dev libre2-dev libssl-dev \
-        libgtest-dev \
-        libgmock-dev \
-        libbenchmark-dev \
-        clang-format \
-        liburing-dev libyaml-cpp-dev libzstd-dev zlib1g-dev; \
-    rm -rf /var/lib/apt/lists/*
-
+# eBPF 探针的 CO-RE 重定位依赖构建机的 BTF；缺它时骨架会静默沿用旧内容
 RUN test -r /sys/kernel/btf/vmlinux || { \
         echo "cannot find /sys/kernel/btf/vmlinux: eBPF probes need it" >&2; \
         exit 1; }
-
-# fmt 与 spdlog：与开发容器共用 scripts/install-fmt-spdlog.sh，装到 /usr/local
-COPY scripts/install-fmt-spdlog.sh /tmp/install-fmt-spdlog.sh
-RUN FMT_VERSION="${FMT_VERSION}" \
-    SPDLOG_VERSION="${SPDLOG_VERSION}" \
-    FMT_SOURCE_URL="${FMT_SOURCE_URL}" \
-    SPDLOG_SOURCE_URL="${SPDLOG_SOURCE_URL}" \
-    BUILD_PARALLEL="${BUILD_PARALLEL}" \
-    sh /tmp/install-fmt-spdlog.sh
-
-# userver 的配置阶段与本仓库的配置都要取 /usr/local 的 fmt/spdlog
-ENV CMAKE_PREFIX_PATH=/usr/local
-
-# 先只拷用户态依赖的就位脚本：这一层不随源码改动失效
-COPY scripts/install-userver.sh /src/scripts/install-userver.sh
-RUN set -eux; \
-    if [ -n "${PIP_INDEX_URL}" ]; then export PIP_INDEX_URL; else unset PIP_INDEX_URL; fi; \
-    USERVER_VERSION="${USERVER_VERSION}" \
-    USERVER_GIT_BASE="${USERVER_GIT_BASE}" \
-    USERVER_VARIANTS=Release \
-    USERVER_BUILD_PARALLEL="${USERVER_BUILD_PARALLEL}" \
-    sh /src/scripts/install-userver.sh
-
-# find_package(userver) 经 CMake 的 <PackageName>_ROOT 机制读这个变量
-ENV userver_ROOT=/opt/userver/prefix
 
 WORKDIR /src
 COPY . /src
 
 RUN cmake -S /src -B /build \
         -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_TESTING=OFF
+        -DBUILD_TESTING=OFF \
+        -DHNG_VERSION="${VERSION}" \
+        -DHNG_COMMIT="${COMMIT}" \
+        -DHNG_BUILD_DATE="${BUILD_DATE}"
 
 RUN grep -q '^fmt_DIR:PATH=/usr/local/' /build/CMakeCache.txt \
  && grep -q '^spdlog_DIR:PATH=/usr/local/' /build/CMakeCache.txt \
@@ -114,6 +59,16 @@ RUN mkdir -p /staging \
     done < /tmp/libs.txt
 
 FROM ${BASE_IMAGE} AS runtime
+
+# 构建来源只作追溯用：VERSION 与构建该镜像使用的 builder digest。
+ARG VERSION=dev
+ARG BUILDER_DIGEST=unknown
+
+LABEL org.opencontainers.image.title="honeyghost-agent" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/red-shinku/HoneyGhost" \
+      org.opencontainers.image.licenses="MIT" \
+      org.honeyghost.builder-digest="${BUILDER_DIGEST}"
 
 # 运行时共享库与动态加载器一并来自构建阶段，不在此处安装任何包
 COPY --from=builder /staging/ /

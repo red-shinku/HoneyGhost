@@ -18,7 +18,7 @@ services:
       dockerfile: deploy/docker/agent.Dockerfile
       args:
         BASE_IMAGE: ${BASE_IMAGE:-debian:13-slim}
-        USERVER_VERSION: ${USERVER_VERSION:-3.2}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/red-shinku/honeyghost-builder:latest}
     restart: unless-stopped
     command: ["--config", "/etc/honeyghost/agent.conf"]
     # 给 CLI 服务端的 drain 留出时间（配置里的 drain_timeout 为 10s）

@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    uses: ./.github/workflows/_test.yml
+
+  # master 上的提交推进 edge 镜像；版本 tag 的镜像由 release.yml 负责。
+  edge:
+    if: github.event_name == 'push'
+    needs: test
+    uses: ./.github/workflows/_image.yml
+    with:
+      tag: edge
+      version: edge-${{ github.sha }}
+    secrets: inherit

@@ -1,0 +1,5 @@
+COUNTER          VALUE
+pid_reused       0
+stale_add        -
+parent_missing   2
+tombstone_depth  4

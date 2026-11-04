@@ -32,10 +32,23 @@ constexpr bool kCliCompiled = true;
 constexpr bool kCliCompiled = false;
 #endif
 
+// 构建信息由 CMake 注入；未注入时给出可读的占位值
+#ifndef HNG_VERSION
+#define HNG_VERSION "dev"
+#endif
+#ifndef HNG_COMMIT
+#define HNG_COMMIT "unknown"
+#endif
+#ifndef HNG_BUILD_DATE
+#define HNG_BUILD_DATE "unknown"
+#endif
+
 /// @brief 命令行解析结果
 struct Arguments {
     /// 主配置文件路径；空表示依次回退 HNG_CONFIG 与默认路径
     std::string config_path;
+    /// 是否请求打印版本信息
+    bool version = false;
     /// 是否请求打印用法
     bool help = false;
 };
@@ -51,7 +64,19 @@ void print_usage(std::FILE* out)
         "usage: hng_agent [options]\n"
         "  --config PATH  主配置文件；省略时依次取环境变量 HNG_CONFIG、\n"
         "                 /etc/honeyghost/agent.conf\n"
+        "  --version      显示版本信息并退出\n"
         "  -h, --help     显示本说明并退出\n");
+}
+
+/**
+ * @brief 打印构建版本
+ * @param out 输出流；固定为 stdout
+ * @note 格式与 hghost、containerd-bridge 一致：<name> <version> (<commit>, <date>)
+ */
+void print_version(std::FILE* out)
+{
+    std::fprintf(out, "hng_agent %s (%s, %s)\n", HNG_VERSION, HNG_COMMIT,
+                 HNG_BUILD_DATE);
 }
 
 /**
@@ -60,7 +85,7 @@ void print_usage(std::FILE* out)
  * @param argv 参数数组
  * @param args 解析结果
  * @return 解析成功为 true；缺少取值、空取值或未知参数为 false
- * @note --help 出现即返回，不再解析后续参数
+ * @note --help 与 --version 出现即返回，不再解析后续参数
  */
 bool parse_arguments(int argc, char** argv, Arguments& args)
 {
@@ -68,6 +93,11 @@ bool parse_arguments(int argc, char** argv, Arguments& args)
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
             args.help = true;
+            return true;
+        }
+
+        if (arg == "--version") {
+            args.version = true;
             return true;
         }
 
@@ -128,6 +158,10 @@ int main(int argc, char** argv)
     }
     if (args.help) {
         print_usage(stdout);
+        return 0;
+    }
+    if (args.version) {
+        print_version(stdout);
         return 0;
     }
 

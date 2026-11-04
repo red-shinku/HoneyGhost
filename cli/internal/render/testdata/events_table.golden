@@ -1,0 +1,3 @@
+TYPE    PID        PPID       ROLE                     CTX        DETAIL
+syscall 1234       1          nginx:1.25               3          execve /usr/sbin/nginx
+file    2002       1          #7                       -          /etc/nginx/nginx.conf

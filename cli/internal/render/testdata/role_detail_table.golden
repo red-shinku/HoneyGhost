@@ -1,0 +1,10 @@
+ID     7
+LABEL  nginx:1.25
+
+PROCESSES (root 1234)
+  1234
+  1235
+
+CONTEXTS
+  3
+  4

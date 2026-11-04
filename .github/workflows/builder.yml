@@ -1,0 +1,88 @@
+name: builder
+
+# 构建工具链镜像。重跑成本高（userver 两变体），只在依赖脚本或版本变化、
+# 每月定时与手动触发时执行。首次推送后把 GHCR package 可见性改为 public，
+# 否则 _test.yml 的 container 作业拉不到镜像。
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - deploy/ci/builder.Dockerfile
+      - scripts/install-fmt-spdlog.sh
+      - scripts/install-userver.sh
+  schedule:
+    - cron: '0 3 1 * *'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: builder
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算 tag
+        id: meta
+        run: |
+          userver=$(sed -n 's/^ARG USERVER_VERSION=//p' deploy/ci/builder.Dockerfile)
+          hash=$(cat deploy/ci/builder.Dockerfile \
+                     scripts/install-fmt-spdlog.sh \
+                     scripts/install-userver.sh | sha256sum | cut -c1-8)
+          echo "tag=${userver}-${hash}" >> "$GITHUB_OUTPUT"
+
+      # 只推内容 tag；latest 随后由该 tag 派生，避免两者不一致。
+      - name: 构建并推送内容 tag
+        id: push
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker buildx build \
+            -f deploy/ci/builder.Dockerfile \
+            --platform linux/amd64 \
+            --cache-from type=gha,scope=builder \
+            --cache-to type=gha,mode=max,scope=builder \
+            --push \
+            -t "ghcr.io/red-shinku/honeyghost-builder:$TAG" .
+          digest=$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' \
+            "ghcr.io/red-shinku/honeyghost-builder:$TAG" | tr -d '"')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: 由内容 tag 派生 latest
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker buildx imagetools create -t ghcr.io/red-shinku/honeyghost-builder:latest \
+            "ghcr.io/red-shinku/honeyghost-builder:$TAG"
+
+      - name: 校验 latest 与内容 tag 指向同一 digest
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          EXPECTED: ${{ steps.push.outputs.digest }}
+        run: |
+          latest=$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' \
+            ghcr.io/red-shinku/honeyghost-builder:latest | tr -d '"')
+          if [ "$latest" != "$EXPECTED" ]; then
+            echo "latest 落后：latest=$latest，$TAG=$EXPECTED" >&2
+            exit 1
+          fi
+          echo "builder digest：$EXPECTED"
+
+      - name: 输出 digest
+        run: echo "${{ steps.push.outputs.digest }}"

@@ -1,0 +1,19 @@
+# 与 deploy/ci/builder.Dockerfile 配套（BuildKit 按 <Dockerfile>.dockerignore 读取）
+.git
+.idea
+.vscode
+build-agent
+bin
+dist
+dist
+kernel/build
+**/*.skel.h
+kernel/include/vmlinux.h
+**/*.pb.h
+**/*.pb.cc
+cli
+docs
+test
+go.work
+go.work.sum
+deploy

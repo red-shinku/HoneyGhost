@@ -1,0 +1,7 @@
+ID     7
+LABEL  nginx:1.25
+
+PROCESSES
+  1234
+
+CONTEXTS

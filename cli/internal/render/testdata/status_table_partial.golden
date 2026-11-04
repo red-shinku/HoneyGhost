@@ -1,0 +1,16 @@
+ROLE STATS
+  rejected              1
+  unknown_instance      -
+  owner_conflict        -
+  anchors_removed       -
+  cgroup_read_empty     -
+  queue_rejected        -
+  bind_deferred         -
+  bind_resolved         -
+  bind_rejected         -
+  bind_expired          -
+  bind_ignored          -
+  late_adopt_rejected   -
+  tombstone_depth       -
+  dead_member_rejected  -
+  dead_anchor_rejected  -

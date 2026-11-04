@@ -21,8 +21,12 @@ import (
 	"honeyghost/containerd_bridge/internal/bridge"
 )
 
-// version 由构建时按需注入。
-var version = "dev"
+// 构建信息由 -ldflags 注入；未注入时给出可读的占位值。
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
 
 func main() {
 	cfg := bridge.DefaultConfig()
@@ -49,7 +53,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println(version)
+		fmt.Printf("containerd-bridge %s (%s, %s)\n", version, commit, date)
 		return
 	}
 

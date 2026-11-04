@@ -1,0 +1,9 @@
+{
+  "role_id": 7,
+  "role_label": "",
+  "processes": {
+    "root_pid": 0,
+    "pids": []
+  },
+  "context_ids": []
+}
