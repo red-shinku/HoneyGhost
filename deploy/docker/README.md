@@ -14,8 +14,10 @@ docker build -f deploy/docker/agent.Dockerfile -t hng/agent:dev .
 # 只构建翻译进程
 docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 ```
-代理镜像构建的主要耗时是编译 userver（Release 变体，默认并行度 4），首次数十分钟；源码改动不会让该层失效。内存不足时用
-`--build-arg USERVER_BUILD_PARALLEL=2` 降低并行度。
+代理镜像只编译本仓库源码：工具链、fmt/spdlog 与 userver 来自
+`ghcr.io/fifseason/honeyghost-builder:latest`（含 Release/Debug 两变体），首次构建耗时主要是拉取该镜像。
+需要换构建环境时加 `--build-arg BUILDER_IMAGE=<镜像>`；重建 builder 镜像见
+`deploy/ci/builder.Dockerfile`。也可以直接用 `make image` 构建两个镜像。
 
 ## 运行
 

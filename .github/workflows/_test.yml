@@ -1,0 +1,46 @@
+name: test
+
+# 可复用工作流：只做验证，不推送任何产物。
+# 依赖 ghcr.io/red-shinku/honeyghost-builder（含 userver 两变体、Go 与 protoc 插件）。
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/red-shinku/honeyghost-builder:latest
+      # package 未设为 public 时用仓库 token 拉取
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 检出（含 tag，供 git describe）
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 生成 go.work
+        run: scripts/gen-go-work.sh
+
+      # 骨架缺失时 agent/collector 会静默跳过，测试仍可能全绿，故显式断言。
+      - name: 构建 eBPF 骨架并确认未跳过
+        run: |
+          make ebpf
+          for probe in files syscalls networks; do
+            if [ ! -f "kernel/${probe}.skel.h" ]; then
+              echo "eBPF 骨架缺失：${probe}（collector 会被静默跳过）" >&2
+              exit 1
+            fi
+          done
+
+      - name: C++ 构建与单测
+        run: make test
+
+      - name: Go 单测
+        run: make test-go

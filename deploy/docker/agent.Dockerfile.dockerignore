@@ -4,6 +4,7 @@
 .vscode
 build-agent
 bin
+dist
 kernel/build
 **/*.skel.h
 kernel/include/vmlinux.h

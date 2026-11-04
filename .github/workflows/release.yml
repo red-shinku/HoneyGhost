@@ -1,0 +1,117 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  packages: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          version="${REF#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  test:
+    uses: ./.github/workflows/_test.yml
+
+  package:
+    needs: [meta, test]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/red-shinku/honeyghost-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: 打包二进制
+        run: make package VERSION="${{ needs.meta.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  image:
+    needs: [meta, test]
+    uses: ./.github/workflows/_image.yml
+    with:
+      tag: ${{ needs.meta.outputs.version }}
+      version: ${{ needs.meta.outputs.version }}
+    secrets: inherit
+
+  publish:
+    needs: [meta, package, image]
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          # 仓库变量与密钥的命名兼容两种写法
+          username: ${{ vars.DOCKERHUB_USERNAME || vars.username || secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.token }}
+
+      - name: 生成部署包与校验和
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          AGENT_REF: fifseason/honeyghost-agent@${{ needs.image.outputs.agent-digest }}
+          BRIDGE_REF: fifseason/honeyghost-containerd-bridge@${{ needs.image.outputs.bridge-digest }}
+        run: |
+          scripts/render-deploy-package.sh "$VERSION" "$AGENT_REF" "$BRIDGE_REF" dist
+          cd dist && sha256sum *.tar.gz > SHA256SUMS
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: 签名镜像与校验和
+        run: |
+          cosign sign --yes "fifseason/honeyghost-agent@${{ needs.image.outputs.agent-digest }}"
+          cosign sign --yes "fifseason/honeyghost-containerd-bridge@${{ needs.image.outputs.bridge-digest }}"
+          cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
+
+      # 仅稳定版推进 latest；版本 tag 本身永不覆盖。
+      - name: 推进 latest
+        if: needs.meta.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          docker buildx imagetools create -t fifseason/honeyghost-agent:latest \
+            "fifseason/honeyghost-agent:$VERSION"
+          docker buildx imagetools create -t fifseason/honeyghost-containerd-bridge:latest \
+            "fifseason/honeyghost-containerd-bridge:$VERSION"
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          args=""
+          if [ "$PRERELEASE" = "true" ]; then args="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sig \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $args

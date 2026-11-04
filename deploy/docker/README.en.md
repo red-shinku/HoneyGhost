@@ -14,8 +14,10 @@ docker build -f deploy/docker/agent.Dockerfile -t hng/agent:dev .
 # Build only the translation process
 docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 ```
-The main time cost of building the agent image is compiling userver (Release variant, default parallelism 4), which takes tens of minutes the first time; source code changes will not invalidate this layer. If memory is insufficient, use
-`--build-arg USERVER_BUILD_PARALLEL=2` to reduce parallelism.
+The agent image only compiles this repository's sources: the toolchain, fmt/spdlog and userver come from
+`ghcr.io/fifseason/honeyghost-builder:latest` (both Release and Debug variants); the first build is dominated by pulling that image.
+Use `--build-arg BUILDER_IMAGE=<image>` to switch build environments; rebuild the builder image from
+`deploy/ci/builder.Dockerfile`. `make image` builds both images as well.
 
 ## Run
 

@@ -10,6 +10,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
+# ============================================================
+# 构建版本信息
+#
+# 由 Makefile 或 CI 以 -D 注入；缺省值只在直接调用 cmake 且未传参时出现。
+# ============================================================
+set(HNG_VERSION "dev" CACHE STRING "构建版本号")
+set(HNG_COMMIT "unknown" CACHE STRING "构建提交哈希")
+set(HNG_BUILD_DATE "unknown" CACHE STRING "构建时间（UTC，ISO 8601）")
+
 # 仓库根目录作为 include 根，统一以 repo-root-relative 形式包含头文件
 set(HNG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -363,7 +372,11 @@ add_subdirectory(agent/assembly)
 # ============================================================
 add_executable(hng_agent agent/main.cc)
 target_link_libraries(hng_agent PRIVATE hng_assembly hng_config)
-target_compile_definitions(hng_agent PRIVATE HNG_LOG_TAG="main")
+target_compile_definitions(hng_agent PRIVATE
+    HNG_LOG_TAG="main"
+    HNG_VERSION="${HNG_VERSION}"
+    HNG_COMMIT="${HNG_COMMIT}"
+    HNG_BUILD_DATE="${HNG_BUILD_DATE}")
 
 # ============================================================
 # CLI 服务端

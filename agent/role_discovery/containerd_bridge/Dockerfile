@@ -11,6 +11,8 @@ ARG GO_IMAGE=golang:1.26
 FROM ${GO_IMAGE} AS builder
 
 ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 
@@ -24,7 +26,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath \
-        -ldflags "-s -w -X main.version=${VERSION}" \
+        -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
         -o /out/containerd-bridge ./cmd/containerd-bridge
 
 
