@@ -25,6 +25,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 容器以 root 运行、工作区属 runner 用户，git 默认拒绝跨用户访问，
+      # 否则 scripts/gen-go-work.sh 的 git ls-files 与 Makefile 的 git describe 都会失败。
+      - name: 标记工作区为安全目录
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: 生成 go.work
         run: scripts/gen-go-work.sh
 

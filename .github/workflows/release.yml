@@ -44,6 +44,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      # 容器以 root 运行、工作区属 runner 用户，git 默认拒绝跨用户访问；
+      # Makefile 的 COMMIT/BUILD_DATE 取自 git。
+      - name: 标记工作区为安全目录
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: 打包二进制
         run: make package VERSION="${{ needs.meta.outputs.version }}"
       - uses: actions/upload-artifact@v4
