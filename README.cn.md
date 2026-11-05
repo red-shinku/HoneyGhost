@@ -233,8 +233,22 @@ tracefs 挂载进代理容器。
 
 ```sh
 sudo mkdir -p /run/honeyghost
-docker compose -f deploy/docker/docker-compose.yaml up -d --build
+docker compose up
 bin/hghost --socket /run/honeyghost/cli.sock status
+```
+
+### 获取镜像
+
+```sh
+docker pull fifseason/honeyghost-agent:latest  
+docker pull fifseason/honeyghost-containerd-bridge:latest
+```
+
+### 本地构建
+
+项目根目录：
+```sh
+make image
 ```
 
 代理容器目前需要 `privileged: true`；最小权限集合仍在验证中。宿主机前提与已知限制

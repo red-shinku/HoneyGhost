@@ -253,15 +253,26 @@ formats and exit codes.
 
 ## Deployment
 
-A single-node Docker Compose example is available in
-[`deploy/docker`](deploy/docker/README.md). It builds the agent image and the
-containerd bridge image, then mounts the host's `/run/honeyghost`, D-Bus socket
-and tracefs into the agent container.
+A single-machine Docker Compose example is available at [`deploy/docker`](deploy/docker/README.md). It builds the agent image and the containerd translation process image, then mounts the host's `/run/honeyghost`, D-Bus socket, and tracefs into the agent container.
 
 ```sh
 sudo mkdir -p /run/honeyghost
-docker compose -f deploy/docker/docker-compose.yaml up -d --build
+docker compose up
 bin/hghost --socket /run/honeyghost/cli.sock status
+```
+
+### Obtaining Images
+
+```sh
+docker pull fifseason/honeyghost-agent:latest  
+docker pull fifseason/honeyghost-containerd-bridge:latest
+```
+
+### Local Build
+
+From the project root directory:
+```sh
+make image
 ```
 
 The agent container currently needs `privileged: true`; the minimum capability
