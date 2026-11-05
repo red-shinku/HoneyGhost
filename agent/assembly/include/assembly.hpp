@@ -78,8 +78,8 @@ class Assembly final {
      * @brief 执行一次启动：构造组件、接线、初始化并启动线程
      * @return 初始化报告；state 为 FAILED 时不启动消费线程，组件已释放
      * @throws std::logic_error 已调用过 start()，或已 stop()
-     * @throws std::runtime_error 采集器未编入构建却要求采集，或
-     *         prepare() / attach() 失败
+     * @throws std::runtime_error 采集器未编入构建却要求采集、目标内核不满足
+     *         探针加载要求，或 prepare() / attach() 失败
      * @throws 构造、map 创建、策略编译或线程创建失败时按原样传播
      * @note 只调用一次；失败路径已释放全部已构造组件
      */

@@ -78,7 +78,10 @@ environment rules.
 
 ## Requirements
 
-- Linux on x86_64 with BTF (`/sys/kernel/btf/vmlinux`) and tracefs mounted.
+- Linux on x86_64, kernel 5.8 or newer, with BTF
+  (`/sys/kernel/btf/vmlinux`) and tracefs mounted. The probes use ring buffer
+  maps (5.8+); older kernels are rejected at startup with the unmet requirement
+  in the log.
 - Root, or at least `CAP_BPF` and `CAP_PERFMON`; loading probes and reading some
   kernel state requires elevated privileges.
 - For C++ builds: CMake ≥ 3.16, a C++17 compiler (C++20 for the CLI server),

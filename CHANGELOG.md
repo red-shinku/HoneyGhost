@@ -11,6 +11,7 @@
 - `make package` 生成 `hghost` 与 `containerd-bridge` 的发布包及 `SHA256SUMS`。
 - `make image` 本地构建两个容器镜像；`make test-go` 现在也覆盖 `containerd-bridge`。
 - `deploy/ci/builder.Dockerfile`：预构建的构建工具链镜像，CI 与本地构建共用。
+- 启动时预检目标内核：要求 ≥ 5.8、BTF 与 tracefs，不满足时逐项报错并退出。
 
 ### Changed
 

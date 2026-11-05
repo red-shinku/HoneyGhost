@@ -1,11 +1,12 @@
 /**
  * @file assembly.cc
  * @brief 装配层的构造、启动与停机实现
- * @details 启动顺序：构造与接线 → 名单 → 角色源 → 初始化（含探针挂载与读
- *          快照）→ 消费线程；停机按“先停生产者、再停消费者”执行。启动按
- *          build_control_plane()、build_pipeline()、build_filter()、
- *          start_role_sources()、initialize()、start_consumers() 分段；
- *          停机按 stop_stages() 与 release_components() 分段。
+ * @details 启动顺序：内核能力预检（启用采集时）→ 构造与接线 → 名单 → 角色源
+ *          → 初始化（含探针挂载与读快照）→ 消费线程；停机按“先停生产者、再停
+ *          消费者”执行。启动按 require_kernel_support()、build_control_plane()、
+ *          build_pipeline()、build_filter()、start_role_sources()、initialize()、
+ *          start_consumers() 分段；停机按 stop_stages() 与 release_components()
+ *          分段。
  * @author red_shinku
  * @date 2026.10.27
  */
@@ -13,6 +14,7 @@
 #include "agent/assembly/include/assembly.hpp"
 
 #include "agent/assembly/src/component_threads.hpp"
+#include "agent/assembly/src/kernel_preflight.hpp"
 #include "agent/assembly/src/proc_snapshot.hpp"
 #include "agent/collector/include/collector_component.hpp"
 #include "agent/collector/include/collector_factory.hpp"
@@ -67,6 +69,12 @@ struct Assembly::Impl {
 
     /// @brief 执行一次性启动；失败时由调用方 shutdown()
     InitReport start_impl();
+
+#ifdef HNG_HAVE_COLLECTOR
+    /// @brief 检查目标内核是否满足探针加载要求
+    /// @throws std::runtime_error 内核版本、BTF 或 tracefs 不满足
+    void require_kernel_support();
+#endif
 
     /// @brief 至多执行一次 do_shutdown()
     void shutdown();
@@ -130,6 +138,23 @@ struct Assembly::Impl {
     std::atomic<bool> stop_called{false};
     std::once_flag shutdown_once;
 };
+
+#ifdef HNG_HAVE_COLLECTOR
+void Assembly::Impl::require_kernel_support()
+{
+    const detail::KernelSupport support = detail::check_kernel_support();
+    if (support.ok()) {
+        HNG_LOG_INFO("kernel support ok: {}; BTF and tracefs available",
+                     support.release);
+        return;
+    }
+    for (const std::string& reason : support.failures()) {
+        HNG_LOG_ERROR("unsupported kernel: {}", reason);
+    }
+    throw std::runtime_error(
+        "target kernel does not meet eBPF probe requirements");
+}
+#endif
 
 void Assembly::Impl::build_control_plane()
 {
@@ -302,6 +327,13 @@ InitReport Assembly::Impl::start_impl()
 #ifndef HNG_HAVE_COLLECTOR
     if (options.collect) {
         throw std::runtime_error("collector not in build: use --no-collect");
+    }
+#endif
+
+#ifdef HNG_HAVE_COLLECTOR
+    // 探针加载的内核前提先于组件构造检查，避免半启动后才失败
+    if (options.collect) {
+        require_kernel_support();
     }
 #endif
 

@@ -33,6 +33,7 @@ bin/hghost --socket /run/honeyghost/cli.sock <子命令>
 
 | 前提 | 用途 | 缺失时 |
 | --- | --- | --- |
+| 宿主内核 ≥ 5.8 | ring buffer map 等探针依赖 | 启动预检失败并报告版本 |
 | `/sys/kernel/btf/vmlinux` | CO-RE 重定位 | 代理启动即失败 |
 | tracefs（`/sys/kernel/tracing`） | tracepoint 的 id | 探针挂载失败 |
 | `/run/containerd/containerd.sock` | containerd 角色发现 | 桥接进程退出 |
@@ -77,7 +78,8 @@ socket，两者都不适合只读根文件系统。
 ## 已知限制
 
 - **只支持 x86_64**：`kernel/CMakeLists.txt` 的探针固定 `-D__TARGET_ARCH_x86`。
-- **镜像与构建机内核相关**：`vmlinux.h` 由构建机的 BTF 生成。
+- **镜像与构建机内核相关**：`vmlinux.h` 由构建机的 BTF 生成，字节产物不保证逐次一致；
+  探针在目标机上按 BTF 做 CO-RE 重定位，同一镜像可运行于 5.8+ 内核。
 - **CLI socket 属 root**：socket 由容器内 root 创建，宿主非 root 用户需 `sudo` 才能连接。
 - **残留 socket**：容器被强杀后 `/run/honeyghost` 下会留下 socket 文件，重启前
   `sudo rm -f /run/honeyghost/*.sock`。

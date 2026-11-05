@@ -7,6 +7,7 @@
 add_library(hng_assembly STATIC
     src/assembly.cc
     src/initialization_coordinator.cc
+    src/kernel_preflight.cc
     src/proc_snapshot.cc
 )
 target_include_directories(hng_assembly PUBLIC
