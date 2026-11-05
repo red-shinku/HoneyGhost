@@ -1,19 +1,24 @@
 # Changelog
 
-记录面向用户与部署的可见变更。格式参考 Keep a Changelog，版本号遵循语义化版本；
-0.x 不承诺跨版本兼容。
+Records user- and deployment-visible changes. The format follows Keep a Changelog, and version numbers follow Semantic Versioning;
+0.x does not promise cross-version compatibility.
 
 ## [Unreleased]
 
+None
+
+## [v0.1.0] - 2026-11-05
+
 ### Added
 
-- `hng_agent --version` 输出版本、提交与构建时间。
-- `make package` 生成 `hghost` 与 `containerd-bridge` 的发布包及 `SHA256SUMS`。
-- `make image` 本地构建两个容器镜像；`make test-go` 现在也覆盖 `containerd-bridge`。
-- `deploy/ci/builder.Dockerfile`：预构建的构建工具链镜像，CI 与本地构建共用。
-- 启动时预检目标内核：要求 ≥ 5.8、BTF 与 tracefs，不满足时逐项报错并退出。
+- Core features:
+  - Capture of system call events and file access events.
+  - Maintenance of Process, Role, and Context. The system maintains a process tree; supports automatic discovery of container services or systemd unit services; the semantics and rules of Context are currently incomplete.
+  - Provides a CLI tool to query system status, supporting output of runtime event streams keyed by pid, roleID, contextID, rolelabel, and eventtype.
+  - Supports writing role rosters, enabling the system to capture events of the specified roles based on a blacklist/whitelist mechanism.
+- Preflights the target kernel at startup: requires ≥ 5.8, BTF, and tracefs; if not satisfied, reports errors item by item and exits.
 
 ### Changed
 
-- `agent.Dockerfile` 改为基于 builder 镜像，不再在镜像内编译 userver。
-- 版本信息由 `-DHNG_VERSION`、`-DHNG_COMMIT`、`-DHNG_BUILD_DATE` 注入，Makefile 自动传参。
+- `agent.Dockerfile` is changed to be based on a builder image and no longer compiles userver within the image.
+- Version information is injected via `-DHNG_VERSION`, `-DHNG_COMMIT`, and `-DHNG_BUILD_DATE`; the Makefile automatically passes the parameters.
