@@ -94,6 +94,14 @@ add_executable(test_assembly test_assembly.cc)
 target_link_libraries(test_assembly PRIVATE hng_assembly)
 add_test(NAME test_assembly COMMAND test_assembly)
 
+# 探针加载前内核预检：发行串解析、版本下限与 BTF/tracefs 探测；
+# 路径指向临时伪造根目录，无 IO / 无特权
+add_executable(test_kernel_preflight
+    test_kernel_preflight.cc
+    ${HNG_SOURCE_DIR}/agent/assembly/src/kernel_preflight.cc)
+target_include_directories(test_kernel_preflight PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_kernel_preflight COMMAND test_kernel_preflight)
+
 # 可执行目标的用法输出：不阻塞信号、不构造装配层
 add_test(NAME hng_agent_help COMMAND hng_agent --help)
 

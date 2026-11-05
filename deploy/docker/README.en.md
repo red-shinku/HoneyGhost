@@ -33,6 +33,7 @@ bin/hghost --socket /run/honeyghost/cli.sock <subcommand>
 
 | Prerequisite | Purpose | When Missing |
 | --- | --- | --- |
+| Host kernel ≥ 5.8 | ring buffer maps and other probe features | Startup preflight fails and reports the version |
 | `/sys/kernel/btf/vmlinux` | CO-RE relocation | Agent fails at startup |
 | tracefs (`/sys/kernel/tracing`) | tracepoint IDs | Probe attach fails |
 | `/run/containerd/containerd.sock` | containerd role discovery | Bridge process exits |
@@ -72,7 +73,7 @@ Other container security settings remain at their defaults: the agent needs to w
 ## Known Limitations
 
 - **x86_64 only**: the probes in `kernel/CMakeLists.txt` hardcode `-D__TARGET_ARCH_x86`.
-- **Image is tied to the build machine's kernel**: `vmlinux.h` is generated from the build machine's BTF.
+- **Image is tied to the build machine's kernel**: `vmlinux.h` is generated from the build machine's BTF, so artifacts are not byte-identical across builds; probes relocate against the target host's BTF, so one image runs on any kernel 5.8 or newer.
 - **CLI socket is owned by root**: the socket is created by root inside the container, so non-root host users need `sudo` to connect.
 - **Stale sockets**: after the container is force-killed, socket files remain under `/run/honeyghost`; before restarting,
   `sudo rm -f /run/honeyghost/*.sock`.

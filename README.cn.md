@@ -67,7 +67,9 @@ kernel probes ──► Collector ──► Semantic ──► RuntimeEngine ─
 
 ## 环境要求
 
-- x86_64 Linux，内核提供 BTF（`/sys/kernel/btf/vmlinux`）且已挂载 tracefs。
+- x86_64 Linux，内核 ≥ 5.8，提供 BTF（`/sys/kernel/btf/vmlinux`）且已挂载 tracefs。
+  探针使用 ring buffer map（5.8 起提供），更低的内核会在启动预检时被拒绝，日志逐项
+  给出未满足项。
 - root，或至少 `CAP_BPF` 与 `CAP_PERFMON`；加载探针和读取部分内核状态需要更高权限。
 - C++ 构建：CMake ≥ 3.16、支持 C++17 的编译器（CLI 服务端需要 C++20）、`clang` 与
   `bpftool`、libbpf、protobuf、libsystemd（可选）、fmt 11 与 spdlog；启用 CLI 服务端时
