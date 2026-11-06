@@ -311,6 +311,6 @@ and `verify_role_containerd`.
 - [Docker deployment](deploy/docker/README.md)
 - [Development container](.devcontainer/README.md)
 
-## License
+## Credits and License
 
-[MIT](LICENSE)
+[LINUX DO](https://linux.do/) ; [MIT](LICENSE)

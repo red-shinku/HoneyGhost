@@ -281,6 +281,6 @@ scripts/test-cli-e2e.sh   # 与 C++ CLIServer 的端到端测试
 - [Docker 部署](deploy/docker/README.md)
 - [开发容器](.devcontainer/README.md)
 
-## 许可证
+## 致谢与许可
 
-[MIT](LICENSE)
+[LINUX DO](https://linux.do/) ; [MIT](LICENSE)
