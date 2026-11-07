@@ -8,6 +8,7 @@
  *  - 生命周期分派：诞生 → 注册 + 角色继承 + 开窗，退出 → 注销 + 关窗；
  *  - exec / 其他类型 / 文件事件各自的决策入口与缺省决策；
  *  - 归属快照与决策值互不干扰：决策为空时快照仍照实填；
+ *  - 角色归属的父进程回退：自身未落定时取父进程归属，已落定时不受影响；
  *  - 轮询纪律：每轮每条队列各取至多一条，顺序固定为 syscall → file；
  *  - 槽位不足时不取事件。
  * @author red-shinku
@@ -238,13 +239,14 @@ hng::syscall_semantic_data make_credential(uint32_t pid, uint64_t pstart,
     return ev;
 }
 
-hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* path)
+hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* path,
+                                  uint32_t ppid = 0, uint64_t ppstart = 0)
 {
     hng::file_semantic_data ev;
     ev.head.pid             = pid;
     ev.head.pid_start_time  = pstart;
-    ev.head.ppid            = 0;
-    ev.head.ppid_start_time = 0;
+    ev.head.ppid            = ppid;
+    ev.head.ppid_start_time = ppstart;
     ev.head.type            = hng::EventType::FILE_EVENT;
     ev.data.set_semantic_filename(path);
     return ev;
@@ -496,6 +498,67 @@ void run_role_miss()
     CHECK(drafts[0].event.runtimeInfo.contextID == 0, "未登记时上下文快照为 0");
 }
 
+// ---- 角色归属的父进程回退 ----
+
+void run_role_inherited_from_parent()
+{
+    // 子进程尚未落定归属：按父进程的归属填快照
+    {
+        Env env;
+        env.role_lookup.role_of_pid[50] = 9;
+        env.sys_ch.writer().push(make_credential(9100, 910, 50, 500));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
+        CHECK(drafts[0].event.runtimeInfo.roleID == 9, "未落定时取父进程角色");
+        CHECK(drafts[0].event.runtimeInfo.roleLabel == "role-9",
+              "角色标签应取自同一归属链");
+    }
+
+    // 子进程已归属：自身优先，不再看父
+    {
+        Env env;
+        env.role_lookup.role_of_pid[50]   = 9;
+        env.role_lookup.role_of_pid[9100] = 3;
+        env.sys_ch.writer().push(make_credential(9100, 910, 50, 500));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(2)");
+        CHECK(drafts[0].event.runtimeInfo.roleID == 3, "已落定时取自身角色");
+    }
+
+    // 父进程未知：保持未落定
+    {
+        Env env;
+        env.sys_ch.writer().push(make_credential(9200, 920, 0, 0));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(3)");
+        CHECK(drafts[0].event.runtimeInfo.roleID == 0, "父进程未知时不回退");
+    }
+
+    // 父就是自身：不回退，避免自指
+    {
+        Env env;
+        env.sys_ch.writer().push(make_credential(9300, 930, 9300, 930));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(4)");
+        CHECK(drafts[0].event.runtimeInfo.roleID == 0, "父即自身时不回退");
+    }
+
+    // 文件事件同样按父进程回退
+    {
+        Env env;
+        env.role_lookup.role_of_pid[50] = 9;
+        env.file_ch.writer().push(make_file(9400, 940, "/a", 50, 500));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(5)");
+        CHECK(drafts[0].event.runtimeInfo.roleID == 9, "文件事件同样回退");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -509,6 +572,7 @@ int main()
     run_file_event();
     run_round_discipline();
     run_role_miss();
+    run_role_inherited_from_parent();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

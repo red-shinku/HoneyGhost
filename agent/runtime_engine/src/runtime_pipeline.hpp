@@ -81,8 +81,16 @@ class RuntimePipeline {
         hng::role_label_t label;  ///< 未落定时为空
     };
 
-    /// @brief 取角色的归属快照
+    /// @brief 取角色的归属快照，只按归属表查询
     RoleSnapshot role_of(const hng::Process& p) const;
+
+    /// @brief 取角色的归属快照：自身未落定时改用父进程的归属
+    /// @param p 事件所属进程
+    /// @param parent 该进程的父进程，取自事件头 ppid；未知时为 pid 为 0 的值
+    /// @note fork 继承由 RoleJoinService 异步落地；父回退只覆盖该窗口，
+    ///       不写归属表
+    /// @see RoleJoinService::bind_to_role
+    RoleSnapshot role_of(const hng::Process& p, const hng::Process& parent) const;
 
     /// @brief 上下文归属快照，未落定时为 0
     uint32_t context_id_of(const hng::Process& p) const;
