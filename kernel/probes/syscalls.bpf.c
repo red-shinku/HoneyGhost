@@ -265,14 +265,13 @@ int trace_process_birth(struct pt_regs *ctx)
     /**
      * @note 事件头 = 新进程自身：与子进程后续事件经 init_event_head
      * 产出的头部一致， (pid/pid_start_time, ppid/ppid_start_time) 可精确作为
-     * Process 键与父进程键
+     * Process 键与父进程键。fork 可能发生在父进程的普通线程上，父进程键按该
+     * 线程的组长取，见 @ref init_event_head_parent
      */
     event->hdr.head.pid = child_tgid;
     event->hdr.head.pid_start_time =
         BPF_CORE_READ(child, start_boottime) / NSEC_PER_USER_HZ;
-    event->hdr.head.ppid = BPF_CORE_READ(parent, tgid);
-    event->hdr.head.ppid_start_time =
-        BPF_CORE_READ(parent, start_boottime) / NSEC_PER_USER_HZ;
+    init_event_head_parent(&event->hdr.head, parent);
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -308,9 +307,7 @@ int trace_process_exit(void *ctx)
     event->hdr.head.pid        = BPF_CORE_READ(leader, tgid);
     event->hdr.head.pid_start_time =
         BPF_CORE_READ(leader, start_boottime) / NSEC_PER_USER_HZ;
-    event->hdr.head.ppid = BPF_CORE_READ(leader, real_parent, tgid);
-    event->hdr.head.ppid_start_time =
-        BPF_CORE_READ(leader, real_parent, start_boottime) / NSEC_PER_USER_HZ;
+    init_event_head_parent(&event->hdr.head, BPF_CORE_READ(leader, real_parent));
 
     //! @note 低 7 位非零表示被信号终止，否则高位是退出状态码
     s32 code = BPF_CORE_READ(task, exit_code);

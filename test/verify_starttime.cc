@@ -8,7 +8,8 @@
  *   - fork 事件显式填法：pid 路径（子进程）、ppid 路径（子进程的 real_parent）
  *   - init_event_head 公共填法：pid 路径（事件主体）、ppid 路径（real_parent）
  *
- * 校验方式是 fork 一个已知子进程，先读取其 /proc 字段 22，再按启动时间识别
+ * 校验方式是由一个工作线程 fork 已知子进程——real_parent 因此不是进程组长，
+ * 父进程两条路径都必须给出组长身份——先读取其 /proc 字段 22，再按启动时间识别
  * 事件。eBPF 的 tgid 是内核全局 pid；测试进程位于 PID 命名空间时事件 pid 在
  * /proc 不可见，此时只比对启动时间，pid 比对仅在事件 pid 可见时执行。退出码 0
  * 仅在四处启动时间全部比对通过时给出。
@@ -31,6 +32,7 @@
 #include <cstring>
 
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 #include "kernel/include/syscalls_type.h"
@@ -253,16 +255,20 @@ int run(const char *obj_path)
         return 2;
     }
 
-    // 先建流后造进程：探针就位后再 fork，否则子进程的 fork 事件会永久丢失
-    ck.subject = ::fork();
+    // 先建流后造进程：探针就位后再 fork，否则子进程的 fork 事件会永久丢失。
+    // 由工作线程发起，使子进程的 real_parent 不是进程组长。
+    std::thread forker([&ck] {
+        ck.subject = ::fork();
+        if (ck.subject == 0) {
+            // 子进程：稍候退出以触发退出事件；父进程不回收，让 /proc 仍可读
+            ::usleep(1500 * 1000);
+            ::_exit(0);
+        }
+    });
+    forker.join();
     if (ck.subject < 0) {
         std::fprintf(stderr, "fork 失败：%s\n", std::strerror(errno));
         return 2;
-    }
-    if (ck.subject == 0) {
-        // 子进程：稍候退出以触发退出事件；父进程不回收，让 /proc 仍可读
-        ::usleep(1500 * 1000);
-        ::_exit(0);
     }
 
     if (!proc_start_time(ck.subject, &ck.subject_start)) {
