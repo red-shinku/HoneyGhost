@@ -19,12 +19,13 @@ s = Path('kernel/probes/syscalls.bpf.c').read_text()
 for signature in ('trace_process_birth(struct pt_regs *ctx)',
                   'trace_process_exit(void *ctx)'):
     part = body(s, signature)
+    assert 'init_event_head_self' in part, signature
     assert 'init_event_head_parent' in part, signature
-    assert '.ppid' not in part, signature
+    assert '.pid' not in part and '.ppid' not in part, signature
 
 h = Path('kernel/include/event_head.h').read_text()
 part = body(h, 'init_event_head(struct event_head *head)')
-assert 'init_event_head_parent' in part
-assert '.ppid' not in part
-print('PASS: parent fields filled only through init_event_head_parent')
+assert 'init_event_head_self' in part and 'init_event_head_parent' in part
+assert '.pid' not in part and '.ppid' not in part
+print('PASS: identity fields filled only through the event head helpers')
 PY

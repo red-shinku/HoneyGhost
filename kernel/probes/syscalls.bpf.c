@@ -268,9 +268,7 @@ int trace_process_birth(struct pt_regs *ctx)
      * Process 键与父进程键。fork 可能发生在父进程的普通线程上，父进程键按该
      * 线程的组长取，见 @ref init_event_head_parent
      */
-    event->hdr.head.pid = child_tgid;
-    event->hdr.head.pid_start_time =
-        BPF_CORE_READ(child, start_boottime) / NSEC_PER_USER_HZ;
+    init_event_head_self(&event->hdr.head, child);
     init_event_head_parent(&event->hdr.head, parent);
 
     bpf_ringbuf_submit(event, 0);
@@ -284,8 +282,8 @@ int trace_process_birth(struct pt_regs *ctx)
  *       经过该 tracepoint，故覆盖面与退出原因无关。
  * @note 6.14 起该 tracepoint 只带退出任务一个参数，线程组是否终结改由
  *       signal_struct::live 判定：do_exit 在触发 tracepoint 前已把它减到 0。
- * @note 事件头取自线程组首领，而不是触发退出的线程：多线程进程最后退出的往往
- *       不是首领，按当前线程填启动时间会与 fork 事件记录的进程身份不一致。
+ * @note 事件头取线程组首领身份，而不是触发退出的线程：多线程进程最后退出的
+ *       往往不是首领，按当前线程填会与 fork 事件记录的进程身份不一致。
  * @note 事件名沿用 SYSCALL_EVENT_EXIT_GROUP；exit_code 正常退出时为退出状态码，
  *       被信号终止时为终止信号的负数。
  */
@@ -303,11 +301,9 @@ int trace_process_exit(void *ctx)
     struct syscall_event *event = init_process_event(SYSCALL_EVENT_EXIT_GROUP);
     if (!event) return 0;
 
-    struct task_struct *leader = BPF_CORE_READ(task, group_leader);
-    event->hdr.head.pid        = BPF_CORE_READ(leader, tgid);
-    event->hdr.head.pid_start_time =
-        BPF_CORE_READ(leader, start_boottime) / NSEC_PER_USER_HZ;
-    init_event_head_parent(&event->hdr.head, BPF_CORE_READ(leader, real_parent));
+    init_event_head_self(&event->hdr.head, task);
+    init_event_head_parent(&event->hdr.head,
+                           BPF_CORE_READ(task, group_leader, real_parent));
 
     //! @note 低 7 位非零表示被信号终止，否则高位是退出状态码
     s32 code = BPF_CORE_READ(task, exit_code);

@@ -1,6 +1,6 @@
 /**
  * @file test_kernel_event_head.cc
- * @brief 包含真实事件头，验证父进程身份取所属线程组的组长。
+ * @brief 包含真实事件头，验证主体与父进程身份都取所属线程组的组长。
  * @note 使用 helpers/CO-RE 替身与伪造 task_struct 在主机上执行，不验证 eBPF
  *       verifier 或真实内核读取。
  */
@@ -55,6 +55,8 @@ void require(bool condition, const char* what)
 void reset(event_head* head)
 {
     *head                 = event_head{};
+    head->pid             = 0;
+    head->pid_start_time  = 0;
     head->ppid            = 7;
     head->ppid_start_time = 9;
 }
@@ -80,6 +82,7 @@ int main()
         p.real_parent = &q;
         init_event_head(&head);
         REQUIRE(head.pid == 100);
+        REQUIRE(head.pid_start_time == 100);
         REQUIRE(head.ppid == 200);
         REQUIRE(head.ppid_start_time == 200);
 
@@ -90,14 +93,26 @@ int main()
         REQUIRE(head.ppid == 200);
         REQUIRE(head.ppid_start_time == 200);
 
-        // 事件主体是工作线程：与组长共享父进程，父键仍按父进程的组长取
+        // 事件主体是工作线程：主体时间取组长时间，父进程取共享的父进程
         reset(&head);
         current = &p_worker;
         init_event_head(&head);
+        REQUIRE(head.pid == 100);
+        REQUIRE(head.pid_start_time == 100);
         REQUIRE(head.ppid == 200);
         REQUIRE(head.ppid_start_time == 200);
 
-        // 无 real_parent 或父任务无组长时字段保持哨兵值
+        // 主体字段的独立入口同样取组长
+        reset(&head);
+        init_event_head_self(&head, &p_worker);
+        REQUIRE(head.pid == 100);
+        REQUIRE(head.pid_start_time == 100);
+
+        // 空任务或父任务无组长时字段保持哨兵值
+        reset(&head);
+        init_event_head_self(&head, nullptr);
+        REQUIRE(head.pid == 0 && head.pid_start_time == 0);
+
         reset(&head);
         current       = &p;
         p.real_parent = nullptr;
@@ -119,9 +134,8 @@ int main()
         init_event_head_parent(&head, nullptr);
         REQUIRE(head.ppid == 7 && head.ppid_start_time == 9);
 
-        std::printf(
-            "PASS: event head parent identity, %d checks (helper mocks)\n",
-            checks);
+        std::printf("PASS: event head identity, %d checks (helper mocks)\n",
+                    checks);
         return 0;
     }
     catch (const std::exception& e) {
