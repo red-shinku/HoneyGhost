@@ -13,6 +13,7 @@
 
 #include "agent/assembly/include/assembly.hpp"
 
+#include "agent/assembly/src/capability_drop.hpp"
 #include "agent/assembly/src/component_threads.hpp"
 #include "agent/assembly/src/kernel_preflight.hpp"
 #include "agent/assembly/src/proc_snapshot.hpp"
@@ -352,7 +353,8 @@ InitReport Assembly::Impl::start_impl()
     }
 
     start_consumers();
-    // S8 全部线程就绪
+    // S8 探针已挂载、快照已读完：主线程及其后续创建的线程不再需要权能
+    detail::drop_capabilities();
     running.store(true);
     HNG_LOG_INFO(
         "agent ready: state {}, collect {}, systemd {}, containerd {}, "

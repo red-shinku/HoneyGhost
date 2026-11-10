@@ -13,6 +13,7 @@
 #include <map>
 #include <thread>
 
+#include "agent/assembly/src/capability_drop.hpp"
 #include "agent/util/include/component.hpp"
 
 namespace hng {
@@ -21,7 +22,8 @@ namespace hng {
  * @brief 组件线程表
  * @details 每个组件至多一个线程。线程由装配层持有；组件须活到对应的
  *          stop_and_join() 返回。析构前须已对表内每个组件调用
- *          stop_and_join()。
+ *          stop_and_join()。线程入口先清空该线程的权能，组件 run() 内不再
+ *          持有权能。
  */
 class ComponentThreads final {
    public:
@@ -51,7 +53,10 @@ inline void ComponentThreads::start(hng::Component& component)
     if (!inserted) {
         return;
     }
-    entry->second = std::thread([component = &component] { component->run(); });
+    entry->second = std::thread([component = &component] {
+        detail::drop_capabilities();
+        component->run();
+    });
 }
 
 inline void ComponentThreads::stop_and_join(hng::Component& component)
