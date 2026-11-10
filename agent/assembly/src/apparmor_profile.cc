@@ -21,8 +21,10 @@ namespace detail {
 
 namespace {
 
-/// 当前线程的 AppArmor 标签；宿主没有 AppArmor 时不存在
-constexpr const char* kAttributePath = "/proc/self/attr/current";
+/// 调用线程自己的 AppArmor 标签；宿主没有 AppArmor 时不存在
+/// @note 必须走 thread-self：/proc/self 指向线程组组长，非组长线程写它会被内核
+///       以 EACCES 拒绝
+constexpr const char* kAttributePath = "/proc/thread-self/attr/current";
 /// 入口 profile 名，与 deploy/docker/apparmor/hng-agent 一致
 constexpr const char* kEntryProfile  = "hng-agent";
 /// 运行期 profile 名
