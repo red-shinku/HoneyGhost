@@ -23,6 +23,8 @@ docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 
 ```sh
 sudo mkdir -p /run/honeyghost
+# 仅启用 AppArmor 的宿主需要：载入代理容器的配置，见「权限」
+sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
 docker compose -f deploy/docker/docker-compose.yaml up -d
 
 # 宿主侧客户端（make go 产出 bin/hghost）
@@ -38,6 +40,7 @@ bin/hghost --socket /run/honeyghost/cli.sock <子命令>
 | tracefs（`/sys/kernel/tracing`） | tracepoint 的 id | 探针挂载失败 |
 | `/run/containerd/containerd.sock` | containerd 角色发现 | 桥接进程退出 |
 | `/run/dbus/system_bus_socket` | systemd 角色发现 | 代理连不上总线，发现源超时 |
+| AppArmor 宿主已载入 `hng-agent` 配置 | 放行 system bus 调用与快照读 exe | 未载入时容器起不来；用 `docker-default` 时总线调用与 exe 读取被拒 |
 
 没有 containerd 或 systemd 的节点：在配置里关掉对应发现源，并从 compose 中删掉不需要的服务与挂载。
 
@@ -74,14 +77,51 @@ docker compose -f deploy/docker/docker-compose.yaml \
 | --- | --- |
 | `CAP_BPF` | 创建 map、加载探针 |
 | `CAP_PERFMON` | 加载 tracing 类程序、`perf_event_open` 挂载 |
-| `CAP_SYS_PTRACE` | 初始化快照读 `/proc/<pid>/exe`；缺它时非本进程 uid 的进程一律读不到 exe |
+| `CAP_SYS_PTRACE` | 初始化快照读 `/proc/<pid>/exe`；非本进程 uid 的进程还须 AppArmor 放行 ptrace，见下 |
 | `CAP_SETPCAP` | 清空 bounding set，使权能无法经 execve 带回 |
 
-初始化结束、探针挂载与快照都完成之后，进程主动清空全部权能：每个组件线程在入口各清掉
-一次，主线程在装配层启动返回前清掉。此后 BPF map 读写、ring buffer 消费与 CLI 服务都
-不再需要权能，`/proc/<pid>/status` 的 `CapPrm`／`CapEff`／`CapBnd` 均为 0。
+初始化结束、探针挂载与快照都完成之后，进程会主动清空全部权能。
 
 翻译进程只读写宿主 socket 与自建 socket，故 `cap_drop: ALL`。
+
+### AppArmor
+
+`docker-default` 拒掉代理依赖的两件事：向 system bus 的调用（`Hello`、`AddMatch`、
+`Subscribe`、`ListUnits`、`Properties.GetAll`），以及读宿主进程
+`/proc/<pid>/exe` 的 `ptrace`。
+
+`deploy/docker/apparmor/hng-agent` 以 `docker-default` 为基线，只额外放行这两组，分两段：
+
+| profile | 用在哪 | 比另一份多什么 |
+| --- | --- | --- |
+| `hng-agent` | 入口；compose 的 `security_opt` 引用它 | `ptrace (read) peer=unconfined`（快照读 exe）与 `change_profile -> hng-agent-steady` |
+| `hng-agent-steady` | 初始化完成后由进程自行切入（切换失败只记日志） | — |
+
+宿主须先载入（见「运行」）；profile 属线程私有，逐线程生效：
+
+```sh
+sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
+```
+
+### SELinux
+
+SELinux 宿主上 Docker 默认把容器放在 `container_t` 下，本代理在它下面同样跑不起来：
+向 systemd 发总线消息、读宿主进程的 `exe`、以及写 bind mount 进来的
+`/run/honeyghost`（除非该目录被重新打标签）都会触发类型强制拒绝，症状是
+`audit.log` 里的 `avc: denied` 而非 `dmesg` 里的 AppArmor 记录。
+
+这类宿主上要额外给代理容器关掉 SELinux 标记（在 compose 的 agent 服务里补一条）：
+
+```yaml
+security_opt:
+  - label=disable
+```
+
+代价与该容器用 `apparmor=unconfined` 相同：不再受该 LSM 约束。自定义最小策略尚未
+提供——它要随发行版的 container-selinux 一起编译，且 SELinux 的 `ptrace` 权限没有
+「只读」这一档，只能按目标域整体放行，粒度比 AppArmor 粗。
+
+---
 
 其余容器安全项保持默认：代理要写 `/run/honeyghost` 下的 socket，翻译进程要读宿主
 socket，两者都不适合只读根文件系统。容器以 root 运行且不再带 `CAP_DAC_OVERRIDE`，

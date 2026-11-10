@@ -26,7 +26,6 @@ services:
 
     pid: host
     cgroup: host
-    # 初始权能；初始化完成后进程自行清空全部权能，见 README「权限」
     cap_drop:
       - ALL
     cap_add:
@@ -34,6 +33,8 @@ services:
       - PERFMON
       - SYS_PTRACE
       - SETPCAP
+    security_opt:
+      - apparmor=hng-agent
 
     volumes:
       - ./config:/etc/honeyghost:ro

@@ -1,0 +1,102 @@
+# ============================================================
+# HoneyGhost agent 的 AppArmor 配置（两段式）
+#
+#   hng-agent          入口 profile，compose 引用的是它。初始化窗口内比运行期多
+#                      放行两条：快照读 /proc/<pid>/exe 的 ptrace，以及切到
+#                      hng-agent-steady 的 change_profile。
+#   hng-agent-steady   运行期 profile，初始化完成后由 hng_agent 自行切入，不再
+#                      放行 ptrace。
+#
+# 载入（宿主，需 root）：
+#   sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
+#
+# 两份 profile 的规则除末尾那两条外必须保持一致。
+# ============================================================
+
+include <tunables/global>
+
+profile hng-agent flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (send,receive) peer=hng-agent,
+  signal (send,receive) peer=hng-agent-steady,
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=hng-agent,
+  ptrace (trace,read,tracedby,readby) peer=hng-agent-steady,
+
+  dbus send bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus member={Hello,AddMatch,RemoveMatch},
+  dbus send bus=system path=/org/freedesktop/systemd1 interface=org.freedesktop.systemd1.Manager member={Subscribe,ListUnits},
+  dbus send bus=system path=/org/freedesktop/systemd1/unit/** interface=org.freedesktop.DBus.Properties member=GetAll,
+  dbus receive bus=system,
+
+  ptrace (read) peer=unconfined,
+  
+  change_profile -> hng-agent-steady,
+}
+
+profile hng-agent-steady flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (send,receive) peer=hng-agent,
+  signal (send,receive) peer=hng-agent-steady,
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=hng-agent,
+  ptrace (trace,read,tracedby,readby) peer=hng-agent-steady,
+
+  dbus send bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus member={Hello,AddMatch,RemoveMatch},
+  dbus send bus=system path=/org/freedesktop/systemd1 interface=org.freedesktop.systemd1.Manager member={Subscribe,ListUnits},
+  dbus send bus=system path=/org/freedesktop/systemd1/unit/** interface=org.freedesktop.DBus.Properties member=GetAll,
+  dbus receive bus=system,
+}
