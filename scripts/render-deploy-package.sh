@@ -34,7 +34,7 @@ stage="$out_dir/honeyghost-deploy_$version"
 trap 'rm -rf "$stage"' EXIT
 
 rm -rf "$stage"
-mkdir -p "$stage/config"
+mkdir -p "$stage/config" "$stage/apparmor"
 
 # 替换按 image 行的取值匹配，保留该行原有缩进；build 段按缩进判定整段删除，
 # 因此清单改缩进或改顺序都不影响结果。替换次数与残留引用在下面逐项校验。
@@ -45,6 +45,8 @@ mkdir -p "$stage/config"
 #
 # 镜像按 digest 固定，不提供源码构建。首次部署：
 #   sudo mkdir -p /run/honeyghost
+#   # 启用 AppArmor 的宿主上需运行：
+#   sudo apparmor_parser -r apparmor/hng-agent
 #   docker compose up -d
 #
 # 宿主 Docker 用传统镜像存储（overlay2）时追加：
@@ -111,6 +113,7 @@ if grep -q 'hng/containerd-bridge' "$sidecar_dst"; then
 fi
 
 cp "$root"/deploy/docker/config/*.conf "$stage/config/"
+cp "$root"/deploy/docker/apparmor/hng-agent "$stage/apparmor/"
 
 tar -C "$out_dir" -czf "$out_dir/honeyghost-deploy_$version.tar.gz" \
     "honeyghost-deploy_$version"
