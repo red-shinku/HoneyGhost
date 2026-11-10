@@ -64,11 +64,20 @@ Relative paths are based on the directory containing `agent.conf`, so references
 
 ## Permissions
 
-`privileged: true` is the currently known-working configuration. To tighten it, at least `CAP_BPF`, `CAP_PERFMON`
-(loading probes and `perf_event_open`), `CAP_SYS_ADMIN` (some mount paths), and `CAP_SYS_RESOURCE`
-(memlock) are required; replace after actual testing.
+The agent container starts from `cap_drop: ALL` and adds four capabilities:
 
-Other container security settings remain at their defaults: the agent needs to write sockets under `/run/honeyghost`, and the translation process needs to read the host socket; neither is suitable for a read-only root filesystem.
+| Capability | Purpose |
+| --- | --- |
+| `CAP_BPF` | creating maps and loading probes |
+| `CAP_PERFMON` | loading tracing programs and `perf_event_open` attach |
+| `CAP_SYS_PTRACE` | reading `/proc/<pid>/exe` for the startup snapshot; without it every process owned by another uid is unreadable |
+| `CAP_SETPCAP` | clearing the bounding set so capabilities cannot come back through `execve` |
+
+Once initialization finishes — probes attached and snapshot read — the process drops every capability: each component thread drops at thread entry, and the main thread drops before the assembly start returns. BPF map access, ring buffer consumption and the CLI server need no capability afterwards; `CapPrm`/`CapEff`/`CapBnd` in `/proc/<pid>/status` all read 0.
+
+The translation process only reads and writes host sockets and its own socket, hence `cap_drop: ALL`.
+
+Other container security settings remain at their defaults: the agent needs to write sockets under `/run/honeyghost`, and the translation process needs to read the host socket; neither is suitable for a read-only root filesystem. The container runs as root without `CAP_DAC_OVERRIDE`, so `/run/honeyghost` must exist and be owned by root — `sudo mkdir -p` already does that, while changing the owner makes the agent fail to bind the CLI socket with `Permission denied`.
 
 ## Known Limitations
 

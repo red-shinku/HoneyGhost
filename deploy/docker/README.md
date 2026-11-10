@@ -68,12 +68,25 @@ docker compose -f deploy/docker/docker-compose.yaml \
 
 ## 权限
 
-`privileged: true` 是当前确定可用的配置。要收紧，至少需要 `CAP_BPF`、`CAP_PERFMON`
-（加载探针与 `perf_event_open`）、`CAP_SYS_ADMIN`（部分挂载路径）、`CAP_SYS_RESOURCE`
-（memlock），待实测后替换。
+代理容器从 `cap_drop: ALL` 起步，只加四项：
+
+| 权能 | 用途 |
+| --- | --- |
+| `CAP_BPF` | 创建 map、加载探针 |
+| `CAP_PERFMON` | 加载 tracing 类程序、`perf_event_open` 挂载 |
+| `CAP_SYS_PTRACE` | 初始化快照读 `/proc/<pid>/exe`；缺它时非本进程 uid 的进程一律读不到 exe |
+| `CAP_SETPCAP` | 清空 bounding set，使权能无法经 execve 带回 |
+
+初始化结束、探针挂载与快照都完成之后，进程主动清空全部权能：每个组件线程在入口各清掉
+一次，主线程在装配层启动返回前清掉。此后 BPF map 读写、ring buffer 消费与 CLI 服务都
+不再需要权能，`/proc/<pid>/status` 的 `CapPrm`／`CapEff`／`CapBnd` 均为 0。
+
+翻译进程只读写宿主 socket 与自建 socket，故 `cap_drop: ALL`。
 
 其余容器安全项保持默认：代理要写 `/run/honeyghost` 下的 socket，翻译进程要读宿主
-socket，两者都不适合只读根文件系统。
+socket，两者都不适合只读根文件系统。容器以 root 运行且不再带 `CAP_DAC_OVERRIDE`，
+`/run/honeyghost` 须存在且属 root——`sudo mkdir -p` 即如此，手工改成其它属主会让
+代理绑定 CLI socket 时报 `Permission denied`。
 
 ## 已知限制
 

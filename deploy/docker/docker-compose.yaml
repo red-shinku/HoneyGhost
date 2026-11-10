@@ -26,8 +26,14 @@ services:
 
     pid: host
     cgroup: host
-    # 当前确定可用的方式；最小权限集合见 README「权限」
-    privileged: true
+    # 初始权能；初始化完成后进程自行清空全部权能，见 README「权限」
+    cap_drop:
+      - ALL
+    cap_add:
+      - BPF
+      - PERFMON
+      - SYS_PTRACE
+      - SETPCAP
 
     volumes:
       - ./config:/etc/honeyghost:ro
@@ -64,6 +70,9 @@ services:
     restart: unless-stopped
     # 宿主 socket 为 root:root 0660
     user: "0:0"
+    # 只读写宿主 socket 与自建 socket，不需要任何权能
+    cap_drop:
+      - ALL
     command:
       - -socket=/run/honeyghost/containerd-bridge.sock
       - -containerd=/run/containerd/containerd.sock
