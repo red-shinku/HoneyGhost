@@ -55,8 +55,9 @@ profile hng-agent flags=(attach_disconnected,mediate_deleted) {
   dbus send bus=system path=/org/freedesktop/systemd1/unit/** interface=org.freedesktop.DBus.Properties member=GetAll,
   dbus receive bus=system,
 
-  ptrace (read) peer=unconfined,
-  
+  # 初始化快照读宿主进程的 /proc/<pid>/exe；角色标签与解释器识别依赖它。
+  # 不限定 peer：宿主进程可能落在 unconfined、docker-default 或各自的 profile 下
+  ptrace (read),
   change_profile -> hng-agent-steady,
 }
 

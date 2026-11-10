@@ -94,7 +94,7 @@ docker compose -f deploy/docker/docker-compose.yaml \
 
 | profile | 用在哪 | 比另一份多什么 |
 | --- | --- | --- |
-| `hng-agent` | 入口；compose 的 `security_opt` 引用它 | `ptrace (read) peer=unconfined`（快照读 exe）与 `change_profile -> hng-agent-steady` |
+| `hng-agent` | 入口；compose 的 `security_opt` 引用它 | `ptrace (read)`（快照读 exe，不限对端）与 `change_profile -> hng-agent-steady` |
 | `hng-agent-steady` | 初始化完成后由进程自行切入（切换失败只记日志） | — |
 
 宿主须先载入（见「运行」）；profile 属线程私有，逐线程生效：
@@ -102,6 +102,10 @@ docker compose -f deploy/docker/docker-compose.yaml \
 ```sh
 sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
 ```
+
+初始化完成后仍可能出现少量 `ptrace` 拒绝（`requested_mask="read"`、peer 为
+`unconfined`）：那是 libsystemd 取总线对端凭据时读 `/proc/<pid>/exe`，读不到时
+sd-bus 自行降级，不影响功能。
 
 ### SELinux
 

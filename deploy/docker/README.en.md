@@ -86,7 +86,7 @@ Once initialization finishes — probes attached and snapshot read — the proce
 
 | Profile | Used for | Extra over the other |
 | --- | --- | --- |
-| `hng-agent` | entry; the one compose refers to via `security_opt` | `ptrace (read) peer=unconfined` for the snapshot, and `change_profile -> hng-agent-steady` |
+| `hng-agent` | entry; the one compose refers to via `security_opt` | `ptrace (read)` for the snapshot (any peer), and `change_profile -> hng-agent-steady` |
 | `hng-agent-steady` | entered by the process once initialization finishes (A failed switch is only logged) | — |
 
 Load it on the host first (see "Run"); profiles are per thread:
@@ -94,6 +94,8 @@ Load it on the host first (see "Run"); profiles are per thread:
 ```sh
 sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
 ```
+
+A few `ptrace` denials may still show up after initialization (`requested_mask="read"`, peer `unconfined`): libsystemd reads `/proc/<pid>/exe` while collecting bus peer credentials, and sd-bus degrades gracefully when it cannot.
 
 ### SELinux
 
