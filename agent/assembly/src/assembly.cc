@@ -13,6 +13,7 @@
 
 #include "agent/assembly/include/assembly.hpp"
 
+#include "agent/assembly/src/apparmor_profile.hpp"
 #include "agent/assembly/src/capability_drop.hpp"
 #include "agent/assembly/src/component_threads.hpp"
 #include "agent/assembly/src/kernel_preflight.hpp"
@@ -353,8 +354,10 @@ InitReport Assembly::Impl::start_impl()
     }
 
     start_consumers();
-    // S8 探针已挂载、快照已读完：主线程及其后续创建的线程不再需要权能
+    // S8 探针已挂载、快照已读完：主线程及其后续创建的线程不再需要权能，
+    // 也不再需要入口 profile 里为快照放行的 ptrace
     detail::drop_capabilities();
+    detail::enter_steady_profile();
     running.store(true);
     HNG_LOG_INFO(
         "agent ready: state {}, collect {}, systemd {}, containerd {}, "

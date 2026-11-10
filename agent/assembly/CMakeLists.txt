@@ -5,6 +5,7 @@
 # /proc 快照读取器为它提供输入。组件线程由装配方在初始化之后启动。
 # ============================================================
 add_library(hng_assembly STATIC
+    src/apparmor_profile.cc
     src/assembly.cc
     src/capability_drop.cc
     src/initialization_coordinator.cc
