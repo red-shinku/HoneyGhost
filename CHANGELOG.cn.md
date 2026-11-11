@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `hghost events -w/--write <path>` 将事件流写入文件，默认不再写 stdout；`--tee` 同时保留 stdout 输出。
+
 ### Changed
 
 - 最小化容器权限：

@@ -222,6 +222,7 @@ hghost context list -k excep,extra
 hghost process stats
 hghost events -i role=nginx:1.25 -i pid=1234
 hghost events --duration 30s -o json | jq 'select(.kind == "event")'
+hghost events -w capture.jsonl -o json
 ```
 
 完整命令参考、输出格式与退出码见 [`cli/README.md`](cli/README.md)。

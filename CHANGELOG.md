@@ -5,7 +5,9 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
-## [Unreleased]
+### Added
+
+- `hghost events -w/--write <path>` writes the event stream to a file and silences stdout by default; `--tee` keeps both the file and stdout.
 
 ### Changed
 
