@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -114,10 +116,15 @@ func (s *fakeEventStream) Close() error {
 
 func executeWithServices(t *testing.T, svcs api.Services, args ...string) (string, string, error) {
 	t.Helper()
-	t.Setenv("HGHOST_SOCKET", "")
-	app := NewApp(func(context.Context, string) (api.Services, io.Closer, error) {
+	return executeWithDial(t, func(context.Context, string) (api.Services, io.Closer, error) {
 		return svcs, io.NopCloser(strings.NewReader("")), nil
-	})
+	}, args...)
+}
+
+func executeWithDial(t *testing.T, dial DialFunc, args ...string) (string, string, error) {
+	t.Helper()
+	t.Setenv("HGHOST_SOCKET", "")
+	app := NewApp(dial)
 	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
 	root := NewRootCommand(app, testBuild)
 	root.SetOut(out)
@@ -987,6 +994,8 @@ func TestEventsUsageErrors(t *testing.T) {
 		{"events", "-t", "bogus"},
 		{"events", "-i", "roleID=0"},
 		{"events", "-i", "bogus=1"},
+		{"events", "--tee"},
+		{"events", "-w", ""},
 	}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -1095,11 +1104,323 @@ func TestEventsEPIPE(t *testing.T) {
 			},
 		}}
 		r := render.New(format, render.Options{})
-		err := runEvents(context.Background(), epipeWriter{}, io.Discard, r,
-			format, svcs.Events, model.RuntimeSelector{}, nil, 0)
+		err := runEvents(context.Background(), eventsRun{
+			Out:      epipeWriter{},
+			ErrOut:   io.Discard,
+			Renderer: r,
+			Format:   format,
+			Service:  svcs.Events,
+		})
 		if err != nil {
 			t.Errorf("format %v: runEvents = %v, want nil", format, err)
 		}
+	}
+}
+
+func eventsServices(stream api.EventStream) api.Services {
+	return api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return stream, nil
+		},
+	}}
+}
+
+func TestEventsWriteFileJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	out, errOut, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-o", "json", "-w", path)
+	if err != nil {
+		t.Fatalf("events -w: %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want empty", errOut)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	for _, want := range []string{`"kind":"event"`, `"kind":"stats"`, `"dropped_events":2`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("file missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestEventsWriteFileTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.txt")
+	stream := testEventStream()
+	out, errOut, err := executeWithServices(t, eventsServices(stream), "events", "-w", path)
+	if err != nil {
+		t.Fatalf("events -w: %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	for _, want := range []string{
+		"TYPE", "PID", "DETAIL", "syscall", "execve /usr/sbin/nginx",
+		"file", "/etc/nginx/nginx.conf",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("file missing %q:\n%s", want, data)
+		}
+	}
+	if !strings.Contains(errOut, "dropped events: 2\n") {
+		t.Errorf("stderr missing dropped line: %q", errOut)
+	}
+	if !strings.Contains(errOut, "events: 2 received, 2 dropped\n") {
+		t.Errorf("stderr missing summary: %q", errOut)
+	}
+	if !stream.closed {
+		t.Error("stream was not closed")
+	}
+}
+
+func TestEventsWriteFileNoHeaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.txt")
+	out, _, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-w", path, "--no-headers")
+	if err != nil {
+		t.Fatalf("events -w --no-headers: %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	got := string(data)
+	if strings.Contains(got, "DETAIL") || strings.Contains(got, "TYPE") {
+		t.Errorf("file contains table header with --no-headers:\n%s", got)
+	}
+	if !strings.Contains(got, "syscall") {
+		t.Errorf("file missing event row:\n%s", got)
+	}
+}
+
+func TestEventsWriteFileTeeJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	out, errOut, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-o", "json", "-w", path, "--tee")
+	if err != nil {
+		t.Fatalf("events -w --tee: %v", err)
+	}
+	if out == "" {
+		t.Fatal("stdout is empty with --tee")
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want empty", errOut)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	if out != string(data) {
+		t.Errorf("stdout and file differ:\nstdout:\n%s\nfile:\n%s", out, data)
+	}
+}
+
+func TestEventsWriteFileTruncates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	if err := os.WriteFile(path, []byte("old content"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if _, _, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-o", "json", "-w", path); err != nil {
+		t.Fatalf("events -w: %v", err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	if strings.Contains(string(data), "old content") {
+		t.Errorf("file was not truncated:\n%s", data)
+	}
+	if !strings.Contains(string(data), `"kind":"event"`) {
+		t.Errorf("file missing event data:\n%s", data)
+	}
+}
+
+func TestEventsWriteFilePrivatePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	if _, _, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-o", "json", "-w", path); err != nil {
+		t.Fatalf("events -w: %v", err)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat events file: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("perm = %o, want no group/other permission bits", perm)
+	}
+}
+
+func TestEventsWriteFileOpenError(t *testing.T) {
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			t.Fatal("subscribe must not be called when the events file cannot be opened")
+			return nil, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "events", "-w", t.TempDir())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if !strings.Contains(err.Error(), "open events file") {
+		t.Errorf("error = %q, want open events file message", err.Error())
+	}
+}
+
+func TestWriteFlagOnlyForEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	_, _, err := executeWithoutDial(t, "role", "list", "-w", path)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 2 {
+		t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("file was created by a non-events command: %v", statErr)
+	}
+}
+
+func TestEventsWriteFileSubscribeFailureLeavesEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	if err := os.WriteFile(path, []byte("old content"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return nil, &api.StatusError{
+				Op: "ReceiveEvent", Kind: api.ErrorUnimplemented, Message: "nope",
+			}
+		},
+	}}
+	_, _, err := executeWithServices(t, svcs, "events", "-w", path)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat events file: %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Errorf("file size = %d, want 0 (created and truncated before subscribe)", info.Size())
+	}
+}
+
+func TestEventsWriteFileDialFailureKeepsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	const old = "old content\n"
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	_, _, err := executeWithDial(t, func(context.Context, string) (api.Services, io.Closer, error) {
+		return api.Services{}, nil, &api.StatusError{
+			Op: "Dial", Kind: api.ErrorUnavailable, Message: "boom",
+		}
+	}, "events", "-w", path)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read events file: %v", readErr)
+	}
+	if string(data) != old {
+		t.Errorf("file = %q, want untouched %q", data, old)
+	}
+}
+
+func TestEventsWriteFileDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.txt")
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(ctx context.Context, _ model.RuntimeSelector,
+			_ []model.EventType) (api.EventStream, error) {
+			return blockingStream{ctx: ctx}, nil
+		},
+	}}
+	out, errOut, err := executeWithServices(t, svcs, "events", "--duration", "20ms", "-w", path)
+	if err != nil {
+		t.Fatalf("events --duration -w: %v", err)
+	}
+	if code := ExitCode(err, false); code != 0 {
+		t.Errorf("ExitCode = %d, want 0", code)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if errOut != "events: 0 received, 0 dropped\n" {
+		t.Errorf("stderr = %q, want summary", errOut)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat events file: %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Errorf("file size = %d, want 0", info.Size())
+	}
+}
+
+func TestRunEventsTeeStdoutEPIPE(t *testing.T) {
+	var file bytes.Buffer
+	err := runEvents(context.Background(), eventsRun{
+		Out:      epipeWriter{},
+		ErrOut:   io.Discard,
+		Renderer: render.New(render.FormatJSON, render.Options{}),
+		Format:   render.FormatJSON,
+		Service:  eventsServices(testEventStream()).Events,
+		File:     &file,
+	})
+	if err != nil {
+		t.Fatalf("runEvents = %v, want nil", err)
+	}
+	got := file.String()
+	for _, want := range []string{`"kind":"event"`, `"kind":"stats"`, `"dropped_events":2`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("file missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestEventsWriteFileWriteError(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full is not available")
+	}
+	_, _, err := executeWithServices(t, eventsServices(testEventStream()),
+		"events", "-o", "json", "-w", "/dev/full")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(err, false))
+	}
+	if !strings.Contains(err.Error(), "no space left on device") {
+		t.Errorf("error = %q, want a write failure", err.Error())
 	}
 }
 

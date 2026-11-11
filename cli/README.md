@@ -112,6 +112,8 @@ hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # 标签内的逗号写作 \,
 hghost events --duration 30s                   # 到时间自动停止
 hghost events -o json | jq 'select(.kind == "event")'
+hghost events -w capture.jsonl -o json        # 只写文件，stdout 静默
+hghost events -w capture.jsonl --tee -o json  # 同时写文件与 stdout
 ```
 
 * `-t` 可重复或逗号分隔，大小写不敏感，取值 `syscall` / `file` / `network` / `ipc`；
@@ -120,6 +122,14 @@ hghost events -o json | jq 'select(.kind == "event")'
   同一 key 的多个值取并集，不同 key 之间取交集；角色标签原样交给服务端。
 * `--duration` 为 `0` 表示直到中断。Ctrl-C、SIGTERM、`--duration` 到期和服务端正常
   结束流都以 `0` 退出；RPC 错误退出 `1`。
+* `-w, --write <path>` 把事件数据流写入文件，默认不再写 stdout；相对路径按当前工作
+  目录解析，`-` 不是特殊值。文件在拨号成功后、订阅前创建或截断；父目录不创建；
+  新建文件权限为 `0600`，已存在的文件保留原权限。`-w` 的值为空是用法错误。
+* `--tee` 必须与 `-w` 同用，保留 stdout 输出；单独使用是用法错误。
+* 文件格式跟随 `-o`，`--no-headers` 同样作用于文件。JSON 的 `stats` 属于数据流，
+  会写入文件；table 的丢弃提示与结束汇总只写 stderr。
+* 使用 `--tee` 时，stdout 的 EPIPE（如 `| head`）只停止 stdout 输出，文件继续写；
+  未使用 `--tee` 时 stdout 不是数据目标。
 * table 列：`TYPE` `PID` `PPID` `ROLE` `CTX` `DETAIL`。`ROLE` 优先显示标签，
   标签为空但 `roleID` 非 0 时显示 `#<id>`；`CTX` 为 0 时显示 `-`。
 * `DETAIL` 是人读摘要，不是稳定契约；脚本应解析 JSON。
@@ -135,17 +145,19 @@ hghost events -o json | jq 'select(.kind == "event")'
 `payload.kind` 取值为 `process` / `exec` / `credential` / `namespace` /
 `file_syscall` / `memory` / `network_syscall` / `kernel` / `file`，`fields` 为对应字段。
 服务端上报丢弃计数时，table 模式在计数变化时写 stderr，JSON 模式写 `stats` 对象；
-流结束时 table 模式在 stderr 输出 `events: N received, M dropped`。
+流结束时 table 模式在 stderr 输出 `events: N received, M dropped`。这些 stderr
+诊断不写入 `-w` 文件。
 
 ## 输出与退出码
 
 stdout 只承载数据；错误、提示与丢弃统计写 stderr。JSON 使用 snake_case 字段名；
 空集合在 JSON 中为 `[]`。`which` 未找到时退出码仍为 `0`，table 模式在 stderr 提示。
+使用 `events -w` 时，文件只承载事件数据流；错误、提示与 table 诊断仍写 stderr。
 
 | 退出码 | 含义 |
 | --- | --- |
 | `0` | 成功，包括空列表、`which` 未找到、事件流被中断或到期 |
-| `1` | 运行期失败：连接失败、RPC 失败、目标不存在、写输出失败 |
+| `1` | 运行期失败：连接失败、RPC 失败、目标不存在、写输出失败、事件文件打开/写入/关闭失败 |
 | `2` | 用法错误：未知命令/标志、参数格式不对、枚举值非法 |
 | `130` | 一元命令执行期间被 SIGINT/SIGTERM 中断 |
 

@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- CLI 工具支持将事件流写入文件：`hghost events -w/--write <path>`，此时默认关闭终端输出，可用 `--tee` 保留。 
+
 ### Changed
 
 - 最小化容器权限：
