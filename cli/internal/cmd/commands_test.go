@@ -1095,8 +1095,13 @@ func TestEventsEPIPE(t *testing.T) {
 			},
 		}}
 		r := render.New(format, render.Options{})
-		err := runEvents(context.Background(), epipeWriter{}, io.Discard, r,
-			format, svcs.Events, model.RuntimeSelector{}, nil, 0)
+		err := runEvents(context.Background(), eventsRun{
+			Out:      epipeWriter{},
+			ErrOut:   io.Discard,
+			Renderer: r,
+			Format:   format,
+			Service:  svcs.Events,
+		})
 		if err != nil {
 			t.Errorf("format %v: runEvents = %v, want nil", format, err)
 		}

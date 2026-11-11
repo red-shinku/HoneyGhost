@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -56,8 +55,17 @@ func newEventsCommand(app *App) *cobra.Command {
 			if err != nil {
 				return app.wrapRuntime(err)
 			}
-			err = runEvents(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				app.renderer(), app.opts.Format, svcs.Events, runtimeSelector, types, opts.Duration)
+			err = runEvents(cmd.Context(), eventsRun{
+				Out:      cmd.OutOrStdout(),
+				ErrOut:   cmd.ErrOrStderr(),
+				Renderer: app.renderer(),
+				Format:   app.opts.Format,
+				Service:  svcs.Events,
+				Selector: runtimeSelector,
+				Types:    types,
+				Duration: opts.Duration,
+				File:     nil,
+			})
 			if cmd.Context().Err() != nil {
 				app.restoreSignals()
 			}
@@ -74,24 +82,44 @@ func newEventsCommand(app *App) *cobra.Command {
 	return cmd
 }
 
-func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
-	format render.Format, svc api.EventService, sel model.RuntimeSelector,
-	types []model.EventType, duration time.Duration) error {
-	ctx, cancel := streamContext(parent, duration)
+// eventsRun 是事件流命令的运行参数。
+type eventsRun struct {
+	Out      io.Writer // nil 表示不写 stdout
+	ErrOut   io.Writer
+	Renderer render.Renderer
+	Format   render.Format
+	Service  api.EventService
+	Selector model.RuntimeSelector
+	Types    []model.EventType
+	Duration time.Duration
+	File     io.Writer // nil 表示不落盘
+}
+
+// runEvents 订阅事件流，把每条记录渲染后写入 Out 与 File。
+//
+// EOF、上下文取消/到期与 stdout EPIPE 都是正常结束；接收与文件写入错误原样返回。
+func runEvents(parent context.Context, run eventsRun) (err error) {
+	ctx, cancel := streamContext(parent, run.Duration)
 	defer cancel()
 
-	stream, err := svc.Subscribe(ctx, sel, types)
+	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
 
-	buffered := bufio.NewWriter(out)
+	sink := newRecordSink(run.Renderer, run.Out, run.File)
+	defer func() {
+		if closeErr := sink.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+
 	received := 0
 	dropped := uint64(0)
-	if format == render.FormatTable {
+	if run.Format == render.FormatTable {
 		defer func() {
-			fmt.Fprintf(errOut, "events: %d received, %d dropped\n", received, dropped)
+			fmt.Fprintf(run.ErrOut, "events: %d received, %d dropped\n", received, dropped)
 		}()
 	}
 
@@ -109,21 +137,15 @@ func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
 		if item.Stats != nil {
 			changed := item.Stats.DroppedEvents != dropped
 			dropped = item.Stats.DroppedEvents
-			if format == render.FormatJSON {
-				if err := r.StreamStats(buffered, *item.Stats); err != nil {
-					if isEPIPE(err) {
-						return nil
-					}
-					return err
-				}
-				if err := buffered.Flush(); err != nil {
-					if isEPIPE(err) {
-						return nil
-					}
+			if run.Format == render.FormatJSON {
+				if err := sink.Stats(*item.Stats); err != nil {
 					return err
 				}
 			} else if changed {
-				fmt.Fprintf(errOut, "dropped events: %d\n", dropped)
+				fmt.Fprintf(run.ErrOut, "dropped events: %d\n", dropped)
+			}
+			if !sink.Active() {
+				return nil
 			}
 			continue
 		}
@@ -131,17 +153,11 @@ func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
 		if item.Event == nil {
 			continue
 		}
-		if err := r.Event(buffered, *item.Event); err != nil {
-			if isEPIPE(err) {
-				return nil
-			}
+		if err := sink.Event(*item.Event); err != nil {
 			return err
 		}
-		if err := buffered.Flush(); err != nil {
-			if isEPIPE(err) {
-				return nil
-			}
-			return err
+		if !sink.Active() {
+			return nil
 		}
 		received++
 	}
