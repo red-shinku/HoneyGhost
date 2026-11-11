@@ -5,7 +5,17 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
-None
+## [Unreleased]
+
+### Changed
+
+- Minimize container privileges:
+  - Capabilities: initial capability set [BPF, PERFMON, SYS_PTRACE, SETPCAP], which the process voluntarily drops after initialization.
+  - MAC: based on `docker-default`, a custom AppArmor security profile (a minimal security policy for D-Bus and /proc/<pid>/exe access; switch to a smaller policy set after initialization). SELinux support is not considered for now.
+
+### Fixed
+
+- The start_time of a thread event is inconsistent with that of the thread group leader, causing subsequent handling of the event to be incorrect.  
 
 ## [v0.1.0] - 2026-11-05
 

@@ -5,7 +5,15 @@
 
 ## [Unreleased]
 
-None
+### Changed
+
+- 最小化容器权限：
+  - 权能：初始权能集 [BPF, PERFMON, SYS_PTRACE, SETPCAP]，初始化完毕后进程自主放弃。  
+  - MAC：基于 `docker-default`，自定义 AppArmor 的安全配置文件（用于 D-Bus 与 /proc/<pid>/exe 访问的最小化安全策略，初始化后切换至更小的策略集）。SELinux 暂时不考虑支持。  
+
+### Fixed
+
+- 线程事件的 start_time 与线程组组长不一致，导致后续不能对该事件进行正确的处理。
 
 ## [v0.1.0] - 2026-11-05
 
