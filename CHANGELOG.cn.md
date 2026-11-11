@@ -7,7 +7,7 @@
 
 ### Added
 
-- `hghost events -w/--write <path>` 将事件流写入文件，默认不再写 stdout；`--tee` 同时保留 stdout 输出。
+- CLI 工具支持将事件流写入文件：`hghost events -w/--write <path>`，此时默认关闭终端输出，可用 `--tee` 保留。 
 
 ### Changed
 
