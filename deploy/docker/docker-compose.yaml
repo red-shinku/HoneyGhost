@@ -38,7 +38,6 @@ services:
 
     volumes:
       - ./config:/etc/honeyghost:ro
-      # 与桥接进程共享的 socket 目录，也是宿主机 CLI 的接入点
       - /run/honeyghost:/run/honeyghost
       # 订阅宿主 systemd 的 unit 事件
       - type: bind
@@ -46,7 +45,6 @@ services:
         target: /run/dbus/system_bus_socket
         read_only: true
         bind:
-          # 缺该 socket 时直接报错，而不是在宿主上建出一个同名目录
           create_host_path: false
       # tracepoint 的 id 只存在于 tracefs，容器内默认看不到
       - type: bind
@@ -71,9 +69,11 @@ services:
     restart: unless-stopped
     # 宿主 socket 为 root:root 0660
     user: "0:0"
-    # 只读写宿主 socket 与自建 socket，不需要任何权能
     cap_drop:
       - ALL
+    # 连宿主 socket 需摆脱 SELinux 标注；无 SELinux 的宿主上此项无操作
+    security_opt:
+      - label=disable
     command:
       - -socket=/run/honeyghost/containerd-bridge.sock
       - -containerd=/run/containerd/containerd.sock
@@ -85,5 +85,4 @@ services:
         target: /run/containerd/containerd.sock
         read_only: true
         bind:
-          # 缺 socket 时直接报错：短语法会静默建出目录，毁掉宿主上的 socket 路径
           create_host_path: false

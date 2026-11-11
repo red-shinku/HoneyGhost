@@ -41,6 +41,7 @@ bin/hghost --socket /run/honeyghost/cli.sock <subcommand>
 | `/run/containerd/containerd.sock` | containerd role discovery | Bridge process exits |
 | `/run/dbus/system_bus_socket` | systemd role discovery | Agent cannot connect to the bus, discovery source times out |
 | AppArmor host with the `hng-agent` profile loaded | allows system bus calls and reading exe in the snapshot | container does not start when the profile is missing; with `docker-default` bus calls and exe reads are denied |
+| SELinux host | nothing; compose already pins `label=disable` for the bridge | the bridge socket never appears and the agent ends up `DEGRADED` |
 
 For nodes without containerd or systemd: disable the corresponding discovery source in the configuration, and remove the unneeded services and mounts from compose.
 
@@ -99,16 +100,28 @@ A few `ptrace` denials may still show up after initialization (`requested_mask="
 
 ### SELinux
 
-On SELinux hosts Docker puts the container under `container_t` by default, and the agent does not run there either: sending system bus messages, reading `exe` of host processes, and writing the bind-mounted `/run/honeyghost` (unless that directory is relabeled) are all denied by type enforcement — the symptom is `avc: denied` in `audit.log`, not an AppArmor record in `dmesg`.
+Docker does not apply SELinux labeling by default. Check whether `Security Options` in `docker info` includes `selinux`.
+Whether it does or not, no additional configuration is currently required.
 
-On those hosts the agent container needs SELinux labeling turned off (add this to the agent service):
+If it does, here is the impact on the two container services:
 
-```yaml
-security_opt:
-  - label=disable
-```
+| Service | Process domain | Result |
+| --- | --- | --- |
+| `agent` | `spc_t` | Unaffected: for containers with `pid: host`, the engine disables labeling itself (Docker appends `label=disable`, Podman switches to `spc_t`) |
+| `containerd-bridge` | `container_t` | Writing to `/run/honeyghost` and connecting to `containerd.sock` are both denied; the socket cannot be created, and the proxy falls into `DEGRADED` |
 
-The cost is the same as `apparmor=unconfined`: the container is no longer confined by that LSM. A custom minimal policy is not provided yet — it has to be built against the distribution's container-selinux, and SELinux has no read-only tier for `ptrace`: the permission is granted per target domain as a whole, coarser than AppArmor.
+The compose bridge service already has `security_opt: [label=disable]` fixed, so no further changes are needed on such hosts;
+on hosts without SELinux, this option is a no-op.
+
+The label on `/run/honeyghost` does not need to be changed (`container_var_run_t` is fine), and the bind mount does not need
+`:z` either: neither end is constrained anymore.
+
+The proxy container itself necessarily cannot be confined to `container_t`: it loads probes, reads host process `exe`,
+sends system bus messages, and reads tracefs. At this point, defining a custom minimal SELinux policy would be too costly.
+
+`spc_t` only means that SELinux does not enforce constraints; `cap_drop` and the voluntary dropping of capabilities after initialization still take effect.
+
+---
 
 The translation process only reads and writes host sockets and its own socket, hence `cap_drop: ALL`.
 

@@ -41,6 +41,7 @@ bin/hghost --socket /run/honeyghost/cli.sock <子命令>
 | `/run/containerd/containerd.sock` | containerd 角色发现 | 桥接进程退出 |
 | `/run/dbus/system_bus_socket` | systemd 角色发现 | 代理连不上总线，发现源超时 |
 | AppArmor 宿主已载入 `hng-agent` 配置 | 放行 system bus 调用与快照读 exe | 未载入时容器起不来；用 `docker-default` 时总线调用与 exe 读取被拒 |
+| SELinux 宿主 | 无需配置；compose 已给桥接服务固定 `label=disable` | 桥接 socket 建不出来，代理落 `DEGRADED` |
 
 没有 containerd 或 systemd 的节点：在配置里关掉对应发现源，并从 compose 中删掉不需要的服务与挂载。
 
@@ -109,21 +110,26 @@ sd-bus 自行降级，不影响功能。
 
 ### SELinux
 
-SELinux 宿主上 Docker 默认把容器放在 `container_t` 下，本代理在它下面同样跑不起来：
-向 systemd 发总线消息、读宿主进程的 `exe`、以及写 bind mount 进来的
-`/run/honeyghost`（除非该目录被重新打标签）都会触发类型强制拒绝，症状是
-`audit.log` 里的 `avc: denied` 而非 `dmesg` 里的 AppArmor 记录。
+Docker 默认不做 SELinux 标注。`docker info` 中查看 `Security Options` 是否包含 `selinux`。  
+不管有没有，目前都不需要任何额外配置。  
 
-这类宿主上要额外给代理容器关掉 SELinux 标记（在 compose 的 agent 服务里补一条）：
+如果有，这里是对两个容器服务的影响：
 
-```yaml
-security_opt:
-  - label=disable
-```
+| 服务 | 进程域 | 结果 |
+| --- | --- | --- |
+| `agent` | `spc_t` | 不受影响：`pid: host` 的容器由引擎自行关掉标注（docker 追加 `label=disable`，podman 换成 `spc_t`） |
+| `containerd-bridge` | `container_t` | 写 `/run/honeyghost`、连 `containerd.sock` 均被拒，socket 建不出来，代理落 `DEGRADED` |
 
-代价与该容器用 `apparmor=unconfined` 相同：不再受该 LSM 约束。自定义最小策略尚未
-提供——它要随发行版的 container-selinux 一起编译，且 SELinux 的 `ptrace` 权限没有
-「只读」这一档，只能按目标域整体放行，粒度比 AppArmor 粗。
+compose 的桥接服务已固定 `security_opt: [label=disable]`，这种宿主上不用再改；
+无 SELinux 的宿主上该项无操作。
+
+`/run/honeyghost` 的标签不用动（`container_var_run_t` 即可），bind mount 也不用加
+`:z`：两端都不再受约束。
+
+代理容器本身是必然收不进 `container_t` 的：加载探针、读宿主进程 `exe`、发 system bus
+消息、读 tracefs。这时 selinux 要自定义最小策略代价太大。
+
+`spc_t` 只表示 SELinux 不施加约束，`cap_drop` 与初始化后的主动弃权仍然生效。
 
 ---
 
