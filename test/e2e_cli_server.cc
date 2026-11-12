@@ -15,6 +15,7 @@
  * @date 2026.10.18
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -382,18 +383,22 @@ class FakeEngine final : public SubscriberRegService {
 
     void Produce()
     {
+        // 每 16 ms 发一小批：平均速率不变，但批量协议能观察到多条记录的批
+        constexpr int kBurst = 8;
         uint32_t seq = 0;
         while (!stopping_.load()) {
-            const hng::RuntimeEvent event = MakeEvent(seq++);
             {
                 const std::lock_guard lock(mu_);
-                for (const Entry& entry : entries_) {
-                    if (entry.filter.should_take(event.runtimeInfo)) {
-                        entry.sink->on_event(event);
+                for (int i = 0; i < kBurst; ++i) {
+                    const hng::RuntimeEvent event = MakeEvent(seq++);
+                    for (const Entry& entry : entries_) {
+                        if (entry.filter.should_take(event.runtimeInfo)) {
+                            entry.sink->on_event(event);
+                        }
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }
 
@@ -760,8 +765,12 @@ void run_stream_quota(hng::clisv::RuntimeService::Stub& runtime)
 
     hng::clisv::ReceiveEventResponse message;
     CHECK(first->Read(&message), "首个订阅流应收到事件");
-    CHECK(message.event_case() == hng::clisv::ReceiveEventResponse::kSyscallEv ||
-              message.event_case() == hng::clisv::ReceiveEventResponse::kFileEv,
+    CHECK(message.has_batch() && message.batch().records_size() > 0,
+          "事件应装在批里");
+    CHECK(message.batch().records(0).event_case() ==
+                  hng::clisv::eventrecord::kSyscallEv ||
+              message.batch().records(0).event_case() ==
+                  hng::clisv::eventrecord::kFileEv,
           "事件应带载荷");
 
     // 第二条流：名额已满
@@ -809,11 +818,16 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     bool saw_other = false;
     hng::clisv::ReceiveEventResponse message;
     for (int i = 0; i < 5 && reader->Read(&message); ++i) {
-        if (message.event_case() == hng::clisv::ReceiveEventResponse::kFileEv) {
-            saw_file = true;
+        if (!message.has_batch()) {
+            continue;
         }
-        else {
-            saw_other = true;
+        for (const hng::clisv::eventrecord& record : message.batch().records()) {
+            if (record.event_case() == hng::clisv::eventrecord::kFileEv) {
+                saw_file = true;
+            }
+            else {
+                saw_other = true;
+            }
         }
     }
     context.TryCancel();
@@ -834,10 +848,66 @@ void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
 
     hng::clisv::ReceiveEventResponse message;
     CHECK(reader->Read(&message), "按角色标签过滤应收到事件");
-    CHECK(message.head().rolelabel() == kRoleLabel, "事件头应带角色标签");
+    CHECK(message.has_batch() && message.batch().records_size() > 0,
+          "事件应装在批里");
+    CHECK(message.batch().records(0).head().rolelabel() == kRoleLabel,
+          "事件头应带角色标签");
 
     context.TryCancel();
     (void)reader->Finish();
+}
+
+/// @brief 批大小：请求 8 时出现多条记录，请求 1 时每条消息一条记录
+void run_batching(hng::clisv::RuntimeService::Stub& runtime)
+{
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        request.set_batch_size(8);
+        auto reader = runtime.ReceiveEvent(&context, request);
+
+        int batches     = 0;
+        int records     = 0;
+        int max_records = 0;
+        hng::clisv::ReceiveEventResponse message;
+        while (batches < 10 && reader->Read(&message)) {
+            if (!message.has_batch()) {
+                continue;
+            }
+            ++batches;
+            const int size = message.batch().records_size();
+            CHECK(size > 0, "事件批不应为空");
+            records += size;
+            max_records = std::max(max_records, size);
+        }
+        context.TryCancel();
+        (void)reader->Finish();
+
+        CHECK(records >= 8, "批量订阅应收到足够事件");
+        CHECK(max_records > 1, "batch_size=8 时应出现多条记录的批");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        request.set_batch_size(1);
+        auto reader = runtime.ReceiveEvent(&context, request);
+
+        hng::clisv::ReceiveEventResponse message;
+        int batches = 0;
+        while (batches < 5 && reader->Read(&message)) {
+            if (!message.has_batch()) {
+                continue;
+            }
+            ++batches;
+            CHECK(message.batch().records_size() == 1,
+                  "batch_size=1 时每条消息应只有一条记录");
+        }
+        context.TryCancel();
+        (void)reader->Finish();
+        CHECK(batches == 5, "batch_size=1 时应能连续收到消息");
+    }
 }
 
 /// @brief 等子进程退出；超时返回 false
@@ -896,11 +966,14 @@ int main()
         run_stream_quota(*runtime);
         run_filter(*runtime);
         run_role_label_filter(*runtime);
+        run_batching(*runtime);
 
         hng::clisv::ReceiveEventRequest held_request;
         held = runtime->ReceiveEvent(&held_context, held_request);
         hng::clisv::ReceiveEventResponse event;
         CHECK(held->Read(&event), "停机前应能收到事件");
+        CHECK(event.has_batch() && event.batch().records_size() > 0,
+              "停机前的事件应装在批里");
     }
     else {
         CHECK(false, "服务端未在期限内就绪");

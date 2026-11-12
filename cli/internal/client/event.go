@@ -13,18 +13,31 @@ import (
 )
 
 type eventStream struct {
-	stream grpc.ServerStreamingClient[clisv.ReceiveEventResponse]
+	stream  grpc.ServerStreamingClient[clisv.ReceiveEventResponse]
+	pending []model.StreamItem
+	cursor  int
 }
 
+// Recv 从当前事件批中逐条返回；批取完再读下一条消息。
 func (s *eventStream) Recv() (model.StreamItem, error) {
-	response, err := s.stream.Recv()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return model.StreamItem{}, io.EOF
+	for s.cursor >= len(s.pending) {
+		response, err := s.stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return model.StreamItem{}, io.EOF
+			}
+			return model.StreamItem{}, statusError("ReceiveEvent", err)
 		}
-		return model.StreamItem{}, statusError("ReceiveEvent", err)
+		items, err := convertEventResponse(response)
+		if err != nil {
+			return model.StreamItem{}, err
+		}
+		s.pending = items
+		s.cursor = 0
 	}
-	return convertEventResponse(response)
+	item := s.pending[s.cursor]
+	s.cursor++
+	return item, nil
 }
 
 func (s *eventStream) Close() error {
@@ -61,31 +74,48 @@ func eventTypeFromProto(eventType clisv.EventType) model.EventType {
 	}
 }
 
-func convertEventResponse(response *clisv.ReceiveEventResponse) (model.StreamItem, error) {
-	switch event := response.GetEvent().(type) {
-	case *clisv.ReceiveEventResponse_Stats:
-		return model.StreamItem{Stats: &model.StreamStats{
-			DroppedEvents: event.Stats.GetDroppedEvents(),
-		}}, nil
+// convertEventResponse 把一条流消息展开成待消费的记录；stats 消息只产出一项。
+func convertEventResponse(response *clisv.ReceiveEventResponse) ([]model.StreamItem, error) {
+	if stats := response.GetStats(); stats != nil {
+		return []model.StreamItem{{Stats: &model.StreamStats{
+			DroppedEvents: stats.GetDroppedEvents(),
+		}}}, nil
+	}
+	batch := response.GetBatch()
+	if batch == nil {
+		return nil, fmt.Errorf("ReceiveEvent: unknown response payload")
+	}
+	items := make([]model.StreamItem, 0, len(batch.GetRecords()))
+	for _, record := range batch.GetRecords() {
+		event, err := convertEventRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, model.StreamItem{Event: &event})
+	}
+	return items, nil
+}
 
-	case *clisv.ReceiveEventResponse_SyscallEv:
+func convertEventRecord(record *clisv.Eventrecord) (model.Event, error) {
+	switch event := record.GetEvent().(type) {
+	case *clisv.Eventrecord_SyscallEv:
 		payload, err := convertSyscallPayload(event.SyscallEv)
 		if err != nil {
-			return model.StreamItem{}, err
+			return model.Event{}, err
 		}
-		return model.StreamItem{Event: &model.Event{
-			Head:    convertEventHead(response.GetHead()),
+		return model.Event{
+			Head:    convertEventHead(record.GetHead()),
 			Payload: payload,
-		}}, nil
+		}, nil
 
-	case *clisv.ReceiveEventResponse_FileEv:
-		return model.StreamItem{Event: &model.Event{
-			Head:    convertEventHead(response.GetHead()),
+	case *clisv.Eventrecord_FileEv:
+		return model.Event{
+			Head:    convertEventHead(record.GetHead()),
 			Payload: convertFilePayload(event.FileEv),
-		}}, nil
+		}, nil
 
 	default:
-		return model.StreamItem{}, fmt.Errorf("ReceiveEvent: unknown event payload")
+		return model.Event{}, fmt.Errorf("ReceiveEvent: unknown event payload")
 	}
 }
 

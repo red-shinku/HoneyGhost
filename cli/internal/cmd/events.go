@@ -21,6 +21,7 @@ type eventsOptions struct {
 	Types     []string
 	Info      []string
 	Duration  time.Duration
+	Batch     uint32
 	WritePath string
 	Tee       bool
 }
@@ -40,6 +41,9 @@ func newEventsCommand(app *App) *cobra.Command {
 			}
 			if opts.Duration < 0 {
 				return usageErrorf("--duration must not be negative: %s", opts.Duration)
+			}
+			if opts.Batch == 0 || opts.Batch > 256 {
+				return usageErrorf("--batch must be in 1..256: %d", opts.Batch)
 			}
 			if flag := cmd.Flags().Lookup("write"); flag != nil && flag.Changed && opts.WritePath == "" {
 				return usageErrorf("--write requires a non-empty file path")
@@ -97,6 +101,7 @@ func newEventsCommand(app *App) *cobra.Command {
 				Selector: runtimeSelector,
 				Types:    types,
 				Duration: opts.Duration,
+				Batch:    opts.Batch,
 				File:     fileWriter,
 			})
 			if cmd.Context().Err() != nil {
@@ -112,6 +117,8 @@ func newEventsCommand(app *App) *cobra.Command {
 		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid)")
 	cmd.Flags().DurationVar(&opts.Duration, "duration", 0,
 		"maximum stream duration; 0 means until interrupted")
+	cmd.Flags().Uint32Var(&opts.Batch, "batch", 64,
+		"maximum events per streamed message (1..256)")
 	cmd.Flags().StringVarP(&opts.WritePath, "write", "w", "",
 		"write the event stream to this file instead of stdout")
 	cmd.Flags().BoolVar(&opts.Tee, "tee", false,
@@ -140,6 +147,7 @@ type eventsRun struct {
 	Selector model.RuntimeSelector
 	Types    []model.EventType
 	Duration time.Duration
+	Batch    uint32
 	File     io.Writer // nil 表示不落盘
 }
 
@@ -151,7 +159,8 @@ func runEvents(parent context.Context, run eventsRun) (err error) {
 	ctx, cancel := streamContext(parent, run.Duration)
 	defer cancel()
 
-	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types)
+	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types,
+		api.SubscribeOptions{BatchSize: run.Batch})
 	if err != nil {
 		return err
 	}

@@ -87,7 +87,7 @@ type fakeEventService struct {
 }
 
 func (f fakeEventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
-	types []model.EventType) (api.EventStream, error) {
+	types []model.EventType, _ api.SubscribeOptions) (api.EventStream, error) {
 	return f.subscribe(ctx, sel, types)
 }
 

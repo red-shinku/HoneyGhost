@@ -266,6 +266,8 @@ message ReceiveEventRequest
     repeated EventType etype  = 1;
     // 命令行选项 -i
     optional runtimeinfo info = 2;
+    // 单条响应最多携带的事件数；0 取服务端默认值 64，服务端钳制到 1..256
+    uint32 batch_size = 3;
 }
 
 message syscall_event_data
@@ -306,14 +308,29 @@ message streamstats
     uint64 dropped_events = 1;
 }
 
-message ReceiveEventResponse
+// 事件流中的一条事件；批内元素与 stats 互斥
+message eventrecord
 {
     eventhead head = 1;
     oneof event
     {
         syscall_event_data syscall_ev = 2;
         file_event_data file_ev       = 3;
-        streamstats stats             = 4;
+    }
+}
+
+// 一次下发的事件批；队列空时发送已取到的部分批
+message ReceiveEventBatch
+{
+    repeated eventrecord records = 1;
+}
+
+message ReceiveEventResponse
+{
+    oneof payload
+    {
+        ReceiveEventBatch batch = 1;
+        streamstats stats       = 2;
     }
 }
 

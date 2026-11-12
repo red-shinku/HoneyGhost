@@ -7,6 +7,7 @@
 
 #include "agent/cli_server/src/cli_runtime_service.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -22,6 +23,12 @@
 #include "agent/cli_server/src/event_converter.hpp"
 
 namespace {
+
+/// 请求未指定 batch_size 时每批携带的事件数
+constexpr std::uint32_t kDefaultBatchSize = 64;
+
+/// 单批事件数的上界，防止请求方指定过大的批
+constexpr std::uint32_t kMaxBatchSize = 256;
 
 /// @brief 作用域退出即拆除流：任何退出路径都不会漏掉注销与摘表
 class StreamGuard final {
@@ -51,12 +58,12 @@ bool Write(CLIRuntimeService::ReceiveEventWriter& writer,
     return true;
 }
 
-/// @brief 把一条事件写进订阅流；载荷被移出 event
-bool WriteEvent(CLIRuntimeService::ReceiveEventWriter& writer,
-                hng::RuntimeEvent& event)
+/// @brief 把一批事件写进订阅流；各事件载荷被移出
+bool WriteBatch(CLIRuntimeService::ReceiveEventWriter& writer,
+                hng::clisv::ReceiveEventBatch&& batch)
 {
     hng::clisv::ReceiveEventResponse msg;
-    hng::cli::ToProto(event, msg);
+    *msg.mutable_batch() = std::move(batch);
     return Write(writer, std::move(msg));
 }
 
@@ -135,10 +142,25 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
 
         std::size_t cursor = 0;  // 消费进度只属于本次消费
         uint64_t reported  = 0;
+        // 请求的 0 表示取默认值；上界只约束单条消息，不改变流的语义
+        const std::size_t batch_size =
+            request.batch_size() == 0
+                ? kDefaultBatchSize
+                : std::min<std::size_t>(request.batch_size(), kMaxBatchSize);
         for (;;) {
-            hng::RuntimeEvent event{};
-            if (stream.try_pop(event, cursor)) {
-                if (!WriteEvent(writer, event)) {
+            // 取到多少发多少：队列一空就发送部分批，低速率下不引入等待
+            hng::clisv::ReceiveEventBatch batch;
+            std::size_t taken = 0;
+            while (taken < batch_size) {
+                hng::RuntimeEvent event{};
+                if (!stream.try_pop(event, cursor)) {
+                    break;
+                }
+                hng::cli::ToProto(event, *batch.add_records());
+                ++taken;
+            }
+            if (taken != 0) {
+                if (!WriteBatch(writer, std::move(batch))) {
                     break;  // 客户端已断开
                 }
                 continue;
