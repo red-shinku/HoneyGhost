@@ -153,7 +153,7 @@ void run_defaults()
         "配置文本应含默认 socket");
     CHECK(has_text(prepared.text, "max-concurrent-streams: 64"),
           "配置文本应含默认并发流上限");
-    CHECK(has_text(prepared.text, "queue-capacity: 1024"),
+    CHECK(has_text(prepared.text, "queue-capacity: 8192"),
           "配置文本应含默认队列容量");
     CHECK(has_text(prepared.text, "drain-timeout: 10000ms"),
           "配置文本应含默认 drain 超时");

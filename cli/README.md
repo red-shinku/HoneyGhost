@@ -99,7 +99,8 @@ hghost status
 hghost status -o json
 ```
 
-汇总监管角色数、异常/附属上下文数，以及角色、上下文、进程三个管理器的计数。各段独立：
+汇总监管角色数、异常/附属上下文数、角色/上下文/进程三个管理器的计数，以及采集、
+语义、引擎与 CLI 流的运行期计数（RUNTIME STATS）。各段独立：
 失败的段在 table 模式不输出、JSON 为 `null`，其余段照常输出，整条命令退出 `1`。
 
 ### events（事件流）
@@ -111,6 +112,7 @@ hghost events -i role=nginx:1.25 -i pid=1234   # 按运行时信息过滤
 hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # 标签内的逗号写作 \,
 hghost events --duration 30s                   # 到时间自动停止
+hghost events --batch 64                       # 每条消息最多携带 64 条事件
 hghost events -o json | jq 'select(.kind == "event")'
 hghost events -w capture.jsonl -o json        # 只写文件，stdout 静默
 hghost events -w capture.jsonl --tee -o json  # 同时写文件与 stdout
@@ -120,6 +122,8 @@ hghost events -w capture.jsonl --tee -o json  # 同时写文件与 stdout
   省略表示全部。
 * `-i` 的 key 为 `roleID` / `role` / `contextID` / `pid`，语法为 `key=value[,value...]`。
   同一 key 的多个值取并集，不同 key 之间取交集；角色标签原样交给服务端。
+* `--batch` 为单条 gRPC 消息携带的事件数，默认 64，取值 1..256；值越大吞吐越高，
+  单条消息的延迟上界也越大。
 * `--duration` 为 `0` 表示直到中断。Ctrl-C、SIGTERM、`--duration` 到期和服务端正常
   结束流都以 `0` 退出；RPC 错误退出 `1`。
 * `-w, --write <path>` 把事件数据流写入文件，默认不再写 stdout；相对路径按当前工作

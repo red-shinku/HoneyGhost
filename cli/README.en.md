@@ -93,7 +93,7 @@ hghost status
 hghost status -o json
 ```
 
-Summarizes the number of supervised roles, exceptional/extra context counts, and the counts of the role, context, and process managers. Each section is independent: a failed section is not output in table mode and is `null` in JSON, the remaining sections are output as usual, and the whole command exits `1`.
+Summarizes the number of supervised roles, exceptional/extra context counts, the counts of the role, context, and process managers, and the runtime counts of the collector, semantic stage, engine, and CLI streams (RUNTIME STATS). Each section is independent: a failed section is not output in table mode and is `null` in JSON, the remaining sections are output as usual, and the whole command exits `1`.
 
 ### events
 
@@ -104,6 +104,7 @@ hghost events -i role=nginx:1.25 -i pid=1234   # filter by runtime information
 hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # commas inside labels are written as \,
 hghost events --duration 30s                   # stop automatically when time is up
+hghost events --batch 64                       # at most 64 events per message
 hghost events -o json | jq 'select(.kind == "event")'
 hghost events -w capture.jsonl -o json        # file only; stdout stays silent
 hghost events -w capture.jsonl --tee -o json  # write both the file and stdout
@@ -111,6 +112,7 @@ hghost events -w capture.jsonl --tee -o json  # write both the file and stdout
 
 * `-t` can be repeated or comma-separated, case-insensitive, with values `syscall` / `file` / `network` / `ipc`; omitting it means all.
 * The keys of `-i` are `roleID` / `role` / `contextID` / `pid`, with the syntax `key=value[,value...]`. Multiple values for the same key are unioned, different keys are intersected; role labels are passed to the server as-is.
+* `--batch` is the number of events carried by one gRPC message; default 64, range 1..256. Larger values raise throughput and the per-message latency bound.
 * `--duration` of `0` means until interrupted. Ctrl-C, SIGTERM, `--duration` expiry, and the server ending the stream normally all exit with `0`; RPC errors exit `1`.
 * `-w, --write <path>` writes the event data stream to a file and silences stdout by default; relative paths resolve against the current working directory, and `-` is not special. The file is created or truncated after dialing succeeds and before subscribing; parent directories are not created; a new file is created with mode `0600`, and an existing file keeps its permissions. An empty `-w` value is a usage error.
 * `--tee` must be used with `-w` and keeps the stdout output as well; using it alone is a usage error.

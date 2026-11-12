@@ -28,7 +28,7 @@ namespace {
 
 constexpr char kDefaultSocketPath[]                  = "/run/honeyghost/cli.sock";
 constexpr std::uint32_t kDefaultMaxConcurrentStreams = 64;
-constexpr std::uint32_t kDefaultQueueCapacity        = 1024;
+constexpr std::uint32_t kDefaultQueueCapacity        = 8192;
 constexpr std::chrono::milliseconds kDefaultDrainTimeout{10000};
 
 constexpr std::uint32_t kMinMaxConcurrentStreams = 1;
