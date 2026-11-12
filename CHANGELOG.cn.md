@@ -7,17 +7,16 @@
 
 ### Added
 
-- CLI 事件流改为批量 gRPC 消息：`hghost events --batch N`（默认 64，上限 256）；
-  单流 2.3 万事件突发由丢 1.4 万降为 0 丢。
-- `hghost status` 新增 RUNTIME STATS：ringbuf 预留失败、collector/semantic/engine
-  通道与 CLI 流的累计计数。
+- `hghost status` 新增 RUNTIME STATS：内核侧 ringbuf 失败计数、collector/semantic/engine
+  通道与 CLI 流的异常计数。
 
 ### Changed
 
-- CLI 事件流协议改为 `eventrecord` + `ReceiveEventBatch`，不兼容旧 CLI；
-  0.x 版本不承诺跨版本兼容。
+- CLI 事件流改为批量 gRPC 消息：
+  优化 CLIServer 的背压问题。目前全线承压约 30k+ 事件每秒。
+  可用 `hghost events --batch N`指定一批事件数量（默认 64，上限 256）。
+  不兼容旧 CLI。
 - CLI 每流队列默认容量由 1024 提高到 8192。
-- network 采集线在语义 consumer 落地前不再接线。
 
 ### Fixed
 

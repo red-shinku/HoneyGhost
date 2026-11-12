@@ -7,22 +7,19 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ### Added
 
-- The CLI event stream now uses batched gRPC messages: `hghost events --batch N`
-  (default 64, max 256). A 23k-event single-stream burst went from 14k dropped to 0.
-- `hghost status` now reports RUNTIME STATS: cumulative counters for ringbuf
-  reserve failures, collector/semantic/engine channels, and CLI streams.
+- `hghost status` adds RUNTIME STATS: kernel-side ringbuf failure counts, and exception counts for collector/semantic/engine channels and CLI streams.
 
 ### Changed
 
-- The CLI event-stream protocol now uses `eventrecord` + `ReceiveEventBatch`;
-  it is not compatible with older CLIs (0.x does not promise cross-version compatibility).
-- The default per-stream CLI queue capacity is raised from 1024 to 8192.
-- The network collector line is no longer wired until a semantic consumer exists.
+- The CLI event stream is changed to batched gRPC messages:
+  to optimize the backpressure problem of CLIServer. Currently the entire line is under pressure of about 30k+ events per second.
+  You can use `hghost events --batch N` to specify the number of events in a batch (default 64, upper limit 256).
+  Incompatible with the old CLI.
+- The default capacity of each CLI stream queue is increased from 1024 to 8192.
 
 ### Fixed
 
-- On EPOLLERR/HUP or a consume error, the collector now detaches the probe before
-  removing the line from epoll, preventing silent ringbuf loss.
+- When EPOLLERR/HUP occurs or a consumption error occurs, the collector first detaches the probe and then removes it from epoll, avoiding silent loss after ringbuf continues writing.
 
 ## [v0.1.1] - 2026-11-12
 
