@@ -5,6 +5,10 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
+None
+
+## [v0.1.1] - 2026-11-12
+
 ### Added
 
 - The CLI tool now supports writing the event stream to a file: `hghost events -w/--write <path>`. In this mode, terminal output is disabled by default; use `--tee` to retain it.

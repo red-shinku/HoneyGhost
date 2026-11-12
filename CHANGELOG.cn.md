@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+None
+
+## [v0.1.1] - 2026-11-12
+
 ### Added
 
 - CLI 工具支持将事件流写入文件：`hghost events -w/--write <path>`，此时默认关闭终端输出，可用 `--tee` 保留。 
