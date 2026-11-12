@@ -122,7 +122,7 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
         }
     }
 
-    RoleSnapshot role = role_of(self);
+    RoleSnapshot role = role_of(self, parent);
     out.event         = RuntimePackaging::pack(
         std::move(src), role.id, std::move(role.label), context_id_of(self));
     out.decision = decision;
@@ -131,10 +131,11 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
 void RuntimePipeline::handle_file(hng::file_semantic_data src, RuntimeDraft& out)
 {
     const hng::Process self{src.head.pid, src.head.pid_start_time};
+    const hng::Process parent{src.head.ppid, src.head.ppid_start_time};
 
     const ContextDeriveDecision decision = ctx_maintainer_->on_event(self);
 
-    RoleSnapshot role                    = role_of(self);
+    RoleSnapshot role                    = role_of(self, parent);
     out.event                            = RuntimePackaging::pack(
         std::move(src), role.id, std::move(role.label), context_id_of(self));
     out.decision = decision;
@@ -154,6 +155,19 @@ RuntimePipeline::RoleSnapshot RuntimePipeline::role_of(
         snapshot.label = role->roleLabel;
     }
     return snapshot;
+}
+
+RuntimePipeline::RoleSnapshot RuntimePipeline::role_of(
+    const hng::Process& p, const hng::Process& parent) const
+{
+    const RoleSnapshot own = role_of(p);
+    if (own.id != 0) {
+        return own;
+    }
+    if (parent.pid == 0 || parent.pid_start_time == 0 || parent == p) {
+        return {};
+    }
+    return role_of(parent);
 }
 
 uint32_t RuntimePipeline::context_id_of(const hng::Process& p) const

@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"syscall"
 	"time"
 
@@ -18,9 +18,11 @@ import (
 )
 
 type eventsOptions struct {
-	Types    []string
-	Info     []string
-	Duration time.Duration
+	Types     []string
+	Info      []string
+	Duration  time.Duration
+	WritePath string
+	Tee       bool
 }
 
 func newEventsCommand(app *App) *cobra.Command {
@@ -39,6 +41,12 @@ func newEventsCommand(app *App) *cobra.Command {
 			if opts.Duration < 0 {
 				return usageErrorf("--duration must not be negative: %s", opts.Duration)
 			}
+			if flag := cmd.Flags().Lookup("write"); flag != nil && flag.Changed && opts.WritePath == "" {
+				return usageErrorf("--write requires a non-empty file path")
+			}
+			if opts.Tee && opts.WritePath == "" {
+				return usageErrorf("--tee requires --write")
+			}
 			parsedTypes, err := selector.ParseTypes(opts.Types)
 			if err != nil {
 				return usageError{err}
@@ -51,13 +59,46 @@ func newEventsCommand(app *App) *cobra.Command {
 			runtimeSelector = parsedSelector
 			return nil
 		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			svcs, err := app.Services(cmd.Context())
 			if err != nil {
 				return app.wrapRuntime(err)
 			}
-			err = runEvents(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				app.renderer(), app.opts.Format, svcs.Events, runtimeSelector, types, opts.Duration)
+
+			// 文件在拨号成功后、订阅前创建/截断：连接失败不触碰目标文件。
+			var file *os.File
+			if opts.WritePath != "" {
+				file, err = openEventsFile(opts.WritePath)
+				if err != nil {
+					return app.wrapRuntime(err)
+				}
+				defer func() {
+					if closeErr := file.Close(); closeErr != nil && err == nil {
+						err = app.wrapRuntime(fmt.Errorf("close events file %q: %w", opts.WritePath, closeErr))
+					}
+				}()
+			}
+
+			var out io.Writer
+			if opts.WritePath == "" || opts.Tee {
+				out = cmd.OutOrStdout()
+			}
+			var fileWriter io.Writer
+			if file != nil {
+				fileWriter = file
+			}
+
+			err = runEvents(cmd.Context(), eventsRun{
+				Out:      out,
+				ErrOut:   cmd.ErrOrStderr(),
+				Renderer: app.renderer(),
+				Format:   app.opts.Format,
+				Service:  svcs.Events,
+				Selector: runtimeSelector,
+				Types:    types,
+				Duration: opts.Duration,
+				File:     fileWriter,
+			})
 			if cmd.Context().Err() != nil {
 				app.restoreSignals()
 			}
@@ -71,27 +112,63 @@ func newEventsCommand(app *App) *cobra.Command {
 		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid)")
 	cmd.Flags().DurationVar(&opts.Duration, "duration", 0,
 		"maximum stream duration; 0 means until interrupted")
+	cmd.Flags().StringVarP(&opts.WritePath, "write", "w", "",
+		"write the event stream to this file instead of stdout")
+	cmd.Flags().BoolVar(&opts.Tee, "tee", false,
+		"also write the event stream to stdout (requires --write)")
 	return cmd
 }
 
-func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
-	format render.Format, svc api.EventService, sel model.RuntimeSelector,
-	types []model.EventType, duration time.Duration) error {
-	ctx, cancel := streamContext(parent, duration)
+// openEventsFile 创建或截断事件数据文件。
+//
+// 新建文件权限为 0600；已存在的文件保留原权限。父目录不创建。
+func openEventsFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open events file %q: %w", path, err)
+	}
+	return file, nil
+}
+
+// eventsRun 是事件流命令的运行参数。
+type eventsRun struct {
+	Out      io.Writer // nil 表示不写 stdout
+	ErrOut   io.Writer
+	Renderer render.Renderer
+	Format   render.Format
+	Service  api.EventService
+	Selector model.RuntimeSelector
+	Types    []model.EventType
+	Duration time.Duration
+	File     io.Writer // nil 表示不落盘
+}
+
+// runEvents 订阅事件流，把每条记录渲染后写入 Out 与 File。
+//
+// EOF 与上下文取消/到期是正常结束。stdout 的 EPIPE 只在该目标之外没有其他可写
+// 目标时按正常结束处理；存在 File 时继续写文件。接收与文件写入错误原样返回。
+func runEvents(parent context.Context, run eventsRun) (err error) {
+	ctx, cancel := streamContext(parent, run.Duration)
 	defer cancel()
 
-	stream, err := svc.Subscribe(ctx, sel, types)
+	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
 
-	buffered := bufio.NewWriter(out)
+	sink := newRecordSink(run.Renderer, run.Out, run.File)
+	defer func() {
+		if closeErr := sink.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+
 	received := 0
 	dropped := uint64(0)
-	if format == render.FormatTable {
+	if run.Format == render.FormatTable {
 		defer func() {
-			fmt.Fprintf(errOut, "events: %d received, %d dropped\n", received, dropped)
+			fmt.Fprintf(run.ErrOut, "events: %d received, %d dropped\n", received, dropped)
 		}()
 	}
 
@@ -109,21 +186,15 @@ func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
 		if item.Stats != nil {
 			changed := item.Stats.DroppedEvents != dropped
 			dropped = item.Stats.DroppedEvents
-			if format == render.FormatJSON {
-				if err := r.StreamStats(buffered, *item.Stats); err != nil {
-					if isEPIPE(err) {
-						return nil
-					}
-					return err
-				}
-				if err := buffered.Flush(); err != nil {
-					if isEPIPE(err) {
-						return nil
-					}
+			if run.Format == render.FormatJSON {
+				if err := sink.Stats(*item.Stats); err != nil {
 					return err
 				}
 			} else if changed {
-				fmt.Fprintf(errOut, "dropped events: %d\n", dropped)
+				fmt.Fprintf(run.ErrOut, "dropped events: %d\n", dropped)
+			}
+			if !sink.Active() {
+				return nil
 			}
 			continue
 		}
@@ -131,17 +202,11 @@ func runEvents(parent context.Context, out, errOut io.Writer, r render.Renderer,
 		if item.Event == nil {
 			continue
 		}
-		if err := r.Event(buffered, *item.Event); err != nil {
-			if isEPIPE(err) {
-				return nil
-			}
+		if err := sink.Event(*item.Event); err != nil {
 			return err
 		}
-		if err := buffered.Flush(); err != nil {
-			if isEPIPE(err) {
-				return nil
-			}
-			return err
+		if !sink.Active() {
+			return nil
 		}
 		received++
 	}

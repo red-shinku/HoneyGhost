@@ -70,7 +70,8 @@ kernel probes ──► Collector ──► Semantic ──► RuntimeEngine ─
 - x86_64 Linux，内核 ≥ 5.8，提供 BTF（`/sys/kernel/btf/vmlinux`）且已挂载 tracefs。
   探针使用 ring buffer map（5.8 起提供），更低的内核会在启动预检时被拒绝，日志逐项
   给出未满足项。
-- root，或至少 `CAP_BPF` 与 `CAP_PERFMON`；加载探针和读取部分内核状态需要更高权限。
+- 启动时需 root，或 Docker README 列出的那组权能；加载探针、读其它用户的 `/proc/<pid>/exe`
+  需要更高权限。初始化完成后会清空全部权能。
 - C++ 构建：CMake ≥ 3.16、支持 C++17 的编译器（CLI 服务端需要 C++20）、`clang` 与
   `bpftool`、libbpf、protobuf、libsystemd（可选）、fmt 11 与 spdlog；启用 CLI 服务端时
   还需要 userver 3.x。
@@ -221,6 +222,7 @@ hghost context list -k excep,extra
 hghost process stats
 hghost events -i role=nginx:1.25 -i pid=1234
 hghost events --duration 30s -o json | jq 'select(.kind == "event")'
+hghost events -w capture.jsonl -o json
 ```
 
 完整命令参考、输出格式与退出码见 [`cli/README.md`](cli/README.md)。
@@ -231,11 +233,7 @@ hghost events --duration 30s -o json | jq 'select(.kind == "event")'
 镜像与 containerd 翻译进程镜像，然后把宿主机的 `/run/honeyghost`、D-Bus socket 与
 tracefs 挂载进代理容器。
 
-```sh
-sudo mkdir -p /run/honeyghost
-docker compose up
-bin/hghost --socket /run/honeyghost/cli.sock status
-```
+可在 releases 中获取部署包，其中包含 `docker-compose.yaml`、项目配置文件、自定义安全策略配置等。
 
 ### 获取镜像
 
@@ -250,9 +248,6 @@ docker pull fifseason/honeyghost-containerd-bridge:latest
 ```sh
 make image
 ```
-
-代理容器目前需要 `privileged: true`；最小权限集合仍在验证中。宿主机前提与已知限制
-见 Docker README。
 
 ## 测试
 

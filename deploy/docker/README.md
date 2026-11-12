@@ -23,6 +23,8 @@ docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 
 ```sh
 sudo mkdir -p /run/honeyghost
+# 仅启用 AppArmor 的宿主需要：载入代理容器的配置，见「权限」
+sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
 docker compose -f deploy/docker/docker-compose.yaml up -d
 
 # 宿主侧客户端（make go 产出 bin/hghost）
@@ -38,6 +40,8 @@ bin/hghost --socket /run/honeyghost/cli.sock <子命令>
 | tracefs（`/sys/kernel/tracing`） | tracepoint 的 id | 探针挂载失败 |
 | `/run/containerd/containerd.sock` | containerd 角色发现 | 桥接进程退出 |
 | `/run/dbus/system_bus_socket` | systemd 角色发现 | 代理连不上总线，发现源超时 |
+| AppArmor 宿主已载入 `hng-agent` 配置 | 放行 system bus 调用与快照读 exe | 未载入时容器起不来；用 `docker-default` 时总线调用与 exe 读取被拒 |
+| SELinux 宿主 | 无需配置；compose 已给桥接服务固定 `label=disable` | 桥接 socket 建不出来，代理落 `DEGRADED` |
 
 没有 containerd 或 systemd 的节点：在配置里关掉对应发现源，并从 compose 中删掉不需要的服务与挂载。
 
@@ -68,12 +72,71 @@ docker compose -f deploy/docker/docker-compose.yaml \
 
 ## 权限
 
-`privileged: true` 是当前确定可用的配置。要收紧，至少需要 `CAP_BPF`、`CAP_PERFMON`
-（加载探针与 `perf_event_open`）、`CAP_SYS_ADMIN`（部分挂载路径）、`CAP_SYS_RESOURCE`
-（memlock），待实测后替换。
+代理容器从 `cap_drop: ALL` 起步，只加四项：
+
+| 权能 | 用途 |
+| --- | --- |
+| `CAP_BPF` | 创建 map、加载探针 |
+| `CAP_PERFMON` | 加载 tracing 类程序、`perf_event_open` 挂载 |
+| `CAP_SYS_PTRACE` | 初始化快照读 `/proc/<pid>/exe`；非本进程 uid 的进程还须 AppArmor 放行 ptrace，见下 |
+| `CAP_SETPCAP` | 清空 bounding set，使权能无法经 execve 带回 |
+
+初始化结束、探针挂载与快照都完成之后，进程会主动清空全部权能。
+
+翻译进程只读写宿主 socket 与自建 socket，故 `cap_drop: ALL`。
+
+### AppArmor
+
+`docker-default` 拒掉代理依赖的两件事：向 system bus 的调用（`Hello`、`AddMatch`、
+`Subscribe`、`ListUnits`、`Properties.GetAll`），以及读宿主进程
+`/proc/<pid>/exe` 的 `ptrace`。
+
+`deploy/docker/apparmor/hng-agent` 以 `docker-default` 为基线，只额外放行这两组，分两段：
+
+| profile | 用在哪 | 比另一份多什么 |
+| --- | --- | --- |
+| `hng-agent` | 入口；compose 的 `security_opt` 引用它 | `ptrace (read)`（快照读 exe，不限对端）与 `change_profile -> hng-agent-steady` |
+| `hng-agent-steady` | 初始化完成后由进程自行切入（切换失败只记日志） | — |
+
+宿主须先载入（见「运行」）；profile 属线程私有，逐线程生效：
+
+```sh
+sudo apparmor_parser -r deploy/docker/apparmor/hng-agent
+```
+
+初始化完成后仍可能出现少量 `ptrace` 拒绝（`requested_mask="read"`、peer 为
+`unconfined`）：那是 libsystemd 取总线对端凭据时读 `/proc/<pid>/exe`，读不到时
+sd-bus 自行降级，不影响功能。
+
+### SELinux
+
+Docker 默认不做 SELinux 标注。`docker info` 中查看 `Security Options` 是否包含 `selinux`。  
+不管有没有，目前都不需要任何额外配置。  
+
+如果有，这里是对两个容器服务的影响：
+
+| 服务 | 进程域 | 结果 |
+| --- | --- | --- |
+| `agent` | `spc_t` | 不受影响：`pid: host` 的容器由引擎自行关掉标注（docker 追加 `label=disable`，podman 换成 `spc_t`） |
+| `containerd-bridge` | `container_t` | 写 `/run/honeyghost`、连 `containerd.sock` 均被拒，socket 建不出来，代理落 `DEGRADED` |
+
+compose 的桥接服务已固定 `security_opt: [label=disable]`，这种宿主上不用再改；
+无 SELinux 的宿主上该项无操作。
+
+`/run/honeyghost` 的标签不用动（`container_var_run_t` 即可），bind mount 也不用加
+`:z`：两端都不再受约束。
+
+代理容器本身是必然收不进 `container_t` 的：加载探针、读宿主进程 `exe`、发 system bus
+消息、读 tracefs。这时 selinux 要自定义最小策略代价太大。
+
+`spc_t` 只表示 SELinux 不施加约束，`cap_drop` 与初始化后的主动弃权仍然生效。
+
+---
 
 其余容器安全项保持默认：代理要写 `/run/honeyghost` 下的 socket，翻译进程要读宿主
-socket，两者都不适合只读根文件系统。
+socket，两者都不适合只读根文件系统。容器以 root 运行且不再带 `CAP_DAC_OVERRIDE`，
+`/run/honeyghost` 须存在且属 root——`sudo mkdir -p` 即如此，手工改成其它属主会让
+代理绑定 CLI socket 时报 `Permission denied`。
 
 ## 已知限制
 

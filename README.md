@@ -82,8 +82,9 @@ environment rules.
   (`/sys/kernel/btf/vmlinux`) and tracefs mounted. The probes use ring buffer
   maps (5.8+); older kernels are rejected at startup with the unmet requirement
   in the log.
-- Root, or at least `CAP_BPF` and `CAP_PERFMON`; loading probes and reading some
-  kernel state requires elevated privileges.
+- Root, or the capability set listed in the Docker README: loading probes and
+  reading `/proc/<pid>/exe` of other users' processes require elevated
+  privileges. The agent drops all capabilities once initialization completes.
 - For C++ builds: CMake ≥ 3.16, a C++17 compiler (C++20 for the CLI server),
   `clang` and `bpftool`, libbpf, protobuf, libsystemd (optional), fmt 11 and
   spdlog. userver 3.x is required when the CLI server is enabled.
@@ -246,6 +247,7 @@ hghost context list -k excep,extra
 hghost process stats
 hghost events -i role=nginx:1.25 -i pid=1234
 hghost events --duration 30s -o json | jq 'select(.kind == "event")'
+hghost events -w capture.jsonl -o json
 ```
 
 See [`cli/README.md`](cli/README.md) for the full command reference, output
@@ -255,11 +257,7 @@ formats and exit codes.
 
 A single-machine Docker Compose example is available at [`deploy/docker`](deploy/docker/README.md). It builds the agent image and the containerd translation process image, then mounts the host's `/run/honeyghost`, D-Bus socket, and tracefs into the agent container.
 
-```sh
-sudo mkdir -p /run/honeyghost
-docker compose up
-bin/hghost --socket /run/honeyghost/cli.sock status
-```
+Deployment packages are available in the releases, including `docker-compose.yaml`, project configuration files, custom security policy configurations, and more.
 
 ### Obtaining Images
 
@@ -274,10 +272,6 @@ From the project root directory:
 ```sh
 make image
 ```
-
-The agent container currently needs `privileged: true`; the minimum capability
-set is still being validated. The Docker README lists host prerequisites and
-known limitations.
 
 ## Testing
 

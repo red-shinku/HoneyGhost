@@ -14,6 +14,7 @@ cli=$root/bin/hghost
 socket=/tmp/honeyghost-cli-e2e.sock
 log=${TMPDIR:-/tmp}/hghost-cli-e2e-server.log
 err_file=${TMPDIR:-/tmp}/hghost-cli-e2e-stderr.txt
+events_file=${TMPDIR:-/tmp}/hghost-cli-e2e-events.jsonl
 
 [ -x "$server" ] || { echo "缺少 $server：先 make agent" >&2; exit 1; }
 [ -x "$cli" ] || { echo "缺少 $cli：先 make go-cli" >&2; exit 1; }
@@ -82,7 +83,7 @@ cleanup() {
         kill -TERM "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
-    rm -f "$socket" "$err_file"
+    rm -f "$socket" "$err_file" "$events_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -271,6 +272,21 @@ assert_contains "JSON 事件行" '"kind":"event"' "$out"
 assert_contains "JSON 文件事件" '"type":"file"' "$out"
 assert_not_contains "JSON 无系统调用事件" '"type":"syscall"' "$out"
 sleep 0.2
+
+run "events -w" 0 "$cli" --socket "$socket" events -t file -o json --duration 300ms -w "$events_file"
+assert_eq "events -w stdout" "" "$out"
+assert_contains "events -w 文件事件" '"kind":"event"' "$(cat "$events_file")"
+assert_contains "events -w 文件类型" '"type":"file"' "$(cat "$events_file")"
+assert_not_contains "events -w 无系统调用" '"type":"syscall"' "$(cat "$events_file")"
+sleep 0.2
+
+run "events -w --tee" 0 "$cli" --socket "$socket" events -t file -o json --duration 300ms -w "$events_file" --tee
+assert_contains "events --tee stdout" '"kind":"event"' "$out"
+assert_eq "events --tee 文件与 stdout 一致" "$out" "$(cat "$events_file")"
+sleep 0.2
+
+run "events --tee 无 -w" 2 "$cli" --socket "$socket" events --tee
+run "events -w 空路径" 2 "$cli" --socket "$socket" events -w ""
 
 if bash -o pipefail -c 'exec "$1" --socket "$2" events -o json 2>/dev/null | head -1 >/dev/null' \
     _ "$cli" "$socket"; then

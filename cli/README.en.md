@@ -105,11 +105,17 @@ hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # commas inside labels are written as \,
 hghost events --duration 30s                   # stop automatically when time is up
 hghost events -o json | jq 'select(.kind == "event")'
+hghost events -w capture.jsonl -o json        # file only; stdout stays silent
+hghost events -w capture.jsonl --tee -o json  # write both the file and stdout
 ```
 
 * `-t` can be repeated or comma-separated, case-insensitive, with values `syscall` / `file` / `network` / `ipc`; omitting it means all.
 * The keys of `-i` are `roleID` / `role` / `contextID` / `pid`, with the syntax `key=value[,value...]`. Multiple values for the same key are unioned, different keys are intersected; role labels are passed to the server as-is.
 * `--duration` of `0` means until interrupted. Ctrl-C, SIGTERM, `--duration` expiry, and the server ending the stream normally all exit with `0`; RPC errors exit `1`.
+* `-w, --write <path>` writes the event data stream to a file and silences stdout by default; relative paths resolve against the current working directory, and `-` is not special. The file is created or truncated after dialing succeeds and before subscribing; parent directories are not created; a new file is created with mode `0600`, and an existing file keeps its permissions. An empty `-w` value is a usage error.
+* `--tee` must be used with `-w` and keeps the stdout output as well; using it alone is a usage error.
+* The file format follows `-o`, and `--no-headers` applies to the file too. JSON `stats` belongs to the data stream and is written to the file; table dropped-count hints and the end summary go only to stderr.
+* With `--tee`, EPIPE on stdout (e.g. `| head`) stops only stdout, and the file keeps being written; without `--tee`, stdout is not a data target.
 * Table columns: `TYPE` `PID` `PPID` `ROLE` `CTX` `DETAIL`. `ROLE` prefers the label; when the label is empty but `roleID` is non-zero, it shows `#<id>`; `CTX` shows `-` when 0.
 * `DETAIL` is a human-readable summary, not a stable contract; scripts should parse JSON.
 * Events have no time column: the proto does not provide event occurrence time.
@@ -123,16 +129,17 @@ hghost events -o json | jq 'select(.kind == "event")'
 
 `payload.kind` values are `process` / `exec` / `credential` / `namespace` /
 `file_syscall` / `memory` / `network_syscall` / `kernel` / `file`, and `fields` holds the corresponding fields.
-When the server reports dropped counts, table mode writes to stderr when the count changes, and JSON mode writes a `stats` object; at the end of the stream, table mode outputs `events: N received, M dropped` to stderr.
+When the server reports dropped counts, table mode writes to stderr when the count changes, and JSON mode writes a `stats` object; at the end of the stream, table mode outputs `events: N received, M dropped` to stderr. These stderr diagnostics are not written to the `-w` file.
 
 ## Output and exit codes
 
 stdout carries only data; errors, hints, and dropped statistics are written to stderr. JSON uses snake_case field names; empty collections are `[]` in JSON. `which` still exits `0` when not found, and table mode prints a hint to stderr.
+When `events -w` is used, the file carries only the event data stream; errors, hints, and table diagnostics still go to stderr.
 
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Success, including empty lists, `which` not found, and event stream interrupted or expired |
-| `1` | Runtime failure: connection failure, RPC failure, target does not exist, output write failure |
+| `1` | Runtime failure: connection failure, RPC failure, target does not exist, output write failure, events file open/write/close failure |
 | `2` | Usage error: unknown command/flag, malformed argument, invalid enum value |
 | `130` | Interrupted by SIGINT/SIGTERM during a unary command |
 
