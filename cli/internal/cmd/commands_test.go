@@ -84,11 +84,19 @@ func (f fakeProcessService) Stats(ctx context.Context) (model.ProcessStats, erro
 type fakeEventService struct {
 	subscribe func(context.Context, model.RuntimeSelector,
 		[]model.EventType) (api.EventStream, error)
+	stats func(context.Context) (model.PipelineStats, error)
 }
 
 func (f fakeEventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
 	types []model.EventType, _ api.SubscribeOptions) (api.EventStream, error) {
 	return f.subscribe(ctx, sel, types)
+}
+
+func (f fakeEventService) Stats(ctx context.Context) (model.PipelineStats, error) {
+	if f.stats == nil {
+		return model.PipelineStats{}, nil
+	}
+	return f.stats(ctx)
 }
 
 type fakeEventStream struct {
@@ -705,6 +713,18 @@ func TestStatus(t *testing.T) {
 				return model.ProcessStats{PidReused: uint64Ptr(1)}, nil
 			},
 		},
+		Events: fakeEventService{
+			stats: func(context.Context) (model.PipelineStats, error) {
+				return model.PipelineStats{
+					Collector: []model.CollectorLineStats{{
+						Line: "syscall", Consumed: 5, ChannelDropped: 1, Attached: true,
+					}},
+					Semantic: &model.SemanticStats{ProcessedSyscall: 4},
+					Engine:   &model.EngineStats{PeakCLIStreams: 2},
+					CLI:      &model.CLIStreamStats{Active: 1, Peak: 2, Dropped: 3},
+				}, nil
+			},
+		},
 	}
 	out, _, err := executeWithServices(t, svcs, "status")
 	if err != nil {
@@ -716,7 +736,8 @@ func TestStatus(t *testing.T) {
 	for _, line := range []string{
 		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
-		"PROCESS STATS", "pid_reused",
+		"PROCESS STATS", "pid_reused", "RUNTIME STATS", "syscall",
+		"SEMANTIC", "ENGINE", "CLI STREAMS",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)
@@ -734,6 +755,7 @@ func TestStatus(t *testing.T) {
 		"\"role_stats\"",
 		"\"context_stats\"",
 		"\"process_stats\"",
+		"\"runtime_stats\"",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)

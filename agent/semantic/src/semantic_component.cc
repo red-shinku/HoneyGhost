@@ -45,6 +45,11 @@ hng::ComponentState SemanticComponent::state() const
     return impl_->aggregate.state();
 }
 
+hng::SemanticStats SemanticComponent::stats() const
+{
+    return impl_->aggregate.stats();
+}
+
 void SemanticComponent::run() { impl_->aggregate.run(); }
 
 void SemanticComponent::stop() { impl_->aggregate.stop(); }

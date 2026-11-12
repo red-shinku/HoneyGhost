@@ -21,6 +21,8 @@
 #include "agent/cli_server/src/cli_server.hpp"
 #include "agent/cli_server/src/cli_stream.hpp"
 #include "agent/cli_server/src/event_converter.hpp"
+#include "agent/cli_server/src/query_handlers.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 namespace {
 
@@ -73,6 +75,51 @@ bool WriteStats(CLIRuntimeService::ReceiveEventWriter& writer, uint64_t dropped)
     hng::clisv::ReceiveEventResponse msg;
     msg.mutable_stats()->set_dropped_events(dropped);
     return Write(writer, std::move(msg));
+}
+
+/// @brief 把流水线统计快照填进响应
+void FillPipelineStats(const hng::PipelineStats& stats,
+                       hng::clisv::pipeline_stats& out)
+{
+    for (const hng::CollectorLineStats& line : stats.collector) {
+        hng::clisv::collector_line_stats* item = out.add_collector();
+        item->set_line(line.line);
+        item->set_consumed(line.consumed);
+        item->set_consume_errors(line.consume_errors);
+        item->set_channel_dropped(line.channel_dropped);
+        item->set_channel_rejected(line.channel_rejected);
+        item->set_reserve_failures(line.reserve_failures);
+        item->set_attached(line.attached);
+        item->set_polling(line.polling);
+    }
+    if (stats.semantic) {
+        const hng::SemanticStats& source = *stats.semantic;
+        hng::clisv::semantic_stats* target = out.mutable_semantic();
+        target->set_processed_file(source.processed_file);
+        target->set_processed_syscall(source.processed_syscall);
+        target->set_raw_file_dropped(source.raw_file_dropped);
+        target->set_raw_file_rejected(source.raw_file_rejected);
+        target->set_raw_syscall_dropped(source.raw_syscall_dropped);
+        target->set_raw_syscall_rejected(source.raw_syscall_rejected);
+        target->set_out_file_dropped(source.out_file_dropped);
+        target->set_out_file_rejected(source.out_file_rejected);
+        target->set_out_syscall_dropped(source.out_syscall_dropped);
+        target->set_out_syscall_rejected(source.out_syscall_rejected);
+    }
+    if (stats.engine) {
+        const hng::PipelineEngineStats& source = *stats.engine;
+        hng::clisv::engine_stats* target       = out.mutable_engine();
+        target->set_unsettled_events(source.unsettled_events);
+        target->set_peak_cli_streams(source.peak_cli_streams);
+        target->set_queue_rejected(source.queue_rejected);
+        target->set_idle_waits(source.idle_waits);
+        target->set_syscall_dropped(source.syscall_dropped);
+        target->set_file_dropped(source.file_dropped);
+    }
+    hng::clisv::cli_stream_stats* cli = out.mutable_cli();
+    cli->set_active(stats.cli.active);
+    cli->set_peak(stats.cli.peak);
+    cli->set_dropped(stats.cli.dropped);
 }
 
 }  // namespace
@@ -186,4 +233,21 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
         return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
     }
     return grpc::Status::OK;
+}
+
+CLIRuntimeService::GetPipelineStatsResult
+CLIRuntimeService::GetPipelineStats(CallContext& context,
+                                    hng::clisv::GetPipelineStatsRequest&&)
+{
+    return hng::cli::ToResult<hng::clisv::GetPipelineStatsResponse>(
+        context.GetCallName(), [&](hng::clisv::GetPipelineStatsResponse& out) {
+            if (deps_.stats == nullptr) {
+                throw userver::ugrpc::server::ErrorWithStatus(
+                    grpc::StatusCode::FAILED_PRECONDITION,
+                    "GetPipelineStats: stats service is not installed");
+            }
+            hng::PipelineStats stats = deps_.stats->snapshot();
+            stats.cli                = manager_.stats();
+            FillPipelineStats(stats, *out.mutable_stats());
+        });
 }

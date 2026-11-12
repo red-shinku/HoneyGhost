@@ -89,6 +89,11 @@ CLIServer::CLIServer(const userver::components::ComponentConfig& config,
 
 CLIStreamManager& CLIServer::stream_manager() { return stream_manager_; }
 
+hng::CLIStreamStats CLIServer::stream_stats() const
+{
+    return stream_manager_.stats();
+}
+
 const CLIServerDeps& CLIServer::server_deps() const { return deps_; }
 
 void CLIServer::OnAllComponentsAreStopping()

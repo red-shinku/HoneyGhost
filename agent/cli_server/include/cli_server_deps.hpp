@@ -13,6 +13,10 @@ class ContextLookupService;
 class ProcessLookupService;
 class SubscriberRegService;
 
+namespace hng {
+class PipelineStatsService;
+}  // namespace hng
+
 /**
  * @brief CLIServer模块的全部外部依赖
  * @details 全部为裸指针；所指对象由装配方拥有，其存活期须覆盖整个服务
@@ -27,6 +31,8 @@ struct CLIServerDeps final {
     const ProcessLookupService* process = nullptr;
     /// 引擎订阅入口（写侧）
     SubscriberRegService* subs          = nullptr;
+    /// 流水线统计查询
+    const hng::PipelineStatsService* stats = nullptr;
 };
 
 #endif  // HNG_CLI_SERVER_DEPS_HPP_

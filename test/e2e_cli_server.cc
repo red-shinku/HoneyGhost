@@ -49,6 +49,7 @@
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
 #include "agent/runtime_engine/include/subscriber_reg_service.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 namespace {
 
@@ -284,6 +285,36 @@ class ProcessStub final : public ProcessLookupService {
     }
 };
 
+/// 替身统计源：返回固定值，供 GetPipelineStats 的字段映射断言
+class StatsStub final : public hng::PipelineStatsService {
+   public:
+    hng::PipelineStats snapshot() const override
+    {
+        hng::PipelineStats stats;
+        hng::CollectorLineStats line;
+        line.line             = "file";
+        line.consumed         = 10;
+        line.consume_errors   = 1;
+        line.channel_dropped  = 2;
+        line.channel_rejected = 3;
+        line.reserve_failures = 4;
+        line.attached         = true;
+        line.polling          = false;
+        stats.collector.push_back(line);
+
+        hng::SemanticStats semantic;
+        semantic.processed_file = 7;
+        semantic.raw_file_dropped = 2;
+        stats.semantic = semantic;
+
+        hng::PipelineEngineStats engine;
+        engine.peak_cli_streams = 5;
+        engine.syscall_dropped  = 6;
+        stats.engine             = engine;
+        return stats;
+    }
+};
+
 /// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件
 hng::RuntimeEvent MakeEvent(uint32_t seq)
 {
@@ -415,6 +446,7 @@ class FakeEngine final : public SubscriberRegService {
     RoleStub role;
     ContextStub context;
     ProcessStub process;
+    StatsStub stats;
     FakeEngine engine;
 
     CLIServerDeps deps;
@@ -422,6 +454,7 @@ class FakeEngine final : public SubscriberRegService {
     deps.context = &context;
     deps.process = &process;
     deps.subs    = &engine;
+    deps.stats   = &stats;
     InstallCliServerDeps(deps);
 
     userver::components::ComponentList list =
@@ -756,6 +789,37 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
     }
 }
 
+void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
+{
+    grpc::ClientContext context;
+    SetDeadline(context, std::chrono::seconds(5));
+    hng::clisv::GetPipelineStatsRequest request;
+    hng::clisv::GetPipelineStatsResponse response;
+    const grpc::Status status =
+        runtime.GetPipelineStats(&context, request, &response);
+    CHECK(status.ok() && response.has_stats(), "GetPipelineStats 应成功");
+    const hng::clisv::pipeline_stats& stats = response.stats();
+    CHECK(stats.collector_size() == 1, "collector 应有一条线");
+    CHECK(stats.collector(0).line() == "file" &&
+              stats.collector(0).consumed() == 10 &&
+              stats.collector(0).consume_errors() == 1 &&
+              stats.collector(0).channel_dropped() == 2 &&
+              stats.collector(0).channel_rejected() == 3 &&
+              stats.collector(0).reserve_failures() == 4 &&
+              stats.collector(0).attached() &&
+              !stats.collector(0).polling(),
+          "collector 字段应逐一映射");
+    CHECK(stats.has_semantic() && stats.semantic().processed_file() == 7 &&
+              stats.semantic().raw_file_dropped() == 2,
+          "semantic 字段应逐一映射");
+    CHECK(stats.has_engine() && stats.engine().peak_cli_streams() == 5 &&
+              stats.engine().syscall_dropped() == 6,
+          "engine 字段应逐一映射");
+    CHECK(stats.has_cli(), "cli 段应始终存在");
+    CHECK(stats.cli().active() == 0 && stats.cli().dropped() == 0,
+          "无活跃流时 cli 计数应为 0");
+}
+
 void run_stream_quota(hng::clisv::RuntimeService::Stub& runtime)
 {
     // 第一条流：占满唯一的配额槽
@@ -963,6 +1027,7 @@ int main()
 
     if (WaitForServer(*role)) {
         run_query_face(*role, *context_svc, *process_svc);
+        run_pipeline_stats(*runtime);
         run_stream_quota(*runtime);
         run_filter(*runtime);
         run_role_label_filter(*runtime);

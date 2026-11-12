@@ -354,7 +354,7 @@ add_executable(test_collector_aggregate
     ${HNG_SOURCE_DIR}/agent/collector/src/collector.cc)
 target_include_directories(test_collector_aggregate PRIVATE ${HNG_SOURCE_DIR})
 target_link_libraries(test_collector_aggregate PRIVATE
-    Threads::Threads hng_log)
+    Threads::Threads hng_log ${LIBBPF_LIB})
 target_compile_definitions(test_collector_aggregate
     PRIVATE HNG_LOG_TAG="collector")
 add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)

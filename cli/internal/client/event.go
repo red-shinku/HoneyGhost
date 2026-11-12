@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,68 @@ func (s *eventStream) Recv() (model.StreamItem, error) {
 
 func (s *eventStream) Close() error {
 	return s.stream.CloseSend()
+}
+
+// Stats 查询服务端流水线各段的累计计数。
+func (s eventService) Stats(ctx context.Context) (model.PipelineStats, error) {
+	response, err := s.c.events.GetPipelineStats(ctx, &clisv.GetPipelineStatsRequest{})
+	if err != nil {
+		return model.PipelineStats{}, statusError("GetPipelineStats", err)
+	}
+	return convertPipelineStats(response.GetStats()), nil
+}
+
+func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
+	if in == nil {
+		return model.PipelineStats{Collector: []model.CollectorLineStats{}}
+	}
+	out := model.PipelineStats{
+		Collector: make([]model.CollectorLineStats, 0, len(in.GetCollector())),
+	}
+	for _, line := range in.GetCollector() {
+		out.Collector = append(out.Collector, model.CollectorLineStats{
+			Line:            line.GetLine(),
+			Consumed:        line.GetConsumed(),
+			ConsumeErrors:   line.GetConsumeErrors(),
+			ChannelDropped:  line.GetChannelDropped(),
+			ChannelRejected: line.GetChannelRejected(),
+			ReserveFailures: line.GetReserveFailures(),
+			Attached:        line.GetAttached(),
+			Polling:         line.GetPolling(),
+		})
+	}
+	if semantic := in.GetSemantic(); semantic != nil {
+		out.Semantic = &model.SemanticStats{
+			ProcessedFile:      semantic.GetProcessedFile(),
+			ProcessedSyscall:   semantic.GetProcessedSyscall(),
+			RawFileDropped:     semantic.GetRawFileDropped(),
+			RawFileRejected:    semantic.GetRawFileRejected(),
+			RawSyscallDropped:  semantic.GetRawSyscallDropped(),
+			RawSyscallRejected: semantic.GetRawSyscallRejected(),
+			OutFileDropped:     semantic.GetOutFileDropped(),
+			OutFileRejected:    semantic.GetOutFileRejected(),
+			OutSyscallDropped:  semantic.GetOutSyscallDropped(),
+			OutSyscallRejected: semantic.GetOutSyscallRejected(),
+		}
+	}
+	if engine := in.GetEngine(); engine != nil {
+		out.Engine = &model.EngineStats{
+			UnsettledEvents: engine.GetUnsettledEvents(),
+			PeakCLIStreams:  engine.GetPeakCliStreams(),
+			QueueRejected:   engine.GetQueueRejected(),
+			IdleWaits:       engine.GetIdleWaits(),
+			SyscallDropped:  engine.GetSyscallDropped(),
+			FileDropped:     engine.GetFileDropped(),
+		}
+	}
+	if cli := in.GetCli(); cli != nil {
+		out.CLI = &model.CLIStreamStats{
+			Active:  cli.GetActive(),
+			Peak:    cli.GetPeak(),
+			Dropped: cli.GetDropped(),
+		}
+	}
+	return out
 }
 
 func toProtoEventType(eventType model.EventType) (clisv.EventType, error) {

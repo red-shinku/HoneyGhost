@@ -51,6 +51,7 @@ type ProcessService interface {
 type EventService interface {
 	Subscribe(ctx context.Context, sel model.RuntimeSelector,
 		types []model.EventType, opts SubscribeOptions) (EventStream, error)
+	Stats(ctx context.Context) (model.PipelineStats, error)
 }
 
 // EventStream 是一次订阅的消费端。Recv 在服务端正常结束流时返回 io.EOF。

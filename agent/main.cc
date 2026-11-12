@@ -273,6 +273,7 @@ int main(int argc, char** argv)
             deps.context = services.context;
             deps.process = services.process;
             deps.subs    = services.subscriber;
+            deps.stats   = services.stats;
             HNG_LOG_INFO("starting cli server on unix socket {}",
                          cli_config.unix_socket_path);
             RunCliServer(deps, cli_config);
