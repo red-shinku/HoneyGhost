@@ -42,8 +42,15 @@ hng::RuntimeInformation make_info(uint32_t pid, hng::EventType etype,
                                   uint32_t roleID, uint32_t contextID,
                                   hng::role_label_t roleLabel = {})
 {
-    return hng::RuntimeInformation{hng::Process{pid, pid * 10}, etype, roleID,
-                                   roleLabel, contextID};
+    hng::RuntimeInformation info;
+    info.process   = hng::Process{pid, pid * 10};
+    info.parent    = hng::Process{0, 0};
+    info.etype     = etype;
+    info.kind      = hng::EventKind::UNSPECIFIED;
+    info.roleID    = roleID;
+    info.roleLabel = roleLabel;
+    info.contextID = contextID;
+    return info;
 }
 
 struct Case {

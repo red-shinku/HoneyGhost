@@ -149,7 +149,7 @@ add_test(NAME test_agent_config COMMAND test_agent_config)
 set_tests_properties(test_agent_config PROPERTIES
     WORKING_DIRECTORY ${HNG_SOURCE_DIR})
 
-# 运行时信息过滤器（公共件，header-only；经 event_data 头传递需要 proto 生成物）
+# 运行时信息过滤器（实现在 hng_event_data；头文件传递需要 proto 生成物）
 add_executable(test_runtime_info_filter test_runtime_info_filter.cc)
 target_link_libraries(test_runtime_info_filter PRIVATE hng_event_data)
 add_test(NAME test_runtime_info_filter COMMAND test_runtime_info_filter)
