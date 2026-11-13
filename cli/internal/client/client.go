@@ -194,6 +194,13 @@ func (s eventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
 			Pid:       append([]uint32(nil), sel.PIDs...),
 		}
 	}
+	if opts.Expr != nil {
+		expr, err := toProtoFilter(opts.Expr)
+		if err != nil {
+			return nil, err
+		}
+		request.Expr = expr
+	}
 
 	stream, err := s.c.events.ReceiveEvent(ctx, request)
 	if err != nil {
