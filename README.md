@@ -246,6 +246,8 @@ hghost role which 1234
 hghost context list -k excep,extra
 hghost process stats
 hghost events -i role=nginx:1.25 -i pid=1234
+hghost events -e 'type=syscall and kind=exec'
+hghost events -e 'not role=systemd-journald'
 hghost events --batch 64
 hghost events --duration 30s -o json | jq 'select(.kind == "event")'
 hghost events -w capture.jsonl -o json

@@ -70,14 +70,14 @@ constexpr uint32_t kPidFile        = 2002;
 constexpr uint32_t kContextID      = 3;
 constexpr uint32_t kExtraContextID = 4;
 
-constexpr char kSocketPath[]   = "/tmp/honeyghost-cli-e2e.sock";
+constexpr char kSocketPath[]       = "/tmp/honeyghost-cli-e2e.sock";
 
 // ============================================================
 // 子进程：粗糙装配
 // ============================================================
 
 /// 静态配置：并发流上限配成 8，多流用例可同时订阅；配额用例再开第 9 条
-constexpr char kConfig[]       = R"(
+constexpr char kConfig[]           = R"(
 components_manager:
     coro_pool:
         stack_usage_monitor_enabled: false
@@ -303,19 +303,20 @@ class StatsStub final : public hng::PipelineStatsService {
         stats.collector.push_back(line);
 
         hng::SemanticStats semantic;
-        semantic.processed_file = 7;
+        semantic.processed_file   = 7;
         semantic.raw_file_dropped = 2;
-        stats.semantic = semantic;
+        stats.semantic            = semantic;
 
         hng::PipelineEngineStats engine;
         engine.peak_cli_streams = 5;
         engine.syscall_dropped  = 6;
-        stats.engine             = engine;
+        stats.engine            = engine;
         return stats;
     }
 };
 
 /// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件
+/// @note 父进程取固定值：文件事件为 kPidSyscall，系统调用事件为 1
 hng::RuntimeEvent MakeEvent(uint32_t seq)
 {
     const bool is_file = (seq % 2) != 0;
@@ -325,6 +326,14 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     event.runtimeInfo.process = hng::Process{pid, pid * 10};
     event.runtimeInfo.etype =
         is_file ? hng::EventType::FILE_EVENT : hng::EventType::SYSCALL_EVENT;
+    event.runtimeInfo.kind =
+        is_file ? hng::EventKind::FILE : hng::EventKind::PROCESS;
+    if (is_file) {
+        event.runtimeInfo.parent = hng::Process{kPidSyscall, kPidSyscall * 10};
+    }
+    else {
+        event.runtimeInfo.parent = hng::Process{1, 0};
+    }
     event.runtimeInfo.roleID    = kRoleID;
     event.runtimeInfo.roleLabel = kRoleLabel;
     event.runtimeInfo.contextID = kContextID;
@@ -416,7 +425,7 @@ class FakeEngine final : public SubscriberRegService {
     {
         // 每 16 ms 发一小批：平均速率不变，但批量协议能观察到多条记录的批
         constexpr int kBurst = 8;
-        uint32_t seq = 0;
+        uint32_t seq         = 0;
         while (!stopping_.load()) {
             {
                 const std::lock_guard lock(mu_);
@@ -528,8 +537,7 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         const grpc::Status status =
             role.GetProcessSet(&context, request, &response);
         CHECK(status.ok(), "GetProcessSet 应成功");
-        CHECK(response.root_pid() == kPidSyscall,
-              "root_pid 应来自 main_process");
+        CHECK(response.root_pid() == kPidSyscall, "root_pid 应来自 main_process");
         CHECK(response.has_pids(), "成员集非空时应设置 pids");
         CHECK(response.pids().pid_size() == 2, "成员集应有两条");
     }
@@ -555,8 +563,7 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         hng::clisv::RM_GetRolesRequest request;
         request.set_showoption(option);
         hng::clisv::RM_GetRolesResponse response;
-        const grpc::Status status =
-            role.GetRoles(&context, request, &response);
+        const grpc::Status status = role.GetRoles(&context, request, &response);
         CHECK(status.ok(), "GetRoles 应成功");
         CHECK(response.r_size() == 1 && response.r(0).roleid() == kRoleID &&
                   response.r(0).rolelabel() == kRoleLabel,
@@ -597,21 +604,19 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         hng::clisv::RM_GetStatsResponse response;
         const grpc::Status status = role.GetStats(&context, request, &response);
         CHECK(status.ok(), "RM_GetStats 应成功");
-        CHECK(response.rejected() == 1 && response.unknown_instance() == 2 &&
-                  response.owner_conflict() == 3 &&
-                  response.anchors_removed() == 4 &&
-                  response.cgroup_read_empty() == 5 &&
-                  response.queue_rejected() == 6 &&
-                  response.bind_deferred() == 7 &&
-                  response.bind_resolved() == 8 &&
-                  response.bind_rejected() == 9 &&
-                  response.bind_expired() == 10 &&
-                  response.bind_ignored() == 11 &&
-                  response.late_adopt_rejected() == 12 &&
-                  response.tombstone_depth() == 13 &&
-                  response.dead_member_rejected() == 14 &&
-                  response.dead_anchor_rejected() == 15,
-              "RM_GetStats 应映射全部字段");
+        CHECK(
+            response.rejected() == 1 && response.unknown_instance() == 2 &&
+                response.owner_conflict() == 3 &&
+                response.anchors_removed() == 4 &&
+                response.cgroup_read_empty() == 5 &&
+                response.queue_rejected() == 6 && response.bind_deferred() == 7 &&
+                response.bind_resolved() == 8 && response.bind_rejected() == 9 &&
+                response.bind_expired() == 10 && response.bind_ignored() == 11 &&
+                response.late_adopt_rejected() == 12 &&
+                response.tombstone_depth() == 13 &&
+                response.dead_member_rejected() == 14 &&
+                response.dead_anchor_rejected() == 15,
+            "RM_GetStats 应映射全部字段");
     }
 
     // RM_WhichRole：命中、未命中、参数非法
@@ -621,11 +626,10 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         hng::clisv::RM_WhichRoleRequest request;
         request.set_pid(kPidSyscall);
         hng::clisv::RM_WhichRoleResponse response;
-        const grpc::Status status =
-            role.WhichRole(&context, request, &response);
-        CHECK(status.ok() && response.has_roleid() &&
-                  response.roleid() == kRoleID,
-              "WhichRole 应命中替身角色");
+        const grpc::Status status = role.WhichRole(&context, request, &response);
+        CHECK(
+            status.ok() && response.has_roleid() && response.roleid() == kRoleID,
+            "WhichRole 应命中替身角色");
     }
     {
         grpc::ClientContext context;
@@ -633,8 +637,7 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         hng::clisv::RM_WhichRoleRequest request;
         request.set_pid(999999);
         hng::clisv::RM_WhichRoleResponse response;
-        const grpc::Status status =
-            role.WhichRole(&context, request, &response);
+        const grpc::Status status = role.WhichRole(&context, request, &response);
         CHECK(status.ok() && !response.has_roleid(),
               "未命中应成功且不设置 roleID");
     }
@@ -729,8 +732,7 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
                   response.bind_orphaned() == 19 &&
                   response.extra_orphaned() == 20 &&
                   response.parent_missing() == 21 &&
-                  response.late_register() == 22 &&
-                  response.late_bind() == 23 &&
+                  response.late_register() == 22 && response.late_bind() == 23 &&
                   response.duplicate_context() == 24 &&
                   response.ownership_conflict() == 25 &&
                   response.tombstone_hits() == 26 &&
@@ -783,9 +785,10 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
         hng::clisv::CM_WhichContextRequest request;
         request.set_pid(0);
         hng::clisv::CM_WhichContextResponse response;
-        CHECK(context_svc.WhichContext(&context, request, &response)
-                      .error_code() == grpc::StatusCode::INVALID_ARGUMENT,
-              "pid 为 0 应返回 INVALID_ARGUMENT");
+        CHECK(
+            context_svc.WhichContext(&context, request, &response).error_code() ==
+                grpc::StatusCode::INVALID_ARGUMENT,
+            "pid 为 0 应返回 INVALID_ARGUMENT");
     }
 }
 
@@ -806,8 +809,7 @@ void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
               stats.collector(0).channel_dropped() == 2 &&
               stats.collector(0).channel_rejected() == 3 &&
               stats.collector(0).reserve_failures() == 4 &&
-              stats.collector(0).attached() &&
-              !stats.collector(0).polling(),
+              stats.collector(0).attached() && !stats.collector(0).polling(),
           "collector 字段应逐一映射");
     CHECK(stats.has_semantic() && stats.semantic().processed_file() == 7 &&
               stats.semantic().raw_file_dropped() == 2,
@@ -913,16 +915,14 @@ void run_multi_stream(hng::clisv::RuntimeService::Stub& runtime)
     for (int message_index = 0; message_index < kMessages; ++message_index) {
         for (int stream = 0; stream < kStreams; ++stream) {
             hng::clisv::ReceiveEventResponse message;
-            CHECK(readers[stream]->Read(&message),
-                  "并发流应持续收到事件");
+            CHECK(readers[stream]->Read(&message), "并发流应持续收到事件");
             if (message.has_batch()) {
                 records[stream] += message.batch().records_size();
             }
         }
     }
     for (int stream = 0; stream < kStreams; ++stream) {
-        CHECK(records[stream] >= kMessages,
-              "每条并发流都应收到足够事件");
+        CHECK(records[stream] >= kMessages, "每条并发流都应收到足够事件");
     }
 
     for (std::size_t i = 0; i < readers.size(); ++i) {
@@ -963,6 +963,99 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     CHECK(!saw_other, "按事件类型过滤后不应收到其他类型");
 }
 
+/// @brief 按给定请求订阅，收集若干批中的全部事件记录
+/// @note 读完即取消；内容断言留给调用方
+std::vector<hng::clisv::eventrecord> CollectRecords(
+    hng::clisv::RuntimeService::Stub& runtime,
+    const hng::clisv::ReceiveEventRequest& request)
+{
+    grpc::ClientContext context;
+    SetDeadline(context, std::chrono::seconds(10));
+    auto reader = runtime.ReceiveEvent(&context, request);
+
+    std::vector<hng::clisv::eventrecord> records;
+    hng::clisv::ReceiveEventResponse message;
+    for (int batch = 0; batch < 5 && reader->Read(&message); ++batch) {
+        if (!message.has_batch()) {
+            continue;
+        }
+        for (const hng::clisv::eventrecord& record : message.batch().records()) {
+            records.push_back(record);
+        }
+    }
+    context.TryCancel();
+    (void)reader->Finish();
+    return records;
+}
+
+/// @brief -e 表达式：AND 原子取交、NOT 取反、非法表达式被拒绝
+void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
+{
+    // kind=file and pid=<file pid>：只应收到该进程的文件事件
+    {
+        hng::clisv::ReceiveEventRequest request;
+        auto* logic = request.mutable_expr()->mutable_logic();
+        logic->set_logic(hng::clisv::FILTER_LOGIC_AND);
+        auto* kind_atom = logic->add_operands()->mutable_atom();
+        kind_atom->set_field(hng::clisv::FILTER_FIELD_KIND);
+        kind_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+        kind_atom->add_numbers(
+            static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+        auto* pid_atom = logic->add_operands()->mutable_atom();
+        pid_atom->set_field(hng::clisv::FILTER_FIELD_PID);
+        pid_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+        pid_atom->add_numbers(kPidFile);
+
+        const std::vector<hng::clisv::eventrecord> records =
+            CollectRecords(runtime, request);
+        CHECK(!records.empty(), "kind=file and pid 应收到事件");
+        for (const hng::clisv::eventrecord& record : records) {
+            CHECK(record.event_case() == hng::clisv::eventrecord::kFileEv,
+                  "kind=file 应只收到文件事件");
+            CHECK(record.head().pid() == kPidFile, "pid 原子应只命中该进程");
+        }
+    }
+
+    // not kind=file：只应收到系统调用事件
+    {
+        hng::clisv::ReceiveEventRequest request;
+        auto* logic = request.mutable_expr()->mutable_logic();
+        logic->set_logic(hng::clisv::FILTER_LOGIC_NOT);
+        auto* atom = logic->add_operands()->mutable_atom();
+        atom->set_field(hng::clisv::FILTER_FIELD_KIND);
+        atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+        atom->add_numbers(static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+
+        const std::vector<hng::clisv::eventrecord> records =
+            CollectRecords(runtime, request);
+        CHECK(!records.empty(), "not kind=file 应收到事件");
+        for (const hng::clisv::eventrecord& record : records) {
+            CHECK(record.event_case() == hng::clisv::eventrecord::kSyscallEv,
+                  "not kind=file 应只收到系统调用事件");
+        }
+    }
+
+    // NOT 带两个操作数：服务端在占配额前拒绝
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::ReceiveEventRequest request;
+        auto* logic = request.mutable_expr()->mutable_logic();
+        logic->set_logic(hng::clisv::FILTER_LOGIC_NOT);
+        for (int i = 0; i < 2; ++i) {
+            auto* atom = logic->add_operands()->mutable_atom();
+            atom->set_field(hng::clisv::FILTER_FIELD_KIND);
+            atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+            atom->add_numbers(static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+        }
+        auto reader = runtime.ReceiveEvent(&context, request);
+        hng::clisv::ReceiveEventResponse message;
+        CHECK(!reader->Read(&message), "非法表达式不应收到事件");
+        CHECK(reader->Finish().error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+              "NOT 带两个操作数应返回 INVALID_ARGUMENT");
+    }
+}
+
 void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
 {
     // -i role=e2e：标签匹配；事件头的 roleLabel 也应被填上
@@ -991,7 +1084,7 @@ void run_batching(hng::clisv::RuntimeService::Stub& runtime)
         SetDeadline(context, std::chrono::seconds(10));
         hng::clisv::ReceiveEventRequest request;
         request.set_batch_size(8);
-        auto reader = runtime.ReceiveEvent(&context, request);
+        auto reader     = runtime.ReceiveEvent(&context, request);
 
         int batches     = 0;
         int records     = 0;
@@ -1004,8 +1097,8 @@ void run_batching(hng::clisv::RuntimeService::Stub& runtime)
             ++batches;
             const int size = message.batch().records_size();
             CHECK(size > 0, "事件批不应为空");
-            records += size;
-            max_records = std::max(max_records, size);
+            records     += size;
+            max_records  = std::max(max_records, size);
         }
         context.TryCancel();
         (void)reader->Finish();
@@ -1093,6 +1186,7 @@ int main()
         run_stream_quota(*runtime);
         run_multi_stream(*runtime);
         run_filter(*runtime);
+        run_expr_filter(*runtime);
         run_role_label_filter(*runtime);
         run_batching(*runtime);
 

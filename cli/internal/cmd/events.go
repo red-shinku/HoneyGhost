@@ -127,7 +127,8 @@ func newEventsCommand(app *App) *cobra.Command {
 	cmd.Flags().StringSliceVarP(&opts.Types, "type", "t", nil,
 		"event types: syscall, file, network, ipc (repeatable or comma-separated; default all)")
 	cmd.Flags().StringArrayVarP(&opts.Info, "info", "i", nil,
-		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid)")
+		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid; "+
+			"roleID/contextID accept 0 for unsettled, pid must be positive)")
 	cmd.Flags().StringArrayVarP(&opts.Expr, "expr", "e", nil,
 		"runtime filter expression with and/or/not, parentheses, and comparisons "+
 			"=, !=, ~= (keys: type, kind, pid, ppid, roleID, role, contextID; "+
