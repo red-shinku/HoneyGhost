@@ -177,8 +177,8 @@ type eventService struct {
 }
 
 func (s eventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
-	types []model.EventType) (api.EventStream, error) {
-	request := &clisv.ReceiveEventRequest{}
+	types []model.EventType, opts api.SubscribeOptions) (api.EventStream, error) {
+	request := &clisv.ReceiveEventRequest{BatchSize: opts.BatchSize}
 	for _, eventType := range types {
 		converted, err := toProtoEventType(eventType)
 		if err != nil {

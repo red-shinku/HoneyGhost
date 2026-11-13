@@ -5,6 +5,9 @@
 #include "agent/collector/src/collector.hpp"
 #include "agent/util/include/log.hpp"
 
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -39,6 +42,31 @@ const char* state_name(hng::ComponentState state) noexcept
 }
 
 }  // namespace
+
+namespace hng::detail {
+
+std::uint64_t ReadPercpuCounter(int fd) noexcept
+{
+    if (fd < 0) {
+        return 0;
+    }
+    const int cpus = ::libbpf_num_possible_cpus();
+    if (cpus <= 0) {
+        return 0;
+    }
+    std::vector<std::uint64_t> values(static_cast<std::size_t>(cpus), 0);
+    const std::uint32_t key = 0;
+    if (::bpf_map_lookup_elem(fd, &key, values.data()) != 0) {
+        return 0;
+    }
+    std::uint64_t total = 0;
+    for (const std::uint64_t value : values) {
+        total += value;
+    }
+    return total;
+}
+
+}  // namespace hng::detail
 
 Collector::Collector(std::vector<std::unique_ptr<CollectorType>> lines)
 {
@@ -149,6 +177,19 @@ std::vector<int> Collector::role_filter_map_fds() const
     return fds;
 }
 
+std::vector<hng::CollectorLineStats> Collector::stats() const
+{
+    std::vector<hng::CollectorLineStats> snapshot;
+    snapshot.reserve(lines_.size());
+    for (const auto& line : lines_) {
+        hng::CollectorLineStats stats = line->stats();
+        stats.reserve_failures =
+            hng::detail::ReadPercpuCounter(line->reserve_failures_fd());
+        snapshot.push_back(std::move(stats));
+    }
+    return snapshot;
+}
+
 void Collector::run()
 {
     hng::ComponentState expected = hng::ComponentState::READY;
@@ -203,6 +244,7 @@ void Collector::run()
         if (fd < 0) {
             HNG_LOG_WARN("collector line {} has no epoll fd; using {} ms polling",
                          i, kFallbackTimeoutMs);
+            lines_[i]->mark_polling();
             polled_lines.push_back(lines_[i].get());
             continue;
         }
@@ -218,6 +260,7 @@ void Collector::run()
             HNG_LOG_WARN(
                 "collector line {} epoll add failed: {}; using {} ms polling", i,
                 std::strerror(error), kFallbackTimeoutMs);
+            lines_[i]->mark_polling();
             polled_lines.push_back(lines_[i].get());
         }
     }
@@ -264,6 +307,7 @@ void Collector::run()
                 HNG_LOG_WARN(
                     "collector line epoll error (events 0x{:x}); detaching",
                     event_mask);
+                line->second->detach();
                 ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                 by_fd.erase(line);
                 continue;
@@ -272,6 +316,7 @@ void Collector::run()
             if (consumed < 0) {
                 HNG_LOG_ERROR("collector line consume failed: {}; detaching",
                               std::strerror(-consumed));
+                line->second->detach();
                 ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                 by_fd.erase(line);
             }

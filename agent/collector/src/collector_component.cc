@@ -75,6 +75,11 @@ std::vector<int> CollectorComponent::role_filter_map_fds() const
     return impl_->aggregate.role_filter_map_fds();
 }
 
+std::vector<hng::CollectorLineStats> CollectorComponent::stats() const
+{
+    return impl_->aggregate.stats();
+}
+
 hng::ComponentState CollectorComponent::state() const
 {
     return impl_->aggregate.state();

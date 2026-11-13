@@ -46,6 +46,11 @@ class CLIRuntimeService final : public hng::clisv::RuntimeServiceBase::Component
                                     hng::clisv::ReceiveEventRequest&& request,
                                     ReceiveEventWriter& writer) override;
 
+    /// 获取采集、语义、引擎与 CLI 流的累计计数快照。
+    GetPipelineStatsResult GetPipelineStats(
+        CallContext& context,
+        hng::clisv::GetPipelineStatsRequest&& request) override;
+
    private:
     /// 指向 CLIServer 持有的依赖集合，存活期覆盖本组件
     const CLIServerDeps& deps_;

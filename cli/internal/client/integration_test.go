@@ -163,18 +163,22 @@ func (s *streamingRuntimeServer) ReceiveEvent(req *clisv.ReceiveEventRequest,
 	stream grpc.ServerStreamingServer[clisv.ReceiveEventResponse]) error {
 	s.requests <- req
 	if err := stream.Send(&clisv.ReceiveEventResponse{
-		Head: testHead(),
-		Event: &clisv.ReceiveEventResponse_SyscallEv{SyscallEv: &clisv.SyscallEventData{
-			SData: &clisv.SyscallEventData_ExecData{ExecData: &hng.ExecSemanticData{
-				SemanticFilename: "/usr/sbin/nginx",
-				SyscallName:      "execve",
+		Payload: &clisv.ReceiveEventResponse_Batch{Batch: &clisv.ReceiveEventBatch{
+			Records: []*clisv.Eventrecord{{
+				Head: testHead(),
+				Event: &clisv.Eventrecord_SyscallEv{SyscallEv: &clisv.SyscallEventData{
+					SData: &clisv.SyscallEventData_ExecData{ExecData: &hng.ExecSemanticData{
+						SemanticFilename: "/usr/sbin/nginx",
+						SyscallName:      "execve",
+					}},
+				}},
 			}},
 		}},
 	}); err != nil {
 		return err
 	}
 	return stream.Send(&clisv.ReceiveEventResponse{
-		Event: &clisv.ReceiveEventResponse_Stats{Stats: &clisv.Streamstats{DroppedEvents: 3}},
+		Payload: &clisv.ReceiveEventResponse_Stats{Stats: &clisv.Streamstats{DroppedEvents: 3}},
 	})
 }
 
@@ -198,7 +202,8 @@ func TestIntegrationEventStream(t *testing.T) {
 		PIDs:       []uint32{1234},
 	}
 	stream, err := c.Services().Events.Subscribe(ctx, selector,
-		[]model.EventType{model.EventTypeFile, model.EventTypeSyscall})
+		[]model.EventType{model.EventTypeFile, model.EventTypeSyscall},
+		api.SubscribeOptions{BatchSize: 7})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -211,6 +216,9 @@ func TestIntegrationEventStream(t *testing.T) {
 	}
 	if !reflect.DeepEqual(req.Etype, wantTypes) {
 		t.Errorf("Etype = %v, want %v", req.Etype, wantTypes)
+	}
+	if req.BatchSize != 7 {
+		t.Errorf("BatchSize = %d, want 7", req.BatchSize)
 	}
 	if req.Info == nil {
 		t.Fatal("Info = nil, want selector")
@@ -268,7 +276,7 @@ func TestIntegrationEventRequestEmpty(t *testing.T) {
 	defer c.Close()
 
 	stream, err := c.Services().Events.Subscribe(context.Background(),
-		model.RuntimeSelector{}, nil)
+		model.RuntimeSelector{}, nil, api.SubscribeOptions{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -306,7 +314,8 @@ func TestIntegrationEventStreamCanceled(t *testing.T) {
 	defer c.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := c.Services().Events.Subscribe(ctx, model.RuntimeSelector{}, nil)
+	stream, err := c.Services().Events.Subscribe(ctx, model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}

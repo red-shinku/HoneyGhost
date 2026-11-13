@@ -7,12 +7,14 @@
 
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/event_channel.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
 #include "kernel/include/syscalls_type.h"
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -21,6 +23,9 @@ namespace hng::detail {
 struct FileCollectorState;
 struct SyscallCollectorState;
 struct NetworkCollectorState;
+
+/// @brief 读取单键 per-CPU u64 计数并求和；fd 无效或读取失败返回 0
+std::uint64_t ReadPercpuCounter(int fd) noexcept;
 }  // namespace hng::detail
 
 /**
@@ -82,6 +87,70 @@ class CollectorType {
      *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
      */
     virtual int role_filter_map_fd() const noexcept = 0;
+
+    /// @brief 线名，用于统计标签；返回静态字符串
+    virtual const char* name() const noexcept = 0;
+
+    /// @brief 本线的累计计数快照；可从任意线程调用
+    /// @note reserve_failures 由聚合层按本函数给出的 fd 读取后填入
+    virtual hng::CollectorLineStats stats() const = 0;
+
+    /// @brief 内核预留失败计数 map 的 fd；未准备时返回 -1
+    virtual int reserve_failures_fd() const noexcept = 0;
+
+    /// @brief 标记本线已退回超时轮询
+    void mark_polling() noexcept
+    {
+        polling_.store(true, std::memory_order_relaxed);
+    }
+
+    /// @brief 本线是否已退回超时轮询
+    bool polling() const noexcept
+    {
+        return polling_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief 记录探针挂载状态，供统计读取
+    void mark_attached(bool value) noexcept
+    {
+        attached_.store(value, std::memory_order_relaxed);
+    }
+
+    /// @brief 探针当前是否已挂载
+    bool attached() const noexcept
+    {
+        return attached_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief 累计从 ringbuf 搬出的记录数
+    void mark_consumed(std::uint64_t count = 1) noexcept
+    {
+        consumed_.fetch_add(count, std::memory_order_relaxed);
+    }
+
+    /// @brief 已搬出的记录数
+    std::uint64_t consumed() const noexcept
+    {
+        return consumed_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief 累计 ring_buffer 消费错误
+    void mark_consume_error() noexcept
+    {
+        consume_errors_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// @brief 消费错误次数
+    std::uint64_t consume_errors() const noexcept
+    {
+        return consume_errors_.load(std::memory_order_relaxed);
+    }
+
+   protected:
+    std::atomic<bool> polling_{false};
+    std::atomic<bool> attached_{false};
+    std::atomic<std::uint64_t> consumed_{0};
+    std::atomic<std::uint64_t> consume_errors_{0};
 };
 
 /**
@@ -131,6 +200,9 @@ class Collector final : public hng::Component {
      */
     std::vector<int> role_filter_map_fds() const;
 
+    /// @brief 各线累计计数快照；可从任意线程调用
+    std::vector<hng::CollectorLineStats> stats() const;
+
     /**
      * @brief 聚合线程入口：epoll 等待各线 ringbuf，逐线 consume。
      * @pre state() 为 READY；否则立即返回且不改变状态
@@ -168,6 +240,9 @@ class FileEventCollector : public CollectorType {
     int consume(std::size_t budget) override;
     int epoll_fd() const noexcept override;
     int role_filter_map_fd() const noexcept override;
+    const char* name() const noexcept override;
+    hng::CollectorLineStats stats() const override;
+    int reserve_failures_fd() const noexcept override;
 
    private:
     hng::EventChannelWriter<file_access_data>& file_sink;
@@ -189,6 +264,9 @@ class SyscallEventCollector : public CollectorType {
     int consume(std::size_t budget) override;
     int epoll_fd() const noexcept override;
     int role_filter_map_fd() const noexcept override;
+    const char* name() const noexcept override;
+    hng::CollectorLineStats stats() const override;
+    int reserve_failures_fd() const noexcept override;
 
    private:
     hng::EventChannelWriter<syscall_event>& syscall_sink;
@@ -210,6 +288,9 @@ class NetworkEventCollector : public CollectorType {
     int consume(std::size_t budget) override;
     int epoll_fd() const noexcept override;
     int role_filter_map_fd() const noexcept override;
+    const char* name() const noexcept override;
+    hng::CollectorLineStats stats() const override;
+    int reserve_failures_fd() const noexcept override;
 
    private:
     hng::EventChannelWriter<network_data>& network_sink;

@@ -84,6 +84,7 @@ std::size_t Semantic::drain_file(std::size_t budget)
         out_file_->push(std::move(out));
         ++processed;
     }
+    processed_file_.fetch_add(processed, std::memory_order_relaxed);
     return processed;
 }
 
@@ -104,6 +105,7 @@ std::size_t Semantic::drain_syscall(std::size_t budget)
         out_syscall_->push(std::move(out));
         ++processed;
     }
+    processed_syscall_.fetch_add(processed, std::memory_order_relaxed);
     return processed;
 }
 
@@ -220,4 +222,30 @@ void Semantic::stop()
 hng::ComponentState Semantic::state() const
 {
     return lifecycle_.load(std::memory_order_acquire);
+}
+
+hng::SemanticStats Semantic::stats() const
+{
+    hng::SemanticStats snapshot;
+    snapshot.processed_file =
+        processed_file_.load(std::memory_order_relaxed);
+    snapshot.processed_syscall =
+        processed_syscall_.load(std::memory_order_relaxed);
+    if (raw_file_ != nullptr) {
+        snapshot.raw_file_dropped  = raw_file_->dropped();
+        snapshot.raw_file_rejected = raw_file_->rejected();
+    }
+    if (raw_syscall_ != nullptr) {
+        snapshot.raw_syscall_dropped  = raw_syscall_->dropped();
+        snapshot.raw_syscall_rejected = raw_syscall_->rejected();
+    }
+    if (out_file_ != nullptr) {
+        snapshot.out_file_dropped  = out_file_->dropped();
+        snapshot.out_file_rejected = out_file_->rejected();
+    }
+    if (out_syscall_ != nullptr) {
+        snapshot.out_syscall_dropped  = out_syscall_->dropped();
+        snapshot.out_syscall_rejected = out_syscall_->rejected();
+    }
+    return snapshot;
 }

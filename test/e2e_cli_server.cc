@@ -15,6 +15,7 @@
  * @date 2026.10.18
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -48,6 +49,7 @@
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
 #include "agent/runtime_engine/include/subscriber_reg_service.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 namespace {
 
@@ -74,7 +76,7 @@ constexpr char kSocketPath[]   = "/tmp/honeyghost-cli-e2e.sock";
 // 子进程：粗糙装配
 // ============================================================
 
-/// 静态配置：并发流上限刻意配成 1，以便用第二个订阅流观察配额
+/// 静态配置：并发流上限配成 8，多流用例可同时订阅；配额用例再开第 9 条
 constexpr char kConfig[]       = R"(
 components_manager:
     coro_pool:
@@ -102,8 +104,8 @@ components_manager:
             service-defaults:
                 task-processor: cli-tp
         cli-server:
-            max-concurrent-streams: 1
-            queue-capacity: 16
+            max-concurrent-streams: 8
+            queue-capacity: 4096
             # 配得远大于停机等待的上限，使「活跃流不收敛」会表现为超时失败
             drain-timeout: 30s
         cli-role-service: {}
@@ -283,6 +285,36 @@ class ProcessStub final : public ProcessLookupService {
     }
 };
 
+/// 替身统计源：返回固定值，供 GetPipelineStats 的字段映射断言
+class StatsStub final : public hng::PipelineStatsService {
+   public:
+    hng::PipelineStats snapshot() const override
+    {
+        hng::PipelineStats stats;
+        hng::CollectorLineStats line;
+        line.line             = "file";
+        line.consumed         = 10;
+        line.consume_errors   = 1;
+        line.channel_dropped  = 2;
+        line.channel_rejected = 3;
+        line.reserve_failures = 4;
+        line.attached         = true;
+        line.polling          = false;
+        stats.collector.push_back(line);
+
+        hng::SemanticStats semantic;
+        semantic.processed_file = 7;
+        semantic.raw_file_dropped = 2;
+        stats.semantic = semantic;
+
+        hng::PipelineEngineStats engine;
+        engine.peak_cli_streams = 5;
+        engine.syscall_dropped  = 6;
+        stats.engine             = engine;
+        return stats;
+    }
+};
+
 /// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件
 hng::RuntimeEvent MakeEvent(uint32_t seq)
 {
@@ -382,18 +414,22 @@ class FakeEngine final : public SubscriberRegService {
 
     void Produce()
     {
+        // 每 16 ms 发一小批：平均速率不变，但批量协议能观察到多条记录的批
+        constexpr int kBurst = 8;
         uint32_t seq = 0;
         while (!stopping_.load()) {
-            const hng::RuntimeEvent event = MakeEvent(seq++);
             {
                 const std::lock_guard lock(mu_);
-                for (const Entry& entry : entries_) {
-                    if (entry.filter.should_take(event.runtimeInfo)) {
-                        entry.sink->on_event(event);
+                for (int i = 0; i < kBurst; ++i) {
+                    const hng::RuntimeEvent event = MakeEvent(seq++);
+                    for (const Entry& entry : entries_) {
+                        if (entry.filter.should_take(event.runtimeInfo)) {
+                            entry.sink->on_event(event);
+                        }
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }
 
@@ -410,6 +446,7 @@ class FakeEngine final : public SubscriberRegService {
     RoleStub role;
     ContextStub context;
     ProcessStub process;
+    StatsStub stats;
     FakeEngine engine;
 
     CLIServerDeps deps;
@@ -417,6 +454,7 @@ class FakeEngine final : public SubscriberRegService {
     deps.context = &context;
     deps.process = &process;
     deps.subs    = &engine;
+    deps.stats   = &stats;
     InstallCliServerDeps(deps);
 
     userver::components::ComponentList list =
@@ -751,49 +789,146 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
     }
 }
 
+void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
+{
+    grpc::ClientContext context;
+    SetDeadline(context, std::chrono::seconds(5));
+    hng::clisv::GetPipelineStatsRequest request;
+    hng::clisv::GetPipelineStatsResponse response;
+    const grpc::Status status =
+        runtime.GetPipelineStats(&context, request, &response);
+    CHECK(status.ok() && response.has_stats(), "GetPipelineStats 应成功");
+    const hng::clisv::pipeline_stats& stats = response.stats();
+    CHECK(stats.collector_size() == 1, "collector 应有一条线");
+    CHECK(stats.collector(0).line() == "file" &&
+              stats.collector(0).consumed() == 10 &&
+              stats.collector(0).consume_errors() == 1 &&
+              stats.collector(0).channel_dropped() == 2 &&
+              stats.collector(0).channel_rejected() == 3 &&
+              stats.collector(0).reserve_failures() == 4 &&
+              stats.collector(0).attached() &&
+              !stats.collector(0).polling(),
+          "collector 字段应逐一映射");
+    CHECK(stats.has_semantic() && stats.semantic().processed_file() == 7 &&
+              stats.semantic().raw_file_dropped() == 2,
+          "semantic 字段应逐一映射");
+    CHECK(stats.has_engine() && stats.engine().peak_cli_streams() == 5 &&
+              stats.engine().syscall_dropped() == 6,
+          "engine 字段应逐一映射");
+    CHECK(stats.has_cli(), "cli 段应始终存在");
+    CHECK(stats.cli().active() == 0 && stats.cli().dropped() == 0,
+          "无活跃流时 cli 计数应为 0");
+}
+
 void run_stream_quota(hng::clisv::RuntimeService::Stub& runtime)
 {
-    // 第一条流：占满唯一的配额槽
-    grpc::ClientContext first_context;
-    hng::clisv::ReceiveEventRequest first_request;
-    auto first = runtime.ReceiveEvent(&first_context, first_request);
+    // 占满 8 个配额槽；每流先读一条，确认订阅已落地
+    constexpr int kQuota = 8;
+    std::vector<std::unique_ptr<grpc::ClientContext>> contexts;
+    std::vector<
+        std::unique_ptr<grpc::ClientReader<hng::clisv::ReceiveEventResponse>>>
+        readers;
+    for (int i = 0; i < kQuota; ++i) {
+        auto context = std::make_unique<grpc::ClientContext>();
+        SetDeadline(*context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        auto reader = runtime.ReceiveEvent(context.get(), request);
+        hng::clisv::ReceiveEventResponse message;
+        CHECK(reader->Read(&message), "配额内的订阅流应收到事件");
+        CHECK(message.has_batch() && message.batch().records_size() > 0,
+              "事件应装在批里");
+        contexts.push_back(std::move(context));
+        readers.push_back(std::move(reader));
+    }
 
-    hng::clisv::ReceiveEventResponse message;
-    CHECK(first->Read(&message), "首个订阅流应收到事件");
-    CHECK(message.event_case() == hng::clisv::ReceiveEventResponse::kSyscallEv ||
-              message.event_case() == hng::clisv::ReceiveEventResponse::kFileEv,
-          "事件应带载荷");
-
-    // 第二条流：名额已满
+    // 第 9 条：名额已满
     {
-        grpc::ClientContext second_context;
-        SetDeadline(second_context, std::chrono::seconds(5));
-        hng::clisv::ReceiveEventRequest second_request;
-        auto second = runtime.ReceiveEvent(&second_context, second_request);
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::ReceiveEventRequest request;
+        auto reader = runtime.ReceiveEvent(&context, request);
         hng::clisv::ReceiveEventResponse unused;
-        (void)second->Read(&unused);
+        (void)reader->Read(&unused);
         CHECK(
-            second->Finish().error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
+            reader->Finish().error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
             "超额订阅应返回 RESOURCE_EXHAUSTED");
     }
 
     // 客户端断开：服务端应回收名额
-    first_context.TryCancel();
-    (void)first->Finish();
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        contexts[i]->TryCancel();
+        (void)readers[i]->Finish();
+    }
 
-    const bool accepted = WaitFor(
+    const bool released = WaitFor(
         [&runtime] {
             grpc::ClientContext context;
-            hng::clisv::ReceiveEventRequest request;
-            auto reader = runtime.ReceiveEvent(&context, request);
-            hng::clisv::ReceiveEventResponse event;
-            const bool got = reader->Read(&event);
-            context.TryCancel();
-            (void)reader->Finish();
-            return got;
+            SetDeadline(context, std::chrono::seconds(1));
+            hng::clisv::GetPipelineStatsRequest request;
+            hng::clisv::GetPipelineStatsResponse response;
+            if (!runtime.GetPipelineStats(&context, request, &response).ok() ||
+                !response.has_stats() || !response.stats().has_cli()) {
+                return false;
+            }
+            return response.stats().cli().active() == 0;
         },
         std::chrono::seconds(10));
-    CHECK(accepted, "断开后服务端应回收配额槽");
+    CHECK(released, "断开后服务端应回收全部配额槽");
+}
+
+/// @brief 4 条并发流各自收到事件；同时检查 CLI 流计数
+void run_multi_stream(hng::clisv::RuntimeService::Stub& runtime)
+{
+    constexpr int kStreams  = 4;
+    constexpr int kMessages = 10;
+    std::vector<std::unique_ptr<grpc::ClientContext>> contexts;
+    std::vector<
+        std::unique_ptr<grpc::ClientReader<hng::clisv::ReceiveEventResponse>>>
+        readers;
+    for (int i = 0; i < kStreams; ++i) {
+        auto context = std::make_unique<grpc::ClientContext>();
+        SetDeadline(*context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        request.set_batch_size(8);
+        readers.push_back(runtime.ReceiveEvent(context.get(), request));
+        contexts.push_back(std::move(context));
+    }
+
+    const bool all_active = WaitFor(
+        [&runtime] {
+            grpc::ClientContext context;
+            SetDeadline(context, std::chrono::seconds(1));
+            hng::clisv::GetPipelineStatsRequest request;
+            hng::clisv::GetPipelineStatsResponse response;
+            if (!runtime.GetPipelineStats(&context, request, &response).ok() ||
+                !response.has_stats() || !response.stats().has_cli()) {
+                return false;
+            }
+            return response.stats().cli().active() == kStreams;
+        },
+        std::chrono::seconds(5));
+    CHECK(all_active, "多流期间 active 应等于流数");
+
+    std::vector<int> records(kStreams, 0);
+    for (int message_index = 0; message_index < kMessages; ++message_index) {
+        for (int stream = 0; stream < kStreams; ++stream) {
+            hng::clisv::ReceiveEventResponse message;
+            CHECK(readers[stream]->Read(&message),
+                  "并发流应持续收到事件");
+            if (message.has_batch()) {
+                records[stream] += message.batch().records_size();
+            }
+        }
+    }
+    for (int stream = 0; stream < kStreams; ++stream) {
+        CHECK(records[stream] >= kMessages,
+              "每条并发流都应收到足够事件");
+    }
+
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        contexts[i]->TryCancel();
+        (void)readers[i]->Finish();
+    }
 }
 
 void run_filter(hng::clisv::RuntimeService::Stub& runtime)
@@ -809,11 +944,16 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     bool saw_other = false;
     hng::clisv::ReceiveEventResponse message;
     for (int i = 0; i < 5 && reader->Read(&message); ++i) {
-        if (message.event_case() == hng::clisv::ReceiveEventResponse::kFileEv) {
-            saw_file = true;
+        if (!message.has_batch()) {
+            continue;
         }
-        else {
-            saw_other = true;
+        for (const hng::clisv::eventrecord& record : message.batch().records()) {
+            if (record.event_case() == hng::clisv::eventrecord::kFileEv) {
+                saw_file = true;
+            }
+            else {
+                saw_other = true;
+            }
         }
     }
     context.TryCancel();
@@ -834,10 +974,66 @@ void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
 
     hng::clisv::ReceiveEventResponse message;
     CHECK(reader->Read(&message), "按角色标签过滤应收到事件");
-    CHECK(message.head().rolelabel() == kRoleLabel, "事件头应带角色标签");
+    CHECK(message.has_batch() && message.batch().records_size() > 0,
+          "事件应装在批里");
+    CHECK(message.batch().records(0).head().rolelabel() == kRoleLabel,
+          "事件头应带角色标签");
 
     context.TryCancel();
     (void)reader->Finish();
+}
+
+/// @brief 批大小：请求 8 时出现多条记录，请求 1 时每条消息一条记录
+void run_batching(hng::clisv::RuntimeService::Stub& runtime)
+{
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        request.set_batch_size(8);
+        auto reader = runtime.ReceiveEvent(&context, request);
+
+        int batches     = 0;
+        int records     = 0;
+        int max_records = 0;
+        hng::clisv::ReceiveEventResponse message;
+        while (batches < 10 && reader->Read(&message)) {
+            if (!message.has_batch()) {
+                continue;
+            }
+            ++batches;
+            const int size = message.batch().records_size();
+            CHECK(size > 0, "事件批不应为空");
+            records += size;
+            max_records = std::max(max_records, size);
+        }
+        context.TryCancel();
+        (void)reader->Finish();
+
+        CHECK(records >= 8, "批量订阅应收到足够事件");
+        CHECK(max_records > 1, "batch_size=8 时应出现多条记录的批");
+    }
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest request;
+        request.set_batch_size(1);
+        auto reader = runtime.ReceiveEvent(&context, request);
+
+        hng::clisv::ReceiveEventResponse message;
+        int batches = 0;
+        while (batches < 5 && reader->Read(&message)) {
+            if (!message.has_batch()) {
+                continue;
+            }
+            ++batches;
+            CHECK(message.batch().records_size() == 1,
+                  "batch_size=1 时每条消息应只有一条记录");
+        }
+        context.TryCancel();
+        (void)reader->Finish();
+        CHECK(batches == 5, "batch_size=1 时应能连续收到消息");
+    }
 }
 
 /// @brief 等子进程退出；超时返回 false
@@ -893,14 +1089,19 @@ int main()
 
     if (WaitForServer(*role)) {
         run_query_face(*role, *context_svc, *process_svc);
+        run_pipeline_stats(*runtime);
         run_stream_quota(*runtime);
+        run_multi_stream(*runtime);
         run_filter(*runtime);
         run_role_label_filter(*runtime);
+        run_batching(*runtime);
 
         hng::clisv::ReceiveEventRequest held_request;
         held = runtime->ReceiveEvent(&held_context, held_request);
         hng::clisv::ReceiveEventResponse event;
         CHECK(held->Read(&event), "停机前应能收到事件");
+        CHECK(event.has_batch() && event.batch().records_size() > 0,
+              "停机前的事件应装在批里");
     }
     else {
         CHECK(false, "服务端未在期限内就绪");

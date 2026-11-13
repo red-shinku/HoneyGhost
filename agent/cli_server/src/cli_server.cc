@@ -36,7 +36,7 @@ CLIServerDeps& InstalledDeps()
 constexpr std::chrono::milliseconds kDrainPollPeriod{10};
 
 constexpr std::size_t kDefaultMaxConcurrentStreams = 64;
-constexpr std::size_t kDefaultQueueCapacity        = 1024;
+constexpr std::size_t kDefaultQueueCapacity        = 8192;
 constexpr std::chrono::milliseconds kDefaultDrainTimeout{10000};
 
 }  // namespace
@@ -55,7 +55,7 @@ userver::yaml_config::Schema CLIServer::GetStaticConfigSchema()
             queue-capacity:
                 type: integer
                 description: 每流事件队列的目标容量，实际取不小于它的 2 的幂
-                defaultDescription: 1024
+                defaultDescription: 8192
             drain-timeout:
                 type: string
                 description: 停机时等待各订阅流结束的上界
@@ -88,6 +88,11 @@ CLIServer::CLIServer(const userver::components::ComponentConfig& config,
 }
 
 CLIStreamManager& CLIServer::stream_manager() { return stream_manager_; }
+
+hng::CLIStreamStats CLIServer::stream_stats() const
+{
+    return stream_manager_.stats();
+}
 
 const CLIServerDeps& CLIServer::server_deps() const { return deps_; }
 

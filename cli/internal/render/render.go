@@ -198,7 +198,79 @@ func (r tableRenderer) Status(w io.Writer, s model.Status) error {
 			return err
 		}
 	}
+	if s.RuntimeStats != nil {
+		open()
+		ew.println("RUNTIME STATS")
+		if err := writePipelineStats(w, *s.RuntimeStats); err != nil {
+			return err
+		}
+	}
 	return ew.err
+}
+
+// writePipelineStats 按采集、语义、引擎、CLI 四段输出累计计数。
+func writePipelineStats(w io.Writer, s model.PipelineStats) error {
+	if len(s.Collector) > 0 {
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  LINE	CONSUMED	DROP	REJECT	RESERVE	ERRORS	STATE")
+		for _, line := range s.Collector {
+			state := "attached"
+			if !line.Attached {
+				state = "detached"
+			}
+			if line.Polling {
+				state += "+polling"
+			}
+			fmt.Fprintf(tw, "  %s	%d	%d	%d	%d	%d	%s\n",
+				line.Line, line.Consumed, line.ChannelDropped,
+				line.ChannelRejected, line.ReserveFailures,
+				line.ConsumeErrors, state)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if s.Semantic != nil {
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  SEMANTIC")
+		fmt.Fprintf(tw, "    processed_file	%d\n", s.Semantic.ProcessedFile)
+		fmt.Fprintf(tw, "    processed_syscall	%d\n", s.Semantic.ProcessedSyscall)
+		fmt.Fprintf(tw, "    raw_file_dropped	%d\n", s.Semantic.RawFileDropped)
+		fmt.Fprintf(tw, "    raw_file_rejected	%d\n", s.Semantic.RawFileRejected)
+		fmt.Fprintf(tw, "    raw_syscall_dropped	%d\n", s.Semantic.RawSyscallDropped)
+		fmt.Fprintf(tw, "    raw_syscall_rejected	%d\n", s.Semantic.RawSyscallRejected)
+		fmt.Fprintf(tw, "    out_file_dropped	%d\n", s.Semantic.OutFileDropped)
+		fmt.Fprintf(tw, "    out_file_rejected	%d\n", s.Semantic.OutFileRejected)
+		fmt.Fprintf(tw, "    out_syscall_dropped	%d\n", s.Semantic.OutSyscallDropped)
+		fmt.Fprintf(tw, "    out_syscall_rejected	%d\n", s.Semantic.OutSyscallRejected)
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if s.Engine != nil {
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ENGINE")
+		fmt.Fprintf(tw, "    unsettled_events	%d\n", s.Engine.UnsettledEvents)
+		fmt.Fprintf(tw, "    peak_cli_streams	%d\n", s.Engine.PeakCLIStreams)
+		fmt.Fprintf(tw, "    queue_rejected	%d\n", s.Engine.QueueRejected)
+		fmt.Fprintf(tw, "    idle_waits	%d\n", s.Engine.IdleWaits)
+		fmt.Fprintf(tw, "    syscall_dropped	%d\n", s.Engine.SyscallDropped)
+		fmt.Fprintf(tw, "    file_dropped	%d\n", s.Engine.FileDropped)
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if s.CLI != nil {
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  CLI STREAMS")
+		fmt.Fprintf(tw, "    active	%d\n", s.CLI.Active)
+		fmt.Fprintf(tw, "    peak	%d\n", s.CLI.Peak)
+		fmt.Fprintf(tw, "    dropped	%d\n", s.CLI.Dropped)
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // events 表格的固定列宽：逐行输出时无法预知后续字段宽度，

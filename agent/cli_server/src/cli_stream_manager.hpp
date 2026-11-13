@@ -10,9 +10,12 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <vector>
+
+#include "agent/util/include/pipeline_stats.hpp"
 
 class CLIStream;
 
@@ -67,16 +70,21 @@ class CLIStreamManager final {
     /// @brief 当前占用的配额槽数
     std::size_t active_streams() const;
 
+    /// @brief 订阅流的累计计数快照；可从任意线程调用
+    hng::CLIStreamStats stats() const;
+
    private:
     /// @brief 释放一个配额槽；只由 StreamSlot 的析构调用
     void release_slot();
 
     /// 流表 streams_ 的锁。表只在建流 / 拆流 / 停机时变更，故用互斥量
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::vector<CLIStream*> streams_;
 
     const std::size_t max_streams_;
     std::atomic<std::size_t> active_{0};
+    std::atomic<std::size_t> peak_{0};
+    std::atomic<std::uint64_t> retired_dropped_{0};
     std::atomic<bool> shutting_down_{false};
 };
 

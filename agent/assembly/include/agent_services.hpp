@@ -15,6 +15,8 @@ class SubscriberRegService;
 
 namespace hng {
 
+class PipelineStatsService;
+
 /**
  * @brief 装配层运行期导出的服务接口
  * @details 只在 running() 期间有效，所指对象由装配层拥有，须在 stop() 前
@@ -29,6 +31,8 @@ struct AgentServices final {
     const ::ProcessLookupService* process = nullptr;
     /// 引擎订阅入口（写侧）
     ::SubscriberRegService* subscriber    = nullptr;
+    /// 流水线统计查询
+    const hng::PipelineStatsService* stats = nullptr;
 };
 
 }  // namespace hng

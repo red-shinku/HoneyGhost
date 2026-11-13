@@ -10,6 +10,12 @@ import (
 	"honeyghost/cli/internal/model"
 )
 
+// SubscribeOptions 是事件订阅的可选参数。
+type SubscribeOptions struct {
+	// BatchSize 是单条响应最多携带的事件数；0 表示由服务端取默认值。
+	BatchSize uint32
+}
+
 // Services 汇总四类服务。结构体而非接口，避免为每个服务再造一层包装。
 type Services struct {
 	Roles    RoleService
@@ -44,7 +50,8 @@ type ProcessService interface {
 // EventService 提供运行时事件订阅。
 type EventService interface {
 	Subscribe(ctx context.Context, sel model.RuntimeSelector,
-		types []model.EventType) (EventStream, error)
+		types []model.EventType, opts SubscribeOptions) (EventStream, error)
+	Stats(ctx context.Context) (model.PipelineStats, error)
 }
 
 // EventStream 是一次订阅的消费端。Recv 在服务端正常结束流时返回 io.EOF。

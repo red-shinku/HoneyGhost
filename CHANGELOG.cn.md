@@ -5,7 +5,23 @@
 
 ## [Unreleased]
 
-None
+### Added
+
+- `hghost status` 新增 RUNTIME STATS：内核侧 ringbuf 失败计数、collector/semantic/engine
+  通道与 CLI 流的异常计数。
+
+### Changed
+
+- CLI 事件流改为批量 gRPC 消息：
+  优化 CLIServer 的背压问题。目前全线承压约 30k+ 事件每秒。
+  可用 `hghost events --batch N`指定一批事件数量（默认 64，上限 256）。
+  不兼容旧 CLI。
+- CLI 每流队列默认容量由 1024 提高到 8192。
+
+### Fixed
+
+- collector 在 EPOLLERR/HUP 或消费错误时先摘探针再移出 epoll，避免 ringbuf
+  继续写入后静默丢失。
 
 ## [v0.1.1] - 2026-11-12
 

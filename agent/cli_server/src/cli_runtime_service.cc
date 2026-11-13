@@ -7,6 +7,7 @@
 
 #include "agent/cli_server/src/cli_runtime_service.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -20,8 +21,16 @@
 #include "agent/cli_server/src/cli_server.hpp"
 #include "agent/cli_server/src/cli_stream.hpp"
 #include "agent/cli_server/src/event_converter.hpp"
+#include "agent/cli_server/src/query_handlers.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 namespace {
+
+/// 请求未指定 batch_size 时每批携带的事件数
+constexpr std::uint32_t kDefaultBatchSize = 64;
+
+/// 单批事件数的上界，防止请求方指定过大的批
+constexpr std::uint32_t kMaxBatchSize = 256;
 
 /// @brief 作用域退出即拆除流：任何退出路径都不会漏掉注销与摘表
 class StreamGuard final {
@@ -51,12 +60,12 @@ bool Write(CLIRuntimeService::ReceiveEventWriter& writer,
     return true;
 }
 
-/// @brief 把一条事件写进订阅流；载荷被移出 event
-bool WriteEvent(CLIRuntimeService::ReceiveEventWriter& writer,
-                hng::RuntimeEvent& event)
+/// @brief 把一批事件写进订阅流；各事件载荷被移出
+bool WriteBatch(CLIRuntimeService::ReceiveEventWriter& writer,
+                hng::clisv::ReceiveEventBatch&& batch)
 {
     hng::clisv::ReceiveEventResponse msg;
-    hng::cli::ToProto(event, msg);
+    *msg.mutable_batch() = std::move(batch);
     return Write(writer, std::move(msg));
 }
 
@@ -66,6 +75,51 @@ bool WriteStats(CLIRuntimeService::ReceiveEventWriter& writer, uint64_t dropped)
     hng::clisv::ReceiveEventResponse msg;
     msg.mutable_stats()->set_dropped_events(dropped);
     return Write(writer, std::move(msg));
+}
+
+/// @brief 把流水线统计快照填进响应
+void FillPipelineStats(const hng::PipelineStats& stats,
+                       hng::clisv::pipeline_stats& out)
+{
+    for (const hng::CollectorLineStats& line : stats.collector) {
+        hng::clisv::collector_line_stats* item = out.add_collector();
+        item->set_line(line.line);
+        item->set_consumed(line.consumed);
+        item->set_consume_errors(line.consume_errors);
+        item->set_channel_dropped(line.channel_dropped);
+        item->set_channel_rejected(line.channel_rejected);
+        item->set_reserve_failures(line.reserve_failures);
+        item->set_attached(line.attached);
+        item->set_polling(line.polling);
+    }
+    if (stats.semantic) {
+        const hng::SemanticStats& source = *stats.semantic;
+        hng::clisv::semantic_stats* target = out.mutable_semantic();
+        target->set_processed_file(source.processed_file);
+        target->set_processed_syscall(source.processed_syscall);
+        target->set_raw_file_dropped(source.raw_file_dropped);
+        target->set_raw_file_rejected(source.raw_file_rejected);
+        target->set_raw_syscall_dropped(source.raw_syscall_dropped);
+        target->set_raw_syscall_rejected(source.raw_syscall_rejected);
+        target->set_out_file_dropped(source.out_file_dropped);
+        target->set_out_file_rejected(source.out_file_rejected);
+        target->set_out_syscall_dropped(source.out_syscall_dropped);
+        target->set_out_syscall_rejected(source.out_syscall_rejected);
+    }
+    if (stats.engine) {
+        const hng::PipelineEngineStats& source = *stats.engine;
+        hng::clisv::engine_stats* target       = out.mutable_engine();
+        target->set_unsettled_events(source.unsettled_events);
+        target->set_peak_cli_streams(source.peak_cli_streams);
+        target->set_queue_rejected(source.queue_rejected);
+        target->set_idle_waits(source.idle_waits);
+        target->set_syscall_dropped(source.syscall_dropped);
+        target->set_file_dropped(source.file_dropped);
+    }
+    hng::clisv::cli_stream_stats* cli = out.mutable_cli();
+    cli->set_active(stats.cli.active);
+    cli->set_peak(stats.cli.peak);
+    cli->set_dropped(stats.cli.dropped);
 }
 
 }  // namespace
@@ -135,10 +189,25 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
 
         std::size_t cursor = 0;  // 消费进度只属于本次消费
         uint64_t reported  = 0;
+        // 请求的 0 表示取默认值；上界只约束单条消息，不改变流的语义
+        const std::size_t batch_size =
+            request.batch_size() == 0
+                ? kDefaultBatchSize
+                : std::min<std::size_t>(request.batch_size(), kMaxBatchSize);
         for (;;) {
-            hng::RuntimeEvent event{};
-            if (stream.try_pop(event, cursor)) {
-                if (!WriteEvent(writer, event)) {
+            // 取到多少发多少：队列一空就发送部分批，低速率下不引入等待
+            hng::clisv::ReceiveEventBatch batch;
+            std::size_t taken = 0;
+            while (taken < batch_size) {
+                hng::RuntimeEvent event{};
+                if (!stream.try_pop(event, cursor)) {
+                    break;
+                }
+                hng::cli::ToProto(event, *batch.add_records());
+                ++taken;
+            }
+            if (taken != 0) {
+                if (!WriteBatch(writer, std::move(batch))) {
                     break;  // 客户端已断开
                 }
                 continue;
@@ -164,4 +233,21 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
         return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
     }
     return grpc::Status::OK;
+}
+
+CLIRuntimeService::GetPipelineStatsResult
+CLIRuntimeService::GetPipelineStats(CallContext& context,
+                                    hng::clisv::GetPipelineStatsRequest&&)
+{
+    return hng::cli::ToResult<hng::clisv::GetPipelineStatsResponse>(
+        context.GetCallName(), [&](hng::clisv::GetPipelineStatsResponse& out) {
+            if (deps_.stats == nullptr) {
+                throw userver::ugrpc::server::ErrorWithStatus(
+                    grpc::StatusCode::FAILED_PRECONDITION,
+                    "GetPipelineStats: stats service is not installed");
+            }
+            hng::PipelineStats stats = deps_.stats->snapshot();
+            stats.cli                = manager_.stats();
+            FillPipelineStats(stats, *out.mutable_stats());
+        });
 }

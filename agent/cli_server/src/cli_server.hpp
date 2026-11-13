@@ -39,6 +39,9 @@ class CLIServer final : public userver::components::ComponentBase {
     /// @note 服务组件在构造期取用；本组件的存活期覆盖全部服务组件
     CLIStreamManager& stream_manager();
 
+    /// @brief 订阅流累计计数快照；可从任意线程调用
+    hng::CLIStreamStats stream_stats() const;
+
     /// @return 每流事件队列的目标容量
     /// @note 实际容量会向上取整为 2 的幂
     std::size_t queue_capacity() const { return queue_capacity_; }

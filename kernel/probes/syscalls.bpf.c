@@ -32,6 +32,27 @@ struct {
 } syscall_events SEC(".maps");
 
 /**
+ * @brief ringbuf 预留失败计数；每 CPU 一个 u64，用户态按 CPU 求和
+ * @note 失败包括 ringbuf 满与 NMI 上下文拿不到锁，故名为 reserve_failures
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} reserve_failures SEC(".maps");
+
+/// @brief 记录一次 ringbuf 预留失败；只在失败分支调用
+static __always_inline void count_reserve_failure(void)
+{
+    __u32 key   = 0;
+    __u64 *lost = bpf_map_lookup_elem(&reserve_failures, &key);
+    if (lost) {
+        __sync_fetch_and_add(lost, 1);
+    }
+}
+
+/**
  * @name 各事件类型的初始化函数，分配 ringbuf 空间并初始化事件头。
  * 统一分配 sizeof(struct syscall_event)，通过 union 成员访问各事件字段。
  * @{
@@ -50,6 +71,7 @@ static __always_inline struct syscall_event *init_process_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -70,6 +92,7 @@ static __always_inline struct syscall_event *init_exec_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -95,6 +118,7 @@ static __always_inline struct syscall_event *init_credential_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -119,6 +143,7 @@ static __always_inline struct syscall_event *init_namespace_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -141,6 +166,7 @@ static __always_inline struct syscall_event *init_file_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -163,6 +189,7 @@ static __always_inline struct syscall_event *init_memory_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -185,6 +212,7 @@ static __always_inline struct syscall_event *init_network_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
@@ -208,6 +236,7 @@ static __always_inline struct syscall_event *init_kernel_event(
     struct syscall_event *event =
         bpf_ringbuf_reserve(&syscall_events, sizeof(struct syscall_event), 0);
     if (!event) {
+        count_reserve_failure();
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);

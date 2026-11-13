@@ -49,6 +49,27 @@ struct {
 } network_events SEC(".maps");
 
 /**
+ * @brief ringbuf 预留失败计数；每 CPU 一个 u64，用户态按 CPU 求和
+ * @note 失败包括 ringbuf 满与 NMI 上下文拿不到锁，故名为 reserve_failures
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} reserve_failures SEC(".maps");
+
+/// @brief 记录一次 ringbuf 预留失败；只在失败分支调用
+static __always_inline void count_reserve_failure(void)
+{
+    __u32 key   = 0;
+    __u64 *lost = bpf_map_lookup_elem(&reserve_failures, &key);
+    if (lost) {
+        __sync_fetch_and_add(lost, 1);
+    }
+}
+
+/**
  * @brief 网络事件数据结构的初始化函数
  * @return 初始化成功时返回 ringbuf 事件指针；角色被过滤或空间不足时返回 NULL。
  * @note 调用者须对返回的事件执行提交或丢弃，完成 ringbuf 资源处理。
@@ -59,6 +80,7 @@ static __always_inline struct network_data *init_network_data(void)
     struct network_data *data =
         bpf_ringbuf_reserve(&network_events, sizeof(struct network_data), 0);
     if (!data) {
+        count_reserve_failure();
         return NULL;
     }
     init_event_head(&data->head);
