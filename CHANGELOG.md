@@ -27,7 +27,7 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ### Fixed
 
-- When EPOLLERR/HUP occurs or a consumption error occurs, the collector first detaches the probe and then removes it from epoll, avoiding silent loss after ringbuf continues writing.
+- Role misdeletion caused by containerd-bridge failing to distinguish between containerd’s `TaskExit` events on `/tasks/exit`.
 
 ## [v0.1.1] - 2026-11-12
 
