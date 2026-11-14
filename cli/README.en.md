@@ -103,6 +103,11 @@ hghost events -t syscall,file                  # only system call and file event
 hghost events -i role=nginx:1.25 -i pid=1234   # filter by runtime information
 hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # commas inside labels are written as \,
+hghost events -e 'type=syscall and kind=exec'  # expression: exec-class system calls
+hghost events -e 'role=nginx or pid=1234'      # expression: a role or a pid
+hghost events -e 'not role=systemd-journald'   # expression: exclude one role
+hghost events -e 'role~=registry/example/'     # expression: role label prefix
+hghost events -i pid=1234 -e 'kind=exec'       # intersected with -i
 hghost events --duration 30s                   # stop automatically when time is up
 hghost events --batch 64                       # at most 64 events per message
 hghost events -o json | jq 'select(.kind == "event")'
@@ -111,7 +116,12 @@ hghost events -w capture.jsonl --tee -o json  # write both the file and stdout
 ```
 
 * `-t` can be repeated or comma-separated, case-insensitive, with values `syscall` / `file` / `network` / `ipc`; omitting it means all.
-* The keys of `-i` are `roleID` / `role` / `contextID` / `pid`, with the syntax `key=value[,value...]`. Multiple values for the same key are unioned, different keys are intersected; role labels are passed to the server as-is.
+* The keys of `-i` are `roleID` / `role` / `contextID` / `pid`, with the syntax `key=value[,value...]`. Multiple values for the same key are unioned, different keys are intersected; role labels are passed to the server as-is. `roleID` / `contextID` accept `0` (matching an unsettled role or context), while `pid` still rejects `0`.
+* `-e, --expr` is a boolean filter expression; it is repeatable, and repeated expressions intersect. An atom is written `key=value[,value...]`: `=` hits any of the values, `!=` hits none of them, and `~=` applies only to `role` and matches by prefix. `and` / `or` / `not` are interchangeable with `&&` / `||` / `!`; parentheses change precedence, and `not` binds tighter than `and`, which binds tighter than `or`.
+* The keys of `-e` are `type` / `kind` / `pid` / `ppid` / `roleID` / `role` / `contextID`, case-sensitive. Values of `type` (`syscall` / `file` / `network` / `ipc`) and `kind` (`process` / `exec` / `credential` / `namespace` / `file_syscall` / `memory` / `network_syscall` / `kernel` / `file`) are case-insensitive, while `role` labels are case-sensitive. `pid` must be greater than `0`; `ppid` / `roleID` / `contextID` accept `0`, where `0` for `roleID` / `contextID` means unsettled; under `not`, `0` and the empty label are still literal values.
+* `-e` intersects with `-i` / `-t`; an explicit `-t` and a `type` atom in `-e` are mutually exclusive, and mixing them is a usage error. The limits are 4096 bytes per expression, 128 nodes after merging, nesting depth 16, and 4096 values per atom; syntax errors and limit violations both exit `2` as usage errors.
+* Values containing whitespace, commas, or operators must be single- or double-quoted; inside a bare value a comma is written `\,` and other backslashes are kept literally; a quoted value uses a backslash to escape the next character.
+* With a new CLI and an old agent, the old server ignores `expr`: `-e` silently has no effect while `-i` / `-t` still work; `-e` requires the CLI and the agent to be the same version.
 * `--batch` is the number of events carried by one gRPC message; default 64, range 1..256. Larger values raise throughput and the per-message latency bound.
 * `--duration` of `0` means until interrupted. Ctrl-C, SIGTERM, `--duration` expiry, and the server ending the stream normally all exit with `0`; RPC errors exit `1`.
 * `-w, --write <path>` writes the event data stream to a file and silences stdout by default; relative paths resolve against the current working directory, and `-` is not special. The file is created or truncated after dialing succeeds and before subscribing; parent directories are not created; a new file is created with mode `0600`, and an existing file keeps its permissions. An empty `-w` value is a usage error.

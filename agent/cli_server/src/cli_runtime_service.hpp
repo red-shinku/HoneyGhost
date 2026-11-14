@@ -9,6 +9,8 @@
 #define HNG_CLI_RUNTIME_SERVICE_HPP
 
 #include <cstddef>
+#include <optional>
+#include <string>
 
 #include <proto/cli_service_service.usrv.pb.hpp>
 
@@ -18,12 +20,15 @@
 
 namespace hng::cli {
 
-/// @brief 把订阅请求的 -t / -i 转成过滤器
+/// @brief 把订阅请求的 -t / -i 与布尔表达式转成过滤器
 /// @param request 订阅请求；未设置的维度表示该维度不限
-/// @return 取值集合原样落进过滤器；服务端不做解析，故不存在解析失败
+/// @param error 调用开始时清空，失败时写入可读原因
+/// @return 成功时为过滤器：-t / -i 的取值集合与旧语义一致，表达式经校验后
+/// 与旧条件取交；表达式非法或超限时为 std::nullopt 并写 error
 /// @note roleID 与 roleLabel 同属角色维度，过滤时取并集
-RuntimeInfoFilter ToRuntimeInfoFilter(
-    const hng::clisv::ReceiveEventRequest& request);
+/// @note 上限：表达式节点 128 个、嵌套深度 16 层、单原子取值 4096 个
+std::optional<RuntimeInfoFilter> ToRuntimeInfoFilter(
+    const hng::clisv::ReceiveEventRequest& request, std::string& error);
 
 }  // namespace hng::cli
 
@@ -41,7 +46,9 @@ class CLIRuntimeService final : public hng::clisv::RuntimeServiceBase::Component
                       const userver::components::ComponentContext& context);
 
     /// 流式响应，传输被订阅的事件。处理过程是：
-    /// 尝试向 CLIStreamManager 申请一条流配额，成功后构造 CLIStream，并发起订阅。
+    /// 先把订阅参数转成过滤器，非法时返回 INVALID_ARGUMENT 且不占用配额；
+    /// 再尝试向 CLIStreamManager 申请一条流配额，成功后构造
+    /// CLIStream，并发起订阅。
     ReceiveEventResult ReceiveEvent(CallContext& context,
                                     hng::clisv::ReceiveEventRequest&& request,
                                     ReceiveEventWriter& writer) override;

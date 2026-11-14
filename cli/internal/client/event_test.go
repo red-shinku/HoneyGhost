@@ -1,9 +1,15 @@
 package client
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
+
+	"honeyghost/cli/internal/api"
 	"honeyghost/cli/internal/gen/hng"
 	"honeyghost/cli/internal/gen/hng/clisv"
 	"honeyghost/cli/internal/model"
@@ -285,5 +291,76 @@ func TestConvertUnknownPayload(t *testing.T) {
 	}
 	if _, err := convertSyscallPayload(&clisv.SyscallEventData{}); err == nil {
 		t.Error("expected an error for a missing syscall payload")
+	}
+}
+
+// fakeRuntimeClient 记录订阅请求，不建立真实流。
+type fakeRuntimeClient struct {
+	request *clisv.ReceiveEventRequest
+}
+
+func (f *fakeRuntimeClient) ReceiveEvent(_ context.Context, in *clisv.ReceiveEventRequest,
+	_ ...grpc.CallOption) (grpc.ServerStreamingClient[clisv.ReceiveEventResponse], error) {
+	f.request = in
+	return nil, nil
+}
+
+func (f *fakeRuntimeClient) GetPipelineStats(context.Context,
+	*clisv.GetPipelineStatsRequest,
+	...grpc.CallOption) (*clisv.GetPipelineStatsResponse, error) {
+	return &clisv.GetPipelineStatsResponse{}, nil
+}
+
+func TestSubscribeSendsExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	expr := &model.FilterExpr{Logic: model.FilterLogicNot, Kids: []model.FilterExpr{
+		{Atom: &model.FilterAtom{
+			Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
+			Kinds: []model.EventKind{model.EventKindExec},
+		}},
+	}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{BatchSize: 7, Expr: expr}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	want, err := toProtoFilter(expr)
+	if err != nil {
+		t.Fatalf("toProtoFilter: %v", err)
+	}
+	if !proto.Equal(fake.request.GetExpr(), want) {
+		t.Errorf("Expr = %v, want %v", fake.request.GetExpr(), want)
+	}
+	if fake.request.GetBatchSize() != 7 {
+		t.Errorf("BatchSize = %d, want 7", fake.request.GetBatchSize())
+	}
+}
+
+func TestSubscribeOmitsNilExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{BatchSize: 1}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if fake.request.GetExpr() != nil {
+		t.Errorf("Expr = %v, want nil", fake.request.GetExpr())
+	}
+}
+
+func TestSubscribeRejectsInvalidExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	expr := &model.FilterExpr{Atom: &model.FilterAtom{
+		Field: model.FilterField(99), Compare: model.FilterCompareEq,
+		Numbers: []uint32{1},
+	}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{Expr: expr}); err == nil ||
+		!strings.Contains(err.Error(), "unknown field") {
+		t.Errorf("error = %v, want an unknown field error", err)
+	}
+	if fake.request != nil {
+		t.Error("request was sent with an invalid expression")
 	}
 }

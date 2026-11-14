@@ -111,6 +111,11 @@ hghost events -t syscall,file                  # 只看系统调用与文件事�
 hghost events -i role=nginx:1.25 -i pid=1234   # 按运行时信息过滤
 hghost events -i roleID=7,8 -i contextID=3
 hghost events -i 'role=nginx\,1.25'            # 标签内的逗号写作 \,
+hghost events -e 'type=syscall and kind=exec'  # 表达式：执行类系统调用
+hghost events -e 'role=nginx or pid=1234'      # 表达式：角色或进程
+hghost events -e 'not role=systemd-journald'   # 表达式：排除某角色
+hghost events -e 'role~=registry/example/'     # 表达式：角色标签前缀
+hghost events -i pid=1234 -e 'kind=exec'       # 与 -i 取交
 hghost events --duration 30s                   # 到时间自动停止
 hghost events --batch 64                       # 每条消息最多携带 64 条事件
 hghost events -o json | jq 'select(.kind == "event")'
@@ -122,6 +127,25 @@ hghost events -w capture.jsonl --tee -o json  # 同时写文件与 stdout
   省略表示全部。
 * `-i` 的 key 为 `roleID` / `role` / `contextID` / `pid`，语法为 `key=value[,value...]`。
   同一 key 的多个值取并集，不同 key 之间取交集；角色标签原样交给服务端。
+  `roleID` / `contextID` 允许 `0`（字面匹配未落定），`pid` 仍拒绝 `0`。
+* `-e, --expr` 为布尔过滤表达式，可重复，重复的表达式取交。原子写作
+  `key=value[,value...]`；`=` 命中任一取值，`!=` 一个都不命中，`~=` 仅用于
+  `role` 且按前缀命中。`and` / `or` / `not` 可与 `&&` / `||` / `!` 互换，括号
+  改变优先级，`not` 高于 `and`、`and` 高于 `or`。
+* `-e` 的 key 为 `type` / `kind` / `pid` / `ppid` / `roleID` / `role` /
+  `contextID`，大小写敏感；`type`（`syscall` / `file` / `network` / `ipc`）与
+  `kind`（`process` / `exec` / `credential` / `namespace` / `file_syscall` /
+  `memory` / `network_syscall` / `kernel` / `file`）的取值大小写不敏感，
+  `role` 标签大小写敏感。`pid` 必须大于 `0`；`ppid` / `roleID` /
+  `contextID` 允许 `0`，其中 `roleID` / `contextID` 的 `0` 表示未落定；
+  `not` 之下的 `0` 与空标签仍是字面值。
+* `-e` 与 `-i` / `-t` 取交；显式 `-t` 与 `-e` 中的 `type` 原子互斥，混用是
+  用法错误。上限为单条 4096 字节、合并后 128 个节点、嵌套深度 16、单个原子 4096
+  个取值；语法错误与超限都按用法错误退出 `2`。
+* 值含空白、逗号或操作符时用单/双引号；bare 值里的逗号写作 `\,`，其余反斜杠
+  按字面保留；quoted 值用反斜杠转义下一个字符。
+* 新 CLI 配旧 agent 时旧服务端忽略 `expr`：`-e` 静默不生效，`-i` / `-t` 仍
+  生效；需要 `-e` 时 CLI 与 agent 必须同版本。
 * `--batch` 为单条 gRPC 消息携带的事件数，默认 64，取值 1..256；值越大吞吐越高，
   单条消息的延迟上界也越大。
 * `--duration` 为 `0` 表示直到中断。Ctrl-C、SIGTERM、`--duration` 到期和服务端正常

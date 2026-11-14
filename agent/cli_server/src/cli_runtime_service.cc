@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -27,10 +28,19 @@
 namespace {
 
 /// 请求未指定 batch_size 时每批携带的事件数
-constexpr std::uint32_t kDefaultBatchSize = 64;
+constexpr std::uint32_t kDefaultBatchSize  = 64;
 
 /// 单批事件数的上界，防止请求方指定过大的批
-constexpr std::uint32_t kMaxBatchSize = 256;
+constexpr std::uint32_t kMaxBatchSize      = 256;
+
+/// 表达式节点数的上限，与 CLI 侧一致
+constexpr std::size_t kMaxFilterNodes      = 128;
+
+/// 表达式嵌套深度的上限；请求中的根节点深度为 1
+constexpr std::size_t kMaxFilterDepth      = 16;
+
+/// 单个原子的取值个数上限
+constexpr std::size_t kMaxFilterAtomValues = 4096;
 
 /// @brief 作用域退出即拆除流：任何退出路径都不会漏掉注销与摘表
 class StreamGuard final {
@@ -93,7 +103,7 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         item->set_polling(line.polling);
     }
     if (stats.semantic) {
-        const hng::SemanticStats& source = *stats.semantic;
+        const hng::SemanticStats& source   = *stats.semantic;
         hng::clisv::semantic_stats* target = out.mutable_semantic();
         target->set_processed_file(source.processed_file);
         target->set_processed_syscall(source.processed_syscall);
@@ -122,11 +132,253 @@ void FillPipelineStats(const hng::PipelineStats& stats,
     cli->set_dropped(stats.cli.dropped);
 }
 
+/// @brief 表达式递归转换的节点预算
+struct ExprBudget {
+    std::size_t nodes = 0;
+};
+
+/// @brief 把 proto 的原子谓词转成 hng::FilterAtom，同时校验字段、比较方式与取值
+/// @return 合法时为原子；否则为 std::nullopt 并写 error
+std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
+                                            std::string& error)
+{
+    if (atom.field() == hng::clisv::FILTER_FIELD_UNSPECIFIED) {
+        error = "invalid filter expression: atom field is UNSPECIFIED";
+        return std::nullopt;
+    }
+    if (atom.compare() == hng::clisv::FILTER_COMPARE_UNSPECIFIED) {
+        error = "invalid filter expression: atom compare is UNSPECIFIED";
+        return std::nullopt;
+    }
+
+    hng::FilterAtom result{};
+    switch (atom.field()) {
+        case hng::clisv::FILTER_FIELD_TYPE:
+            result.field = hng::FilterField::TYPE;
+            break;
+        case hng::clisv::FILTER_FIELD_KIND:
+            result.field = hng::FilterField::KIND;
+            break;
+        case hng::clisv::FILTER_FIELD_PID:
+            result.field = hng::FilterField::PID;
+            break;
+        case hng::clisv::FILTER_FIELD_PPID:
+            result.field = hng::FilterField::PPID;
+            break;
+        case hng::clisv::FILTER_FIELD_ROLE_ID:
+            result.field = hng::FilterField::ROLE_ID;
+            break;
+        case hng::clisv::FILTER_FIELD_ROLE_LABEL:
+            result.field = hng::FilterField::ROLE_LABEL;
+            break;
+        case hng::clisv::FILTER_FIELD_CONTEXT_ID:
+            result.field = hng::FilterField::CONTEXT_ID;
+            break;
+        case hng::clisv::FILTER_FIELD_UNSPECIFIED:
+        default:
+            error = "invalid filter expression: unknown atom field";
+            return std::nullopt;
+    }
+
+    switch (atom.compare()) {
+        case hng::clisv::FILTER_COMPARE_EQ:
+            result.compare = hng::FilterCompare::EQ;
+            break;
+        case hng::clisv::FILTER_COMPARE_NE:
+            result.compare = hng::FilterCompare::NE;
+            break;
+        case hng::clisv::FILTER_COMPARE_PREFIX:
+            result.compare = hng::FilterCompare::PREFIX;
+            break;
+        case hng::clisv::FILTER_COMPARE_UNSPECIFIED:
+        default:
+            error = "invalid filter expression: unknown atom compare";
+            return std::nullopt;
+    }
+
+    if (result.field == hng::FilterField::ROLE_LABEL) {
+        if (atom.numbers_size() != 0) {
+            error =
+                "invalid filter expression: role label takes strings, not "
+                "numbers";
+            return std::nullopt;
+        }
+        if (atom.strings_size() == 0) {
+            error = "invalid filter expression: role label requires a value";
+            return std::nullopt;
+        }
+        if (static_cast<std::size_t>(atom.strings_size()) >
+            kMaxFilterAtomValues) {
+            error = "invalid filter expression: too many values in one atom";
+            return std::nullopt;
+        }
+        for (const std::string& value : atom.strings()) {
+            if (value.empty()) {
+                error = "invalid filter expression: role label value is empty";
+                return std::nullopt;
+            }
+        }
+        result.strings.assign(atom.strings().begin(), atom.strings().end());
+        return result;
+    }
+
+    if (result.compare == hng::FilterCompare::PREFIX) {
+        error = "invalid filter expression: PREFIX is only valid for role label";
+        return std::nullopt;
+    }
+    if (atom.strings_size() != 0) {
+        error =
+            "invalid filter expression: numeric field takes numbers, not strings";
+        return std::nullopt;
+    }
+    if (atom.numbers_size() == 0) {
+        error = "invalid filter expression: atom requires a value";
+        return std::nullopt;
+    }
+    if (static_cast<std::size_t>(atom.numbers_size()) > kMaxFilterAtomValues) {
+        error = "invalid filter expression: too many values in one atom";
+        return std::nullopt;
+    }
+
+    for (const uint32_t value : atom.numbers()) {
+        switch (result.field) {
+            case hng::FilterField::TYPE:
+                if (value > 3) {
+                    error = "invalid filter expression: type value " +
+                            std::to_string(value) + " is out of range 0..3";
+                    return std::nullopt;
+                }
+                break;
+            case hng::FilterField::KIND:
+                if (value < 1 || value > 9) {
+                    error = "invalid filter expression: kind value " +
+                            std::to_string(value) + " is out of range 1..9";
+                    return std::nullopt;
+                }
+                break;
+            case hng::FilterField::PID:
+                if (value == 0) {
+                    error = "invalid filter expression: pid must be non-zero";
+                    return std::nullopt;
+                }
+                break;
+            case hng::FilterField::PPID:
+            case hng::FilterField::ROLE_ID:
+            case hng::FilterField::CONTEXT_ID:
+            case hng::FilterField::ROLE_LABEL:
+                break;
+        }
+    }
+
+    result.numbers.assign(atom.numbers().begin(), atom.numbers().end());
+    return result;
+}
+
+std::optional<hng::FilterExpr> ToFilterExpr(const hng::clisv::filter_expr& node,
+                                            std::size_t depth, ExprBudget& budget,
+                                            std::string& error);
+
+/// @brief 转换 logic 节点：校验操作数个数后递归转换，再构造对应的表达式
+std::optional<hng::FilterExpr> ToFilterLogic(
+    const hng::clisv::filter_operands& node, std::size_t depth,
+    ExprBudget& budget, std::string& error)
+{
+    const hng::clisv::FilterLogic logic = node.logic();
+    switch (logic) {
+        case hng::clisv::FILTER_LOGIC_AND:
+        case hng::clisv::FILTER_LOGIC_OR:
+        case hng::clisv::FILTER_LOGIC_NOT:
+            break;
+        case hng::clisv::FILTER_LOGIC_UNSPECIFIED:
+            error = "invalid filter expression: logic is UNSPECIFIED";
+            return std::nullopt;
+        default:
+            error = "invalid filter expression: unknown logic";
+            return std::nullopt;
+    }
+
+    if (logic == hng::clisv::FILTER_LOGIC_NOT) {
+        if (node.operands_size() != 1) {
+            error = "invalid filter expression: NOT requires exactly one operand";
+            return std::nullopt;
+        }
+    }
+    else if (node.operands_size() == 0) {
+        error = "invalid filter expression: AND/OR requires at least one operand";
+        return std::nullopt;
+    }
+
+    if (static_cast<std::size_t>(node.operands_size()) > kMaxFilterNodes) {
+        error = "invalid filter expression: more than 128 nodes";
+        return std::nullopt;
+    }
+
+    std::vector<hng::FilterExpr> operands;
+    operands.reserve(static_cast<std::size_t>(node.operands_size()));
+    for (const hng::clisv::filter_expr& operand : node.operands()) {
+        std::optional<hng::FilterExpr> converted =
+            ToFilterExpr(operand, depth + 1, budget, error);
+        if (!converted.has_value()) {
+            return std::nullopt;
+        }
+        operands.push_back(std::move(*converted));
+    }
+
+    switch (logic) {
+        case hng::clisv::FILTER_LOGIC_AND:
+            return hng::FilterExpr::make_and(std::move(operands));
+        case hng::clisv::FILTER_LOGIC_OR:
+            return hng::FilterExpr::make_or(std::move(operands));
+        case hng::clisv::FILTER_LOGIC_NOT:
+            return hng::FilterExpr::make_not(std::move(operands.front()));
+        case hng::clisv::FILTER_LOGIC_UNSPECIFIED:
+        default:
+            break;
+    }
+    return std::nullopt;
+}
+
+/// @brief 递归转换一个 filter_expr 节点
+/// @param depth 本节点深度，请求中的根节点为 1
+/// @param budget 跨递归共享的节点计数
+/// @return 合法时为表达式；否则为 std::nullopt 并写 error
+std::optional<hng::FilterExpr> ToFilterExpr(const hng::clisv::filter_expr& node,
+                                            std::size_t depth, ExprBudget& budget,
+                                            std::string& error)
+{
+    if (depth > kMaxFilterDepth) {
+        error = "invalid filter expression: nesting depth exceeds 16";
+        return std::nullopt;
+    }
+    if (++budget.nodes > kMaxFilterNodes) {
+        error = "invalid filter expression: more than 128 nodes";
+        return std::nullopt;
+    }
+
+    switch (node.node_case()) {
+        case hng::clisv::filter_expr::kAtom: {
+            std::optional<hng::FilterAtom> atom =
+                ToFilterAtom(node.atom(), error);
+            if (!atom.has_value()) {
+                return std::nullopt;
+            }
+            return hng::FilterExpr::make_atom(std::move(*atom));
+        }
+        case hng::clisv::filter_expr::kLogic:
+            return ToFilterLogic(node.logic(), depth, budget, error);
+        case hng::clisv::filter_expr::NODE_NOT_SET:
+            break;
+    }
+    error = "invalid filter expression: node is not set";
+    return std::nullopt;
+}
+
 }  // namespace
 
-RuntimeInfoFilter hng::cli::ToRuntimeInfoFilter(
-    const hng::clisv::ReceiveEventRequest& request)
+std::optional<RuntimeInfoFilter> hng::cli::ToRuntimeInfoFilter(
+    const hng::clisv::ReceiveEventRequest& request, std::string& error)
 {
+    error.clear();
     RuntimeInfoFilter filter;
 
     std::vector<hng::EventType> etypes;
@@ -147,6 +399,16 @@ RuntimeInfoFilter hng::cli::ToRuntimeInfoFilter(
                                                  info.contextid().end()));
         filter.set_process(
             std::vector<uint32_t>(info.pid().begin(), info.pid().end()));
+    }
+
+    if (request.has_expr()) {
+        ExprBudget budget;
+        std::optional<hng::FilterExpr> expression =
+            ToFilterExpr(request.expr(), 1, budget, error);
+        if (!expression.has_value()) {
+            return std::nullopt;
+        }
+        filter.add_expression(std::move(*expression));
     }
     return filter;
 }
@@ -172,6 +434,13 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
     }
 
     try {
+        std::string filter_error;
+        std::optional<RuntimeInfoFilter> filter =
+            hng::cli::ToRuntimeInfoFilter(request, filter_error);
+        if (!filter.has_value()) {
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, filter_error);
+        }
+
         const std::optional<CLIStreamManager::StreamSlot> slot =
             manager_.acquire();
         if (!slot.has_value()) {
@@ -179,8 +448,8 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
                                 "ReceiveEvent: too many concurrent streams");
         }
 
-        CLIStream stream{manager_, *deps_.subs,
-                         hng::cli::ToRuntimeInfoFilter(request), queue_capacity_};
+        CLIStream stream{manager_, *deps_.subs, std::move(*filter),
+                         queue_capacity_};
         StreamGuard guard{stream};  // 确保任何退出路径都走 teardown()
         if (!stream.subscribe()) {
             return grpc::Status(grpc::StatusCode::UNAVAILABLE,
@@ -235,9 +504,8 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
     return grpc::Status::OK;
 }
 
-CLIRuntimeService::GetPipelineStatsResult
-CLIRuntimeService::GetPipelineStats(CallContext& context,
-                                    hng::clisv::GetPipelineStatsRequest&&)
+CLIRuntimeService::GetPipelineStatsResult CLIRuntimeService::GetPipelineStats(
+    CallContext& context, hng::clisv::GetPipelineStatsRequest&&)
 {
     return hng::cli::ToResult<hng::clisv::GetPipelineStatsResponse>(
         context.GetCallName(), [&](hng::clisv::GetPipelineStatsResponse& out) {

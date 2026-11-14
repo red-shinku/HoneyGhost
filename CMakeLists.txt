@@ -38,8 +38,12 @@ find_package(Protobuf REQUIRED)
 set(PROTO_GEN_DIR ${CMAKE_BINARY_DIR}/generated/event_data)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
-# 载荷由 proto 生成；手写 file_event.hpp / syscall_event.hpp 为 header-only
-add_library(hng_event_data STATIC)
+# 载荷由 proto 生成；手写的事件结构 file_event.hpp / syscall_event.hpp 为
+# header-only，订阅过滤器 filter_expr / runtime_info_filter 有实现源文件
+add_library(hng_event_data STATIC
+    agent/event_data/src/filter_expr.cc
+    agent/event_data/src/runtime_info_filter.cc
+)
 target_include_directories(hng_event_data PUBLIC
     ${PROTO_GEN_DIR}
     ${HNG_SOURCE_DIR}

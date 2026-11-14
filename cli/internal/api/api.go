@@ -14,6 +14,9 @@ import (
 type SubscribeOptions struct {
 	// BatchSize 是单条响应最多携带的事件数；0 表示由服务端取默认值。
 	BatchSize uint32
+
+	// Expr 是布尔过滤表达式，与 Selector、Types 取交；nil 表示不发送该字段。
+	Expr *model.FilterExpr
 }
 
 // Services 汇总四类服务。结构体而非接口，避免为每个服务再造一层包装。

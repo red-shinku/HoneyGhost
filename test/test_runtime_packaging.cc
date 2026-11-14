@@ -4,8 +4,11 @@
  * @details
  * 覆盖两条包装路径（纯转换，无 IO / 无特权）：
  *  - 进程身份取自事件头的 (pid, pid_start_time)，与 ppid 无关；
+ *  - 父进程身份取自事件头的 (ppid, ppid_start_time)，与主体进程互不影响；
  *  - 事件类型由载荷 variant 索引推出：syscall / file 两类分别落到
  *    SYSCALL_EVENT / FILE_EVENT，且与 syscall 内部的八种载荷无关；
+ *  - 语义子类型：syscall 流取内层载荷序号（PROCESS..KERNEL），file 流固定
+ *    为 FILE，内层载荷变化不影响 etype；
  *  - roleID / contextID 原样透传，0（未落定）不被改写、不视为异常；
  *  - 载荷被完整搬运：头部与内层载荷均可从产物中取回；
  *  - 源事件以右值传入时同样保留载荷。
@@ -43,13 +46,14 @@ hng::syscall_semantic_data make_syscall(uint32_t pid, uint64_t pid_start_time,
     return ev;
 }
 
-hng::file_semantic_data make_file(uint32_t pid, uint64_t pid_start_time)
+hng::file_semantic_data make_file(uint32_t pid, uint64_t pid_start_time,
+                                  uint32_t ppid = 0, uint64_t ppid_start_time = 0)
 {
     hng::file_semantic_data ev;
     ev.head.pid             = pid;
     ev.head.pid_start_time  = pid_start_time;
-    ev.head.ppid            = 0;
-    ev.head.ppid_start_time = 0;
+    ev.head.ppid            = ppid;
+    ev.head.ppid_start_time = ppid_start_time;
     ev.head.type            = hng::EventType::FILE_EVENT;
     return ev;
 }
@@ -154,6 +158,97 @@ void run_payload_carried_by_value()
     CHECK(proc_packed.syscall_name() == "exit_group", "系统调用名应被搬运");
 }
 
+void run_parent_from_head()
+{
+    hng::syscall_semantic_data src = make_syscall(1001, 555, 900, 111);
+    src.data.emplace<hng::process_semantic_data>();
+
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+
+    CHECK(event.runtimeInfo.parent.pid == 900, "父进程 pid 应取事件头的 ppid");
+    CHECK(event.runtimeInfo.parent.pid_start_time == 111,
+          "父进程 start_time 应取事件头的 ppid_start_time");
+    CHECK(event.runtimeInfo.process.pid == 1001 &&
+              event.runtimeInfo.process.pid_start_time == 555,
+          "父进程字段不应影响主体进程");
+}
+
+void run_file_parent_from_head()
+{
+    hng::file_semantic_data src   = make_file(2002, 888, 900, 111);
+
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+
+    CHECK(event.runtimeInfo.parent.pid == 900,
+          "文件事件的父进程 pid 应取事件头的 ppid");
+    CHECK(event.runtimeInfo.parent.pid_start_time == 111,
+          "文件事件的父进程 start_time 应取事件头的 ppid_start_time");
+    CHECK(event.runtimeInfo.kind == hng::EventKind::FILE,
+          "文件事件的语义子类型为 FILE");
+}
+
+/// @brief 打包一条只有一个内层载荷的 syscall 事件并核对 kind 与 etype
+void check_syscall_kind(const hng::syscall_semantic_data& src,
+                        hng::EventKind expected, const char* msg)
+{
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    CHECK(event.runtimeInfo.kind == expected, msg);
+    CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
+          "内层载荷变化不应影响 etype");
+}
+
+void run_syscall_event_kinds()
+{
+    hng::syscall_semantic_data src = make_syscall(9, 90, 1, 10);
+
+    src.data.emplace<hng::process_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::PROCESS,
+                       "第 1 个载荷应映射为 PROCESS");
+
+    src.data.emplace<hng::exec_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::EXEC, "第 2 个载荷应映射为 EXEC");
+
+    src.data.emplace<hng::credential_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::CREDENTIAL,
+                       "第 3 个载荷应映射为 CREDENTIAL");
+
+    src.data.emplace<hng::namespace_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::NAMESPACE,
+                       "第 4 个载荷应映射为 NAMESPACE");
+
+    src.data.emplace<hng::file_syscall_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::FILE_SYSCALL,
+                       "第 5 个载荷应映射为 FILE_SYSCALL");
+
+    src.data.emplace<hng::memory_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::MEMORY, "第 6 个载荷应映射为 MEMORY");
+
+    src.data.emplace<hng::network_syscall_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::NETWORK_SYSCALL,
+                       "第 7 个载荷应映射为 NETWORK_SYSCALL");
+
+    src.data.emplace<hng::kernel_semantic_data>();
+    check_syscall_kind(src, hng::EventKind::KERNEL, "第 8 个载荷应映射为 KERNEL");
+}
+
+void run_event_kind_values()
+{
+    CHECK(static_cast<uint8_t>(hng::EventKind::UNSPECIFIED) == 0,
+          "UNSPECIFIED 取 0");
+    CHECK(static_cast<uint8_t>(hng::EventKind::PROCESS) == 1, "PROCESS 取 1");
+    CHECK(static_cast<uint8_t>(hng::EventKind::EXEC) == 2, "EXEC 取 2");
+    CHECK(static_cast<uint8_t>(hng::EventKind::CREDENTIAL) == 3,
+          "CREDENTIAL 取 3");
+    CHECK(static_cast<uint8_t>(hng::EventKind::NAMESPACE) == 4, "NAMESPACE 取 4");
+    CHECK(static_cast<uint8_t>(hng::EventKind::FILE_SYSCALL) == 5,
+          "FILE_SYSCALL 取 5");
+    CHECK(static_cast<uint8_t>(hng::EventKind::MEMORY) == 6, "MEMORY 取 6");
+    CHECK(static_cast<uint8_t>(hng::EventKind::NETWORK_SYSCALL) == 7,
+          "NETWORK_SYSCALL 取 7");
+    CHECK(static_cast<uint8_t>(hng::EventKind::KERNEL) == 8, "KERNEL 取 8");
+    CHECK(static_cast<uint8_t>(hng::EventKind::FILE) == 9, "FILE 取 9");
+}
+
 }  // namespace
 
 int main()
@@ -161,6 +256,10 @@ int main()
     run_syscall_identity_and_type();
     run_file_identity_and_type();
     run_syscall_payload_kinds();
+    run_parent_from_head();
+    run_file_parent_from_head();
+    run_syscall_event_kinds();
+    run_event_kind_values();
     run_unsettled_ids();
     run_payload_carried_by_value();
 
