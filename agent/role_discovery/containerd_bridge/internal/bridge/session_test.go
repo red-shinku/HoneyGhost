@@ -160,10 +160,18 @@ func (f *fakeSource) pushUpsert(t *testing.T, namespace, id string, pid uint32) 
 		&apievents.TaskStart{ContainerID: id, Pid: pid})
 }
 
+// pushRemove 推送容器退出：init 任务的 ID 就是容器 ID
 func (f *fakeSource) pushRemove(t *testing.T, namespace, id string) {
 	t.Helper()
 	f.subscription(t, namespace).events <- envelope(t, namespace, source.TopicExit,
-		&apievents.TaskExit{ContainerID: id, Pid: 0})
+		&apievents.TaskExit{ID: id, ContainerID: id, Pid: 0})
+}
+
+// pushExecExit 推送容器内 exec 进程的退出：container_id 指向容器，任务 ID 不同
+func (f *fakeSource) pushExecExit(t *testing.T, namespace, containerID, execID string) {
+	t.Helper()
+	f.subscription(t, namespace).events <- envelope(t, namespace, source.TopicExit,
+		&apievents.TaskExit{ID: execID, ContainerID: containerID, Pid: 0})
 }
 
 func (f *fakeSource) failStream(t *testing.T, namespace string, err error) {
@@ -350,6 +358,30 @@ func TestSessionEmitsLiveEvents(t *testing.T) {
 		"UPSERT(c,k8s.io,live,pid=7)",
 		"REMOVE(a)",
 	)
+}
+
+// 容器内 exec 进程退出（健康检查、docker exec、k8s exec probe）与容器退出同走
+// /tasks/exit，但 exec 任务 ID 不等于容器 ID：不产出 REMOVE，后续事件仍按序输出
+func TestSessionIgnoresExecExit(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{Namespaces: []string{"k8s.io"}}, backend)
+	writer.waitFrames(t, 3)
+
+	backend.pushExecExit(t, "k8s.io", "a", "exec-7f3a")
+	backend.pushUpsert(t, "k8s.io", "c", 7)
+
+	frames := writer.waitFrames(t, 4)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"UPSERT(c,k8s.io,live,pid=7)",
+	)
+	for _, frame := range frames {
+		if strings.HasPrefix(frame, "REMOVE(") {
+			t.Fatalf("exec 退出不应产出 REMOVE: %v", frames)
+		}
+	}
 }
 
 // 枚举任一步失败即整段作废：不发 SnapshotEnd，C++ 侧不结算

@@ -67,13 +67,17 @@ func k8sContainer() source.Container {
 
 func TestDecodeTaskTopics(t *testing.T) {
 	cases := []struct {
-		name    string
-		payload any
-		kind    EventKind
+		name        string
+		payload     any
+		kind        EventKind
+		containerID string
 	}{
-		{"启动", &apievents.TaskStart{ContainerID: "c1", Pid: 42}, KindUpsert},
-		{"退出", &apievents.TaskExit{ContainerID: "c1", Pid: 42, ExitStatus: 137}, KindRemove},
-		{"OOM", &apievents.TaskOOM{ContainerID: "c1"}, KindOOM},
+		{"启动", &apievents.TaskStart{ContainerID: "c1", Pid: 42}, KindUpsert, "c1"},
+		// 容器 init 任务退出：任务 ID 就是容器 ID
+		{"容器退出", &apievents.TaskExit{ID: "c1", ContainerID: "c1", Pid: 42, ExitStatus: 137}, KindRemove, "c1"},
+		// 容器内 exec 任务退出：任务 ID 与容器 ID 不同
+		{"exec 退出", &apievents.TaskExit{ID: "exec-7f3a", ContainerID: "c1", Pid: 43, ExitStatus: 0}, KindExecExit, "c1"},
+		{"OOM", &apievents.TaskOOM{ContainerID: "c1"}, KindOOM, "c1"},
 	}
 	for _, c := range cases {
 		got, err := Decode(recorded(t, "k8s.io", source.TopicStart, c.payload))
@@ -82,6 +86,9 @@ func TestDecodeTaskTopics(t *testing.T) {
 		}
 		if got.Kind != c.kind {
 			t.Fatalf("%s: 类型=%v 期望=%v", c.name, got.Kind, c.kind)
+		}
+		if got.ContainerID != c.containerID {
+			t.Fatalf("%s: 容器 ID=%q 期望=%q", c.name, got.ContainerID, c.containerID)
 		}
 		if got.Namespace != "k8s.io" || got.TimestampNs != time.Unix(1700000000, 123).UnixNano() {
 			t.Fatalf("%s: 信封字段未透传: %+v", c.name, got)
@@ -189,6 +196,20 @@ func TestTranslateRemoveCarriesOnlyInstanceKey(t *testing.T) {
 	}
 	if containers.calls != 0 {
 		t.Fatal("退出不应回查元数据")
+	}
+}
+
+func TestTranslateExecExitProducesNothing(t *testing.T) {
+	// 容器内 exec 进程退出不代表容器角色退出：不产出观察量，也不回查元数据
+	containers := &fakeContainers{}
+	observation, err := New(containers).Translate(context.Background(), Decoded{
+		Kind: KindExecExit, Namespace: "k8s.io", ContainerID: "c1", Pid: 43,
+	})
+	if err != nil || observation != nil {
+		t.Fatalf("exec 退出不应产出观察量: %v %v", observation, err)
+	}
+	if containers.calls != 0 {
+		t.Fatal("exec 退出不应回查元数据")
 	}
 }
 
