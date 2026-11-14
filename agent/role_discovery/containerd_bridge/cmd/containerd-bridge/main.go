@@ -38,6 +38,8 @@ func main() {
 		"跟踪的 containerd namespace，逗号分隔")
 	flag.DurationVar(&cfg.NamespacePollInterval, "namespace-poll",
 		cfg.NamespacePollInterval, "重新核对 namespace 存在性的周期")
+	flag.DurationVar(&cfg.SnapshotInterval, "snapshot-interval",
+		cfg.SnapshotInterval, "周期快照间隔；0 表示关闭")
 	flag.DurationVar(&cfg.BackoffBase, "backoff-base", cfg.BackoffBase,
 		"重连退避的起始时长")
 	flag.DurationVar(&cfg.BackoffMax, "backoff-max", cfg.BackoffMax,
@@ -62,12 +64,18 @@ func main() {
 	cfg.Log = newLogger(*logLevel)
 	slog.SetDefault(cfg.Log)
 
+	if cfg.SnapshotInterval < 0 {
+		cfg.Log.Warn("negative snapshot interval; disabling periodic snapshots",
+			"value", cfg.SnapshotInterval)
+		cfg.SnapshotInterval = 0
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	started := []any{
 		"version", version, "containerd", cfg.Address, "socket", *socket,
-		"namespaces", cfg.Namespaces,
+		"namespaces", cfg.Namespaces, "snapshot_interval", cfg.SnapshotInterval,
 	}
 	if cfg.DockerSocket != "" {
 		started = append(started, "docker", cfg.DockerSocket,

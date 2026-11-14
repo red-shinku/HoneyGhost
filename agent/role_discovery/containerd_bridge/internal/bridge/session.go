@@ -7,6 +7,10 @@
 //   - 段内到达的流内事件不被消费（滞留在合并通道里），段全部收场后才放行，
 //     否则段内停止的角色会被读成加入，产出永不修正的幽灵角色。
 //
+// 建流快照之后，会话按 SnapshotInterval 周期重走快照段：周期段与建流段共用
+// 同一套结算；枚举失败的段照旧不结算，只由下一个完整段修正，不结束与 C++ 的
+// 连接。周期快照给「没断连但事件被丢」造成的漏角色或幽灵角色设上界。
+//
 // 本包不判断角色是否加入退出：那是 C++ 侧状态表的事。
 package bridge
 
@@ -53,6 +57,11 @@ type Config struct {
 	// 删掉 namespace 不会让该 namespace 上的事件流报错，只能主动核对。
 	NamespacePollInterval time.Duration
 
+	// SnapshotInterval 是周期快照的间隔，<=0 表示不做周期快照。
+	// 周期快照逐 namespace 成段，与建流快照共用同一套结算逻辑，用于修复流内
+	// 事件丢失造成的漏角色或幽灵角色。
+	SnapshotInterval time.Duration
+
 	// DockerSocket 是 Docker API 的 socket 路径；空表示不查询 Docker。
 	// 只有传统镜像存储（overlay2 graphdriver）的 Docker 才需要：它不把镜像
 	// 引用写进 containerd，容器角色标签会因此退化成容器 ID。
@@ -75,6 +84,7 @@ func DefaultConfig() Config {
 		MetadataAttempts:      3,
 		MetadataRetryDelay:    100 * time.Millisecond,
 		NamespacePollInterval: 30 * time.Second,
+		SnapshotInterval:      10 * time.Minute,
 		DockerNamespaces:      []string{"moby"},
 		Log:                   slog.Default(),
 	}
@@ -248,6 +258,39 @@ func (s *Session) snapshotSegment(
 		SnapshotEnd: &protocol.SnapshotEnd{Count: uint32(count)}}})
 }
 
+// snapshotAll 对全部受跟踪 namespace 各发一个周期快照段。
+//
+// 枚举失败只作废本段：C++ 侧不结算，下一个完整段修正，不结束与 C++ 的连接；
+// 写出失败表示连接已不可用，必须结束会话。
+func (s *Session) snapshotAll(
+	ctx context.Context, src source.Source, tr *translator.Translator,
+	streams *subscriptionSet,
+) error {
+	namespaces := streams.namespaces()
+	if len(namespaces) == 0 {
+		return nil
+	}
+
+	failed := 0
+	for _, namespace := range namespaces {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.snapshotSegment(ctx, src, tr, namespace); err != nil {
+			if errors.Is(err, ErrOutputClosed) {
+				return err
+			}
+			failed++
+		}
+	}
+	if failed == 0 {
+		s.voids = 0
+	}
+	s.log.Debug("periodic snapshot pass finished",
+		"namespaces", len(namespaces), "failed", failed)
+	return nil
+}
+
 // retireSegment 为一个已消失的 namespace 发零项段，清除其残留条目。
 func (s *Session) retireSegment(src source.Source, namespace string) error {
 	s.log.Info("namespace disappeared; sending an empty segment to clear its entries", "namespace", namespace)
@@ -270,6 +313,14 @@ func (s *Session) pump(
 ) error {
 	poll := time.NewTicker(s.cfg.NamespacePollInterval)
 	defer poll.Stop()
+
+	// 关掉周期快照时保持 nil：select 对 nil 通道永不就绪
+	var snapshots <-chan time.Time
+	if s.cfg.SnapshotInterval > 0 {
+		ticker := time.NewTicker(s.cfg.SnapshotInterval)
+		defer ticker.Stop()
+		snapshots = ticker.C
+	}
 
 	for {
 		select {
@@ -301,6 +352,11 @@ func (s *Session) pump(
 
 		case <-poll.C:
 			if err := s.reconcileNamespaces(ctx, src, tr, streams); err != nil {
+				return err
+			}
+
+		case <-snapshots:
+			if err := s.snapshotAll(ctx, src, tr, streams); err != nil {
 				return err
 			}
 		}

@@ -25,19 +25,26 @@ const (
 // Topics 是会话使用的订阅主题全集。
 var Topics = []string{TopicStart, TopicExit, TopicOOM}
 
-// subscribeFilters 把主题列表拼成订阅过滤串，一个主题一个串。
+// subscribeFilters 把 namespace 与主题列表拼成订阅过滤串，一个主题一个串。
 //
-// 三条均为实测（containerd v2.2.4）：
+// 订阅默认跨 namespace：containerd 的 Events.Subscribe 只认 filters，不按请求
+// 上下文里的 namespace 收窄。ParseAll 对多个过滤串取或，故每个串都必须同时约束
+// namespace 与 topic（逗号是 AND）：单独加一个 namespace 串会被或运算放大成
+// 「该 namespace 的全部事件 ∨ 所有 namespace 的主题事件」。
+// 官方注释给出的 namespace 格式是 namespace==<namespace>，实测无需引号。
+//
+// 主题过滤串的三条语法均为实测（containerd v2.2.4）：
 //   - 裸主题（如 /tasks/start）会被当成表达式解析，报 invalid quote；
 //   - 值改用反引号能通过解析，但**永不匹配**——引号被当成了值的一部分；
 //   - 逗号是 AND（filters 包的语法），故多个主题不能写进一个串里。
 //
-// 因此值用双引号（Go 字符串字面量语法），多个主题并列成多个串：containerd 用
-// ParseAll 取或，它的 CRI 侧订阅也是这么写的。
-func subscribeFilters(topics []string) []string {
+// 因此主题值用双引号（Go 字符串字面量语法），一个主题一个串，每串都带
+// namespace；containerd 用 ParseAll 取或，它的 CRI 侧订阅也是这么写的。
+func subscribeFilters(namespace string, topics []string) []string {
 	filters := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		filters = append(filters, `topic=="`+topic+`"`)
+		filters = append(filters,
+			"namespace=="+namespace+`,topic=="`+topic+`"`)
 	}
 	return filters
 }
@@ -102,7 +109,7 @@ func (s *containerdSource) Subscribe(
 	ctx context.Context, namespace string, topics ...string,
 ) (<-chan *Envelope, <-chan error) {
 	return s.client.Subscribe(namespaces.WithNamespace(ctx, namespace),
-		subscribeFilters(topics)...)
+		subscribeFilters(namespace, topics)...)
 }
 
 func (s *containerdSource) ListTasks(ctx context.Context, namespace string) ([]Task, error) {

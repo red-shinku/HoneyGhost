@@ -15,6 +15,7 @@ import (
 
 	"honeyghost/containerd_bridge/internal/protocol"
 	"honeyghost/containerd_bridge/internal/source"
+	"honeyghost/containerd_bridge/internal/translator"
 )
 
 // ============================================================
@@ -81,6 +82,16 @@ func (f *fakeSource) dropNamespace(namespace string) {
 		}
 	}
 	f.namespaces = kept
+}
+
+func (f *fakeSource) setListError(namespace string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.listErr, namespace)
+		return
+	}
+	f.listErr[namespace] = err
 }
 
 func (f *fakeSource) ListTasks(_ context.Context, namespace string) ([]source.Task, error) {
@@ -382,6 +393,75 @@ func TestSessionIgnoresExecExit(t *testing.T) {
 			t.Fatalf("exec 退出不应产出 REMOVE: %v", frames)
 		}
 	}
+}
+
+// 周期快照：建流段之后按间隔重走同一 namespace 的段
+func TestSessionPeriodicSnapshot(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{
+		Namespaces:       []string{"k8s.io"},
+		SnapshotInterval: 20 * time.Millisecond,
+	}, backend)
+
+	frames := writer.waitFrames(t, 6)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+	)
+}
+
+// 周期段枚举失败只作废本段：返回 nil、不结算，下一段完整枚举后恢复
+func TestSessionPeriodicSnapshotFailureIsNotFatal(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	backend.setListError("k8s.io", errors.New("枚举失败"))
+
+	writer := &recordingWriter{}
+	session := &Session{
+		cfg: DefaultConfig(),
+		out: writer,
+		log: slog.New(slog.DiscardHandler),
+	}
+	streams := newSubscriptionSet(backend)
+	streams.subs["k8s.io"] = &subscription{}
+	tr := translator.New(backend)
+
+	if err := session.snapshotAll(context.Background(), backend, tr, streams); err != nil {
+		t.Fatalf("枚举失败不应结束会话: %v", err)
+	}
+	expectFrames(t, writer.written(), "BEGIN(k8s.io)")
+
+	backend.setListError("k8s.io", nil)
+	if err := session.snapshotAll(context.Background(), backend, tr, streams); err != nil {
+		t.Fatalf("恢复后的周期段失败: %v", err)
+	}
+	expectFrames(t, writer.written()[1:],
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+	)
+	if session.voids != 0 {
+		t.Fatalf("成功的一轮应清零连续作废计数: %d", session.voids)
+	}
+}
+
+// 不配置周期时不产生额外段
+func TestSessionSnapshotIntervalDisabled(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{Namespaces: []string{"k8s.io"}}, backend)
+	writer.waitFrames(t, 3)
+
+	backend.pushUpsert(t, "k8s.io", "c", 7)
+	frames := writer.waitFrames(t, 4)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"UPSERT(c,k8s.io,live,pid=7)",
+	)
 }
 
 // 枚举任一步失败即整段作废：不发 SnapshotEnd，C++ 侧不结算

@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	coreevents "github.com/containerd/containerd/v2/core/events"
@@ -96,6 +97,17 @@ func (s *subscriptionSet) remove(namespace string) {
 func (s *subscriptionSet) tracked(namespace string) bool {
 	_, ok := s.subs[namespace]
 	return ok
+}
+
+// namespaces 返回当前跟踪的 namespace，按字典序。
+// 周期快照按此顺序逐段发送，避免 map 迭代顺序带来的不确定帧序。
+func (s *subscriptionSet) namespaces() []string {
+	result := make([]string, 0, len(s.subs))
+	for namespace := range s.subs {
+		result = append(result, namespace)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // close 停掉全部订阅。
