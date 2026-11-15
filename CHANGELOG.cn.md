@@ -28,8 +28,7 @@
 
 ### Fixed
 
-- collector 在 EPOLLERR/HUP 或消费错误时先摘探针再移出 epoll，避免 ringbuf
-  继续写入后静默丢失。
+- containerd-bridge 对 containerd 在 `/tasks/exit` 上的 `TaskExit` 事件未做区分导致的角色误删。
 
 ## [v0.1.1] - 2026-11-12
 

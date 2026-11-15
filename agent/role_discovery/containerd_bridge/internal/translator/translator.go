@@ -33,8 +33,11 @@ const (
 	KindOOM EventKind = iota
 	// KindUpsert 是 /tasks/start。
 	KindUpsert
-	// KindRemove 是 /tasks/exit。
+	// KindRemove 是 /tasks/exit 且任务 ID 等于容器 ID：容器 init 进程退出。
 	KindRemove
+	// KindExecExit 是 /tasks/exit 且任务 ID 不等于容器 ID：容器内 exec 进程
+	// （健康检查、docker exec、k8s exec probe）退出。容器本身仍在，不产生观察量。
+	KindExecExit
 )
 
 func (k EventKind) String() string {
@@ -43,6 +46,8 @@ func (k EventKind) String() string {
 		return "UPSERT"
 	case KindRemove:
 		return "REMOVE"
+	case KindExecExit:
+		return "EXEC_EXIT"
 	case KindOOM:
 		return "OOM"
 	default:
@@ -80,10 +85,17 @@ func Decode(env *source.Envelope) (Decoded, error) {
 		decoded.ContainerID = event.GetContainerID()
 		decoded.Pid = event.GetPid()
 	case *apievents.TaskExit:
-		decoded.Kind = KindRemove
+		// /tasks/exit 同时覆盖两类退出：容器 init 任务的 ID 就是容器 ID，
+		// 容器内 exec 任务的 ID 与容器 ID 不同、只有 container_id 指向容器。
+		// 只有 init 退出代表容器角色退出。
 		decoded.ContainerID = event.GetContainerID()
 		decoded.Pid = event.GetPid()
 		decoded.ExitStatus = event.GetExitStatus()
+		if event.GetID() != event.GetContainerID() {
+			decoded.Kind = KindExecExit
+		} else {
+			decoded.Kind = KindRemove
+		}
 	case *apievents.TaskOOM:
 		decoded.Kind = KindOOM
 		decoded.ContainerID = event.GetContainerID()
@@ -110,7 +122,7 @@ func New(containers ContainerGetter) *Translator {
 
 // Translate 把一条已解码的事件翻成协议观察量。
 //
-// 返回 nil 表示该事件不产生观察量（OOM 只记日志）。
+// 返回 nil 表示该事件不产生观察量（OOM 只记日志，exec 退出不影响容器角色）。
 // UPSERT 需要回查容器标签，回查失败即返回错误——调用方不得把「取不到」读成
 // 「不存在」，只能按未知处理。
 // 观察量的 in_snapshot 由调用方按来源标注：枚举得来的项与流内项在这里无法区分。
@@ -141,6 +153,9 @@ func (t *Translator) Translate(ctx context.Context, d Decoded) (*protocol.Observ
 			ContainerId: d.ContainerID,
 			TimestampNs: d.TimestampNs,
 		}, nil
+	case KindExecExit:
+		// exec 进程退出不代表容器角色退出，也不回查元数据
+		return nil, nil
 	default:
 		return nil, nil
 	}

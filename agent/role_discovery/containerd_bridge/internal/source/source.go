@@ -39,6 +39,8 @@ type Source interface {
 	Namespaces(ctx context.Context) ([]string, error)
 
 	// Subscribe 订阅一个 namespace 上的事件主题。
+	// 订阅必须显式带 namespace 过滤：containerd 的 Events.Subscribe 默认返回
+	// 所有 namespace 的事件，不按请求上下文里的 namespace 收窄。
 	// 返回事件通道与错误通道，两者都不由调用方关闭；ctx 结束或流断开时错误
 	// 通道收到一条错误后关闭。
 	Subscribe(ctx context.Context, namespace string, topics ...string) (<-chan *Envelope, <-chan error)
