@@ -269,6 +269,9 @@ docker pull fifseason/honeyghost-agent:latest
 docker pull fifseason/honeyghost-containerd-bridge:latest
 ```
 
+The image carries no debug info (DWARF is stripped at build time): use a local build for
+line-level debugging or profiling.
+
 ### Local Build
 
 From the project root directory:

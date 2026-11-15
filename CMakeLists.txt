@@ -172,7 +172,7 @@ target_include_directories(hng_role_discovery PUBLIC
 # libsystemd 不可用时只跳过本目标，不使整体构建失败——纯 k8s 节点上不装
 # libsystemd-dev 是常见情况。探测先走 pkg-config，退回 find_path/find_library。
 # ============================================================
-option(HNG_ENABLE_ROLE_SYSTEMD "构建 systemd 角色发现器（需 libsystemd-dev）" ON)
+option(HNG_ENABLE_ROLE_SYSTEMD "build systemd role discovery module (need libsystemd-dev)" ON)
 if(HNG_ENABLE_ROLE_SYSTEMD)
     set(HNG_SYSTEMD_DEP "")
     find_package(PkgConfig QUIET)
@@ -222,7 +222,7 @@ endif()
 # 构建时生成，Go 侧产物入库（见 agent/role_discovery/containerd_bridge/gen.sh）。
 # 翻译进程的构建不接 CMake，见 agent/role_discovery/containerd_bridge/README.md。
 # ============================================================
-option(HNG_ENABLE_ROLE_CONTAINERD "构建 containerd 角色发现器（需 protobuf）" ON)
+option(HNG_ENABLE_ROLE_CONTAINERD "build containerd role discovery module(need protobuf)" ON)
 if(HNG_ENABLE_ROLE_CONTAINERD)
     set(ROLE_BRIDGE_GEN_DIR ${CMAKE_BINARY_DIR}/generated/role_bridge)
     file(MAKE_DIRECTORY ${ROLE_BRIDGE_GEN_DIR})
@@ -385,7 +385,7 @@ target_compile_definitions(hng_agent PRIVATE
 # ============================================================
 # CLI 服务端
 # ============================================================
-option(HNG_ENABLE_CLI_SERVER "构建 CLI 服务端模块（需 userver）" ON)
+option(HNG_ENABLE_CLI_SERVER "build CLI server(need userver)" ON)
 if(HNG_ENABLE_CLI_SERVER)
     # 临时抬 c++ 标准
     set(HNG_CXX_STANDARD_SAVED "${CMAKE_CXX_STANDARD}")
@@ -405,10 +405,27 @@ if(HNG_ENABLE_CLI_SERVER)
 
     if(NOT userver_FOUND)
         message(FATAL_ERROR
-            "未找到 userver（find_package(userver COMPONENTS core grpc) 失败）。\n"
-            "  容器内：先执行 scripts/install-userver.sh，见 .devcontainer/README.md 第 3 节\n"
-            "  容器外：给 -Duserver_ROOT=<userver 安装前缀>，或设同名环境变量\n"
-            "  只想要其余模块：-DHNG_ENABLE_CLI_SERVER=OFF")
+            "cannot userver( find_package(userver COMPONENTS core grpc) failed)。\n"
+            "  inside devcontainer: run scripts/install-userver.sh, see .devcontainer/README.md \n"
+            "  outside devcontainer: -Duserver_ROOT=<userver install-perfix>\n"
+            "  do not need this module: -DHNG_ENABLE_CLI_SERVER=OFF")
+    endif()
+
+    # 摘掉 userver 接口依赖里 Release 下已无人引用的库。userver::core 把
+    # Boost.Locale 列为普通接口依赖，而 Release 中引用它的代码被 --gc-sections 删除，
+    # 链接器却已在扫描阶段把该库记进 DT_NEEDED，运行镜像因此连带约 38 MB 的 ICU 数据。
+    # Debug 变体确实引用 Boost.Locale，故默认关闭，只由镜像构建显式打开；摘错时链接期
+    # 会因未定义符号报错，不会静默丢功能。
+    option(HNG_TRIM_USERVER_LIBS
+        "摘掉 userver 接口里 Release 下未被引用的库（镜像构建用）" OFF)
+    if(HNG_TRIM_USERVER_LIBS)
+        get_target_property(HNG_USERVER_CORE_LIBS userver::core INTERFACE_LINK_LIBRARIES)
+        if(HNG_USERVER_CORE_LIBS)
+            list(FILTER HNG_USERVER_CORE_LIBS EXCLUDE REGEX "^Boost::locale$")
+            set_property(TARGET userver::core
+                PROPERTY INTERFACE_LINK_LIBRARIES "${HNG_USERVER_CORE_LIBS}")
+            unset(HNG_USERVER_CORE_LIBS)
+        endif()
     endif()
 
     add_subdirectory(agent/cli_server)
