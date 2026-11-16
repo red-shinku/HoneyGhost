@@ -18,6 +18,12 @@ docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 `ghcr.io/fifseason/honeyghost-builder:latest`（含 Release/Debug 两变体），首次构建耗时主要是拉取该镜像。
 需要换构建环境时加 `--build-arg BUILDER_IMAGE=<镜像>`；重建 builder 镜像见
 `deploy/ci/builder.Dockerfile`。也可以直接用 `make image` 构建两个镜像。
+镜像默认基于 distroless（`gcr.io/distroless/cc-debian13` 与 `static-debian13`），容器内没有 shell。
+排查容器内部的库版本时换带 shell 的同布局基础镜像：
+`make image AGENT_BASE_IMAGE=gcr.io/distroless/cc-debian13:debug`（busybox）或
+`AGENT_BASE_IMAGE=debian:13-slim`；桥接镜像对应 `BRIDGE_BASE_IMAGE`。基础镜像须为 glibc 系：
+装配阶段要在运行根里生成 `/etc/ld.so.cache`。
+`BASE_IMAGE` 同时覆盖两个镜像的基础镜像；按镜像覆盖用 `AGENT_BASE_IMAGE` / `BRIDGE_BASE_IMAGE`。
 
 ## 运行
 

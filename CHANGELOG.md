@@ -23,7 +23,9 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
   to optimize the backpressure problem of CLIServer. Currently the entire line is under pressure of about 30k+ events per second.
   You can use `hghost events --batch N` to specify the number of events in a batch (default 64, upper limit 256).
   Incompatible with the old CLI.
-- The default capacity of each CLI stream queue is increased from 1024 to 8192.
+- The default capacity of each CLI stream queue is increased from 1024 to 8192.  
+- Optimize the volume of the agent image.
+- Changed the base image for both images to distroless, and local builds now support swapping the base image. The image health check now runs `hng_agent --health-check`.
 
 ### Fixed
 

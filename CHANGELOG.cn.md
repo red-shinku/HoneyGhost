@@ -24,7 +24,9 @@
   优化 CLIServer 的背压问题。目前全线承压约 30k+ 事件每秒。
   可用 `hghost events --batch N`指定一批事件数量（默认 64，上限 256）。
   不兼容旧 CLI。
-- CLI 每流队列默认容量由 1024 提高到 8192。
+- CLI 每流队列默认容量由 1024 提高到 8192。  
+- 优化 agent 镜像体积。
+- 两个镜像的基础镜像改为 distroless，本地构建支持更换基础镜像。镜像健康检查改跑 `hng_agent --health-check`。
 
 ### Fixed
 

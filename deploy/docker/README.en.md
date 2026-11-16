@@ -18,6 +18,12 @@ The agent image only compiles this repository's sources: the toolchain, fmt/spdl
 `ghcr.io/fifseason/honeyghost-builder:latest` (both Release and Debug variants); the first build is dominated by pulling that image.
 Use `--build-arg BUILDER_IMAGE=<image>` to switch build environments; rebuild the builder image from
 `deploy/ci/builder.Dockerfile`. `make image` builds both images as well.
+The images are based on distroless (`gcr.io/distroless/cc-debian13` and `static-debian13`); there is no shell inside.
+To inspect library versions inside the container, switch to a shell-bearing image with the same layout:
+`make image AGENT_BASE_IMAGE=gcr.io/distroless/cc-debian13:debug` (busybox) or
+`AGENT_BASE_IMAGE=debian:13-slim`; the bridge uses `BRIDGE_BASE_IMAGE`. The base image must be glibc-based:
+the assemble stage generates `/etc/ld.so.cache` inside the runtime root.
+`BASE_IMAGE` overrides the base image of both images; use `AGENT_BASE_IMAGE` / `BRIDGE_BASE_IMAGE` to override one.
 
 ## Run
 

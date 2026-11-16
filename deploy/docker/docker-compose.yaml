@@ -17,7 +17,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/agent.Dockerfile
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-debian:13-slim}
+        BASE_IMAGE: ${AGENT_BASE_IMAGE:-${BASE_IMAGE:-gcr.io/distroless/cc-debian13:latest}}
         BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/red-shinku/honeyghost-builder:latest}
     restart: unless-stopped
     command: ["--config", "/etc/honeyghost/agent.conf"]
@@ -65,7 +65,7 @@ services:
     build:
       context: ../../agent/role_discovery/containerd_bridge
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-debian:13-slim}
+        BASE_IMAGE: ${BRIDGE_BASE_IMAGE:-${BASE_IMAGE:-gcr.io/distroless/static-debian13:latest}}
     restart: unless-stopped
     # 宿主 socket 为 root:root 0660
     user: "0:0"
