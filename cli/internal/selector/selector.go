@@ -1,4 +1,4 @@
-// Package selector 解析 events 命令的 -t 与 -i 选项。
+// Package selector 解析 events 命令的 -t、-i 与 -e 选项。
 //
 // 本包是纯函数：不读环境、不发起 IO、不打印。结果中的集合去重并排序，
 // 使相同的命令行输入总是产生相同的请求。
@@ -50,7 +50,8 @@ func ParseTypes(values []string) ([]model.EventType, error) {
 // ParseSelector 解析 -i 的取值。
 //
 // 语法为 key=value[,value...]；值内的逗号写作 \,。维度之内取并集，
-// 维度之间取交集；空结果表示不过滤。
+// 维度之间取交集；空结果表示不过滤。roleID 与 contextID 允许 0（字面未落定），
+// pid 必须大于 0。
 func ParseSelector(values []string) (model.RuntimeSelector, error) {
 	var result model.RuntimeSelector
 	roleIDs := make(map[uint32]bool)
@@ -77,7 +78,7 @@ func ParseSelector(values []string) (model.RuntimeSelector, error) {
 		switch key {
 		case "roleID":
 			for _, item := range items {
-				id, err := parseSelectorID(token, item)
+				id, err := parseSelectorID(token, item, true)
 				if err != nil {
 					return model.RuntimeSelector{}, err
 				}
@@ -93,7 +94,7 @@ func ParseSelector(values []string) (model.RuntimeSelector, error) {
 			}
 		case "contextID":
 			for _, item := range items {
-				id, err := parseSelectorID(token, item)
+				id, err := parseSelectorID(token, item, true)
 				if err != nil {
 					return model.RuntimeSelector{}, err
 				}
@@ -101,7 +102,7 @@ func ParseSelector(values []string) (model.RuntimeSelector, error) {
 			}
 		case "pid":
 			for _, item := range items {
-				id, err := parseSelectorID(token, item)
+				id, err := parseSelectorID(token, item, false)
 				if err != nil {
 					return model.RuntimeSelector{}, err
 				}
@@ -143,13 +144,13 @@ func splitEscapedCommas(s string) []string {
 	return items
 }
 
-func parseSelectorID(token, item string) (uint32, error) {
+func parseSelectorID(token, item string, allowZero bool) (uint32, error) {
 	value, err := strconv.ParseUint(item, 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"invalid -i value %q: %q is not a uint32", token, item)
 	}
-	if value == 0 {
+	if value == 0 && !allowZero {
 		return 0, fmt.Errorf(
 			"invalid -i value %q: %q must be greater than 0", token, item)
 	}

@@ -23,6 +23,7 @@ struct SyscallCollectorState {
         nullptr, &::ring_buffer__free};
     bool attached = false;  ///< attach() 已成功挂载探针
     bool ready    = false;  ///< ringbuf 已可被 consume() 消费
+    int reserve_failures_fd = -1;  ///< 内核 ringbuf 预留失败计数 map
 };
 }  // namespace hng::detail
 
@@ -51,6 +52,7 @@ int SyscallEventCollector::handle_rb_event(void* ctx, void* data,
     std::memcpy(&event, data, sizeof(event));
     auto* self = static_cast<SyscallEventCollector*>(ctx);
     self->syscall_sink.push(event);
+    self->mark_consumed();
     return 0;
 }
 
@@ -70,10 +72,13 @@ bool SyscallEventCollector::prepare()
         return false;
     }
     const int events_fd = bpf_map__fd(candidate->skeleton->maps.syscall_events);
-    if (events_fd < 0 ||
+    const int failures_fd =
+        bpf_map__fd(candidate->skeleton->maps.reserve_failures);
+    if (events_fd < 0 || failures_fd < 0 ||
         bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
         return false;
     }
+    candidate->reserve_failures_fd = failures_fd;
     candidate->buffer.reset(
         ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
     if (!candidate->buffer) {
@@ -93,6 +98,7 @@ bool SyscallEventCollector::attach()
     }
     state_->attached = true;
     state_->ready    = true;
+    mark_attached(true);
     return true;
 }
 
@@ -115,6 +121,7 @@ void SyscallEventCollector::detach()
     }
     syscalls_collector__detach(state_->skeleton.get());
     state_->attached = false;
+    mark_attached(false);
 }
 
 int SyscallEventCollector::consume(std::size_t budget)
@@ -125,11 +132,15 @@ int SyscallEventCollector::consume(std::size_t budget)
 #if defined(LIBBPF_MAJOR_VERSION) && defined(LIBBPF_MINOR_VERSION) && \
     (LIBBPF_MAJOR_VERSION > 1 ||                                      \
      (LIBBPF_MAJOR_VERSION == 1 && LIBBPF_MINOR_VERSION >= 5))
-    return ring_buffer__consume_n(state_->buffer.get(), budget);
+    const int consumed = ring_buffer__consume_n(state_->buffer.get(), budget);
 #else
     (void)budget;
-    return ring_buffer__consume(state_->buffer.get());
+    const int consumed = ring_buffer__consume(state_->buffer.get());
 #endif
+    if (consumed < 0) {
+        mark_consume_error();
+    }
+    return consumed;
 }
 
 int SyscallEventCollector::epoll_fd() const noexcept
@@ -143,4 +154,24 @@ int SyscallEventCollector::epoll_fd() const noexcept
 int SyscallEventCollector::role_filter_map_fd() const noexcept
 {
     return state_ ? bpf_map__fd(state_->skeleton->maps.hng_role_filter) : -1;
+}
+
+int SyscallEventCollector::reserve_failures_fd() const noexcept
+{
+    return state_ ? state_->reserve_failures_fd : -1;
+}
+
+const char* SyscallEventCollector::name() const noexcept { return "syscall"; }
+
+hng::CollectorLineStats SyscallEventCollector::stats() const
+{
+    hng::CollectorLineStats snapshot;
+    snapshot.line            = name();
+    snapshot.consumed        = consumed();
+    snapshot.consume_errors  = consume_errors();
+    snapshot.channel_dropped = syscall_sink.dropped();
+    snapshot.channel_rejected = syscall_sink.rejected();
+    snapshot.attached = attached();
+    snapshot.polling  = polling();
+    return snapshot;
 }

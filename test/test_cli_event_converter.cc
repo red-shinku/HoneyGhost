@@ -148,10 +148,10 @@ void run_syscall_payload_mapping()
         hng::RuntimeEvent event = make_syscall(hng::EventType::SYSCALL_EVENT);
         c.fill(std::get<hng::syscall_semantic_data>(event.data));
 
-        hng::clisv::ReceiveEventResponse msg;
+        hng::clisv::eventrecord msg;
         hng::cli::ToProto(event, msg);
 
-        CHECK(msg.event_case() == hng::clisv::ReceiveEventResponse::kSyscallEv,
+        CHECK(msg.event_case() == hng::clisv::eventrecord::kSyscallEv,
               "系统调用事件应走 syscall_ev");
         CHECK(msg.syscall_ev().s_data_case() == c.expected,
               "变体备选应落到对应的 oneof 成员");
@@ -163,7 +163,7 @@ void run_head_fields()
 {
     hng::RuntimeEvent event = make_syscall(hng::EventType::FILE_EVENT);
 
-    hng::clisv::ReceiveEventResponse msg;
+    hng::clisv::eventrecord msg;
     hng::cli::ToProto(event, msg);
 
     CHECK(msg.head().pid() == kPid, "pid 取自 RuntimeInformation::process");
@@ -195,10 +195,10 @@ void run_file_event()
     file.data.set_semantic_filename("/tmp/a");
     file.data.set_comm("cat");
 
-    hng::clisv::ReceiveEventResponse msg;
+    hng::clisv::eventrecord msg;
     hng::cli::ToProto(event, msg);
 
-    CHECK(msg.event_case() == hng::clisv::ReceiveEventResponse::kFileEv,
+    CHECK(msg.event_case() == hng::clisv::eventrecord::kFileEv,
           "文件事件应走 file_ev");
     CHECK(msg.file_ev().semantic_filename() == "/tmp/a", "文件载荷应被搬进报文");
     CHECK(msg.file_ev().comm() == "cat", "文件载荷字段不应丢");

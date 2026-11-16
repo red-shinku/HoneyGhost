@@ -84,11 +84,23 @@ func (f fakeProcessService) Stats(ctx context.Context) (model.ProcessStats, erro
 type fakeEventService struct {
 	subscribe func(context.Context, model.RuntimeSelector,
 		[]model.EventType) (api.EventStream, error)
+	stats   func(context.Context) (model.PipelineStats, error)
+	gotOpts *api.SubscribeOptions
 }
 
 func (f fakeEventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
-	types []model.EventType) (api.EventStream, error) {
+	types []model.EventType, opts api.SubscribeOptions) (api.EventStream, error) {
+	if f.gotOpts != nil {
+		*f.gotOpts = opts
+	}
 	return f.subscribe(ctx, sel, types)
+}
+
+func (f fakeEventService) Stats(ctx context.Context) (model.PipelineStats, error) {
+	if f.stats == nil {
+		return model.PipelineStats{}, nil
+	}
+	return f.stats(ctx)
 }
 
 type fakeEventStream struct {
@@ -705,6 +717,18 @@ func TestStatus(t *testing.T) {
 				return model.ProcessStats{PidReused: uint64Ptr(1)}, nil
 			},
 		},
+		Events: fakeEventService{
+			stats: func(context.Context) (model.PipelineStats, error) {
+				return model.PipelineStats{
+					Collector: []model.CollectorLineStats{{
+						Line: "syscall", Consumed: 5, ChannelDropped: 1, Attached: true,
+					}},
+					Semantic: &model.SemanticStats{ProcessedSyscall: 4},
+					Engine:   &model.EngineStats{PeakCLIStreams: 2},
+					CLI:      &model.CLIStreamStats{Active: 1, Peak: 2, Dropped: 3},
+				}, nil
+			},
+		},
 	}
 	out, _, err := executeWithServices(t, svcs, "status")
 	if err != nil {
@@ -716,7 +740,8 @@ func TestStatus(t *testing.T) {
 	for _, line := range []string{
 		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
-		"PROCESS STATS", "pid_reused",
+		"PROCESS STATS", "pid_reused", "RUNTIME STATS", "syscall",
+		"SEMANTIC", "ENGINE", "CLI STREAMS",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)
@@ -734,6 +759,7 @@ func TestStatus(t *testing.T) {
 		"\"role_stats\"",
 		"\"context_stats\"",
 		"\"process_stats\"",
+		"\"runtime_stats\"",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)
@@ -987,13 +1013,131 @@ func TestEventsFilters(t *testing.T) {
 	}
 }
 
+func TestEventsExprPassedToSubscribe(t *testing.T) {
+	var gotOpts api.SubscribeOptions
+	svcs := api.Services{Events: fakeEventService{
+		gotOpts: &gotOpts,
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return &fakeEventStream{}, nil
+		},
+	}}
+	_, _, err := executeWithServices(t, svcs, "events",
+		"-e", "kind=exec or pid=7", "-e", "not role=systemd")
+	if err != nil {
+		t.Fatalf("events -e: %v", err)
+	}
+	want := &model.FilterExpr{Logic: model.FilterLogicAnd, Kids: []model.FilterExpr{
+		{Logic: model.FilterLogicOr, Kids: []model.FilterExpr{
+			{Atom: &model.FilterAtom{
+				Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
+				Kinds: []model.EventKind{model.EventKindExec},
+			}},
+			{Atom: &model.FilterAtom{
+				Field: model.FilterFieldPID, Compare: model.FilterCompareEq,
+				Numbers: []uint32{7},
+			}},
+		}},
+		{Logic: model.FilterLogicNot, Kids: []model.FilterExpr{
+			{Atom: &model.FilterAtom{
+				Field: model.FilterFieldRoleLabel, Compare: model.FilterCompareEq,
+				Strings: []string{"systemd"},
+			}},
+		}},
+	}}
+	if !reflect.DeepEqual(gotOpts.Expr, want) {
+		t.Errorf("Expr = %#v, want %#v", gotOpts.Expr, want)
+	}
+	if gotOpts.BatchSize != 64 {
+		t.Errorf("BatchSize = %d, want 64", gotOpts.BatchSize)
+	}
+}
+
+func TestEventsInvalidExpr(t *testing.T) {
+	_, _, err := executeWithoutDial(t, "events", "-e", "pid=1 and")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 2 {
+		t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+	}
+	want := `invalid -e value "pid=1 and": expected a predicate at column 10`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if count := strings.Count(err.Error(), "invalid -e value"); count != 1 {
+		t.Errorf("invalid -e value appears %d times", count)
+	}
+}
+
+func TestEventsTypeExprConflict(t *testing.T) {
+	for _, args := range [][]string{
+		{"events", "-t", "syscall", "-e", "type=syscall"},
+		{"events", "--type", "file", "-e", "not (type=file)"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, err := executeWithoutDial(t, args...)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if ExitCode(err, false) != 2 {
+				t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+			}
+			want := "--type and a type predicate in --expr cannot be combined"
+			if err.Error() != want {
+				t.Errorf("error = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(context.Context, model.RuntimeSelector,
+			[]model.EventType) (api.EventStream, error) {
+			return &fakeEventStream{}, nil
+		},
+	}}
+	if _, _, err := executeWithServices(t, svcs, "events",
+		"-t", "file", "-e", "kind=exec"); err != nil {
+		t.Errorf("events -t with a non-type expression: %v", err)
+	}
+	if _, _, err := executeWithServices(t, svcs, "events",
+		"-e", "type=file"); err != nil {
+		t.Errorf("events -e type without -t: %v", err)
+	}
+}
+
+func TestEventsSelectorAllowsZeroIDs(t *testing.T) {
+	var gotSelector model.RuntimeSelector
+	svcs := api.Services{Events: fakeEventService{
+		subscribe: func(_ context.Context, sel model.RuntimeSelector,
+			_ []model.EventType) (api.EventStream, error) {
+			gotSelector = sel
+			return &fakeEventStream{}, nil
+		},
+	}}
+	if _, _, err := executeWithServices(t, svcs, "events",
+		"-i", "contextID=0", "-i", "roleID=0"); err != nil {
+		t.Fatalf("events -i 0: %v", err)
+	}
+	want := model.RuntimeSelector{
+		RoleIDs:    []uint32{0},
+		ContextIDs: []uint32{0},
+	}
+	if !reflect.DeepEqual(gotSelector, want) {
+		t.Errorf("selector = %+v, want %+v", gotSelector, want)
+	}
+}
+
 func TestEventsUsageErrors(t *testing.T) {
 	tests := [][]string{
 		{"events", "--timeout", "1s"},
 		{"events", "--duration=-1s"},
 		{"events", "-t", "bogus"},
-		{"events", "-i", "roleID=0"},
+		{"events", "-i", "pid=0"},
 		{"events", "-i", "bogus=1"},
+		{"events", "-e", "pid=1 and"},
+		{"events", "-e", "pid=0"},
+		{"events", "-t", "syscall", "-e", "type=syscall"},
 		{"events", "--tee"},
 		{"events", "-w", ""},
 	}

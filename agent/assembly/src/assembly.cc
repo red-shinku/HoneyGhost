@@ -40,6 +40,7 @@
 #include "agent/semantic/include/semantic_factory.hpp"
 #include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/log.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
 #include "kernel/include/syscalls_type.h"
@@ -53,7 +54,7 @@
 
 namespace hng {
 
-struct Assembly::Impl {
+struct Assembly::Impl final : public PipelineStatsService {
     /**
      * @brief 保存选项并按容量创建五条事件通道
      * @param opts 通道容量与启动参数
@@ -63,7 +64,6 @@ struct Assembly::Impl {
         : options(std::move(opts)),
           raw_file_ch(options.raw_queue_capacity),
           raw_syscall_ch(options.raw_queue_capacity),
-          raw_network_ch(options.raw_queue_capacity),
           semantic_file_ch(options.semantic_queue_capacity),
           semantic_syscall_ch(options.semantic_queue_capacity)
     {
@@ -71,6 +71,9 @@ struct Assembly::Impl {
 
     /// @brief 执行一次性启动；失败时由调用方 shutdown()
     InitReport start_impl();
+
+    /// @brief 汇总采集、语义与引擎的累计计数
+    hng::PipelineStats snapshot() const override;
 
 #ifdef HNG_HAVE_COLLECTOR
     /// @brief 检查目标内核是否满足探针加载要求
@@ -114,7 +117,6 @@ struct Assembly::Impl {
     AssemblyOptions options;
     hng::EventChannel<::file_access_data> raw_file_ch;
     hng::EventChannel<::syscall_event> raw_syscall_ch;
-    hng::EventChannel<::network_data> raw_network_ch;
     hng::EventChannel<hng::file_semantic_data> semantic_file_ch;
     hng::EventChannel<hng::syscall_semantic_data> semantic_syscall_ch;
     ::ContextMaintainer maintainer;
@@ -171,9 +173,10 @@ void Assembly::Impl::build_pipeline()
 {
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
+        // network 语义线尚无 consumer：不建采集线，避免无读端通道静默丢事件
         collector = CollectorFactory::create({&raw_file_ch.writer(),
                                               &raw_syscall_ch.writer(),
-                                              &raw_network_ch.writer()});
+                                              nullptr});
         semantic  = SemanticFactory::create(
             {&raw_file_ch.reader(), &raw_syscall_ch.reader(),
               &semantic_file_ch.writer(), &semantic_syscall_ch.writer()});
@@ -186,6 +189,29 @@ void Assembly::Impl::build_pipeline()
          &control_plane->process().update_service(),
          &control_plane->role().join_service(),
          &control_plane->role().lookup_service()});
+}
+
+hng::PipelineStats Assembly::Impl::snapshot() const
+{
+    hng::PipelineStats stats;
+    if (collector != nullptr) {
+        stats.collector = collector->stats();
+    }
+    if (semantic != nullptr) {
+        stats.semantic = semantic->stats();
+    }
+    if (engine != nullptr) {
+        const hng::RuntimeEngineStats source = engine->stats();
+        hng::PipelineEngineStats target;
+        target.unsettled_events = source.unsettled_events;
+        target.peak_cli_streams = source.peak_cli_streams;
+        target.queue_rejected   = source.queue_rejected;
+        target.idle_waits       = source.idle_waits;
+        target.syscall_dropped  = source.syscall_dropped;
+        target.file_dropped     = source.file_dropped;
+        stats.engine            = target;
+    }
+    return stats;
 }
 
 #ifdef HNG_HAVE_COLLECTOR
@@ -433,6 +459,7 @@ AgentServices Assembly::services() const
     services.context    = &impl_->control_plane->context().lookup_service();
     services.process    = &impl_->control_plane->process().lookup_service();
     services.subscriber = &impl_->engine->subscriber_service();
+    services.stats      = impl_.get();
     return services;
 }
 

@@ -24,6 +24,14 @@
 元数据回查必须在 Go 侧：否则 C++ 还要直连 containerd 拿标签，方案就白费了。
 过滤在 C++ 侧：self-exclusion 与 namespace 白名单都在那里，本进程全量翻译。
 
+## 事件订阅
+
+containerd 的 `Events.Subscribe` 默认返回所有 namespace 的事件，订阅上下文里的
+namespace 不参与过滤。多个过滤串之间是「或」，故本进程把 namespace 与 topic 写进
+同一个串：`namespace==<namespace>,topic=="..."`，一个 topic 一个串。这样每个
+namespace 只有一条流、每个事件只到达一次；少了 namespace 这一半，按 namespace
+建多条订阅会把同一事件放大成多份。
+
 ## 镜像引用
 
 容器角色的标签取镜像引用。本进程按以下顺序补齐，取第一个非空值：
@@ -58,6 +66,7 @@ sudo ./containerd-bridge -socket /run/honeyghost/containerd-bridge.sock
 | `-docker-socket` | 空 | Docker API 的 socket 路径；空表示不查询 Docker |
 | `-docker-namespaces` | `moby` | Docker 管理的 containerd namespace，逗号分隔；空表示不限定 |
 | `-namespace-poll` | `30s` | 重新核对 namespace 存在性的周期 |
+| `-snapshot-interval` | `10m` | 周期快照间隔；`0` 表示关闭 |
 | `-backoff-base` / `-backoff-max` | `200ms` / `30s` | 重连退避的起始值与上限 |
 | `-log-level` | `info` | `debug` / `info` / `warn` / `error` |
 | `-version` | — | 打印版本后退出 |
@@ -80,6 +89,10 @@ SnapshotEnd   { count }
 - **枚举的任一步失败即整段作废**：不发 `SnapshotEnd`，段起点已发的 `SnapshotBegin`
   就此悬空，C++ 把「已有未结算段时又收到开场」计为一次作废。持续作废意味着对账
   没在发生，两侧都有计数与日志，否则会静默退化成「只喂不结算」。
+
+建流快照之外，`-snapshot-interval` 会让每个受跟踪 namespace 周期性重走一段。
+周期段与建流段共用同一套结算：枚举失败的段照旧不结算，只由下一个完整段修正，
+不结束与 C++ 的连接；它给流内事件丢失造成的漏角色/幽灵角色设上界。
 
 段内到达的流内事件不消费、滞留在合并通道里，段全部收场后才放行（`in_snapshot=false`），
 故 C++ 侧不会看到「段内混入流内项」——它是帧序违约，会被记下。

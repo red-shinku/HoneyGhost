@@ -65,11 +65,19 @@ void CLIStreamManager::attach(CLIStream* stream)
 {
     const std::lock_guard lock(mu_);
     streams_.push_back(stream);
+
+    const std::size_t current = active_.load(std::memory_order_relaxed);
+    std::size_t observed      = peak_.load(std::memory_order_relaxed);
+    while (current > observed &&
+           !peak_.compare_exchange_weak(observed, current,
+                                        std::memory_order_relaxed)) {
+    }
 }
 
 void CLIStreamManager::detach(CLIStream* stream)
 {
     const std::lock_guard lock(mu_);
+    retired_dropped_.fetch_add(stream->dropped(), std::memory_order_relaxed);
     const std::size_t removed = std::erase(streams_, stream);
     UASSERT_MSG(removed == 1, "detach of a stream that is not in the table");
 }
@@ -91,6 +99,21 @@ bool CLIStreamManager::shutting_down() const
 std::size_t CLIStreamManager::active_streams() const
 {
     return active_.load(std::memory_order_relaxed);
+}
+
+hng::CLIStreamStats CLIStreamManager::stats() const
+{
+    hng::CLIStreamStats snapshot;
+    snapshot.active = active_.load(std::memory_order_relaxed);
+    snapshot.peak   = peak_.load(std::memory_order_relaxed);
+    std::uint64_t dropped =
+        retired_dropped_.load(std::memory_order_relaxed);
+    const std::lock_guard lock(mu_);
+    for (const CLIStream* stream : streams_) {
+        dropped += stream->dropped();
+    }
+    snapshot.dropped = dropped;
+    return snapshot;
 }
 
 void CLIStreamManager::release_slot()

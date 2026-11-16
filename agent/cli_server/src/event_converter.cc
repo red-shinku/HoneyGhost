@@ -94,7 +94,7 @@ hng::EventType FromProtoEventType(hng::clisv::EventType etype)
     return hng::EventType::SYSCALL_EVENT;
 }
 
-void ToProto(hng::RuntimeEvent& event, hng::clisv::ReceiveEventResponse& out)
+void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
 {
     const hng::RuntimeInformation& info = event.runtimeInfo;
 

@@ -25,9 +25,12 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 # 镜像 tag 不取 v 前缀；git describe 的 -dirty 等后缀原样保留，便于识别本地构建
 IMAGE_VERSION ?= $(patsubst v%,%,$(VERSION))
 
-IMAGE_PREFIX  ?= fifseason
-BASE_IMAGE    ?= debian:13-slim
-BUILDER_IMAGE ?= ghcr.io/red-shinku/honeyghost-builder:latest
+IMAGE_PREFIX      ?= fifseason
+# BASE_IMAGE 同时覆盖两个镜像的基础镜像；按镜像的专用变量优先
+BASE_IMAGE        ?=
+AGENT_BASE_IMAGE  ?= $(or $(BASE_IMAGE),gcr.io/distroless/cc-debian13:latest)
+BRIDGE_BASE_IMAGE ?= $(or $(BASE_IMAGE),gcr.io/distroless/static-debian13:latest)
+BUILDER_IMAGE     ?= ghcr.io/red-shinku/honeyghost-builder:latest
 
 .PHONY: all agent ebpf go go-bridge go-cli test test-go test-go-cli \
         test-go-bridge package image clean
@@ -95,15 +98,19 @@ package: go
 	cd $(DIST_DIR) && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
 
 # 工具链与 userver 来自 builder 镜像；BUILDER_IMAGE 可覆盖为按 digest 固定的引用。
+# 基础镜像默认 distroless；排查时换成带 shell 的同布局变体：
+#   make image AGENT_BASE_IMAGE=gcr.io/distroless/cc-debian13:debug
+#   make image BASE_IMAGE=debian:13-slim    同时覆盖两个镜像
 image:
 	docker build -f deploy/docker/agent.Dockerfile \
-		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
+		--build-arg BASE_IMAGE=$(AGENT_BASE_IMAGE) \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg VERSION=$(IMAGE_VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t $(IMAGE_PREFIX)/honeyghost-agent:$(IMAGE_VERSION) .
 	docker build -f $(BRIDGE_DIR)/Dockerfile \
+		--build-arg BASE_IMAGE=$(BRIDGE_BASE_IMAGE) \
 		--build-arg VERSION=$(IMAGE_VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \

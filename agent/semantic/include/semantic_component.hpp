@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "agent/util/include/component.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 struct file_access_data;
 struct syscall_event;
@@ -58,6 +59,9 @@ class SemanticComponent final : public hng::Component {
     /// @brief 当前生命周期状态
     /// @see hng::Component::state
     hng::ComponentState state() const override;
+
+    /// @brief 累计计数快照；可从任意线程调用
+    hng::SemanticStats stats() const;
 
     /// @brief 组件线程入口
     /// @see hng::Component::run

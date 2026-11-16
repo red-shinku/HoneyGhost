@@ -7,20 +7,45 @@ import (
 )
 
 // 过滤表达式是 containerd 侧的语法：写错的表现是整条订阅流报错或永不来事件，
-// 而两种表现都不会在别处被发现。
+// 而两种表现都不会在别处被发现。ParseAll 对多个串取或，故 namespace 必须和
+// 每个 topic 写在同一个串里；单独一个 namespace 串会泄漏其他 namespace 的
+// 主题事件。
 func TestSubscribeFilters(t *testing.T) {
-	got := subscribeFilters([]string{TopicStart, TopicExit, TopicOOM})
-	want := []string{
-		`topic=="/tasks/start"`,
-		`topic=="/tasks/exit"`,
-		`topic=="/tasks/oom"`,
+	cases := []struct {
+		name      string
+		namespace string
+		topics    []string
+		want      []string
+	}{
+		{
+			name:      "moby",
+			namespace: "moby",
+			topics:    []string{TopicStart, TopicExit, TopicOOM},
+			want: []string{
+				`namespace==moby,topic=="/tasks/start"`,
+				`namespace==moby,topic=="/tasks/exit"`,
+				`namespace==moby,topic=="/tasks/oom"`,
+			},
+		},
+		{
+			// namespace 值不加引号；带点的 k8s.io 也必须是合法过滤串
+			name:      "k8s.io",
+			namespace: "k8s.io",
+			topics:    []string{TopicExit},
+			want: []string{
+				`namespace==k8s.io,topic=="/tasks/exit"`,
+			},
+		},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("过滤串个数不符: %v", got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("第 %d 个过滤串=%s 期望=%s", i, got[i], want[i])
+	for _, c := range cases {
+		got := subscribeFilters(c.namespace, c.topics)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: 过滤串个数不符: %v", c.name, got)
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: 第 %d 个过滤串=%s 期望=%s", c.name, i, got[i], c.want[i])
+			}
 		}
 	}
 }

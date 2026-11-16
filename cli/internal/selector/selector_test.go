@@ -74,6 +74,14 @@ func TestParseSelector(t *testing.T) {
 			},
 		},
 		{
+			name:   "zero role and context id",
+			values: []string{"roleID=0", "contextID=0", "contextID=3", "roleID=7"},
+			want: model.RuntimeSelector{
+				RoleIDs:    []uint32{0, 7},
+				ContextIDs: []uint32{0, 3},
+			},
+		},
+		{
 			name:   "labels sorted",
 			values: []string{"role=nginx,ssh", "role=nginx"},
 			want:   model.RuntimeSelector{RoleLabels: []string{"nginx", "ssh"}},
@@ -132,7 +140,7 @@ func TestParseSelectorErrors(t *testing.T) {
 		{"empty list item", []string{"role=a,,b"}},
 		{"unknown key", []string{"bogus=1"}},
 		{"not a number", []string{"roleID=abc"}},
-		{"zero", []string{"contextID=0"}},
+		{"zero pid", []string{"pid=0"}},
 		{"overflow", []string{"pid=4294967296"}},
 		{"number with space", []string{"pid= 1"}},
 		{"negative", []string{"pid=-1"}},

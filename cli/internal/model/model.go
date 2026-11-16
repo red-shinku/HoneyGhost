@@ -90,16 +90,68 @@ type ProcessStats struct {
 	TombstoneDepth *uint64 `json:"tombstone_depth"`
 }
 
+// CollectorLineStats 是单条采集线的累计计数。
+type CollectorLineStats struct {
+	Line            string `json:"line"`
+	Consumed        uint64 `json:"consumed"`
+	ConsumeErrors   uint64 `json:"consume_errors"`
+	ChannelDropped  uint64 `json:"channel_dropped"`
+	ChannelRejected uint64 `json:"channel_rejected"`
+	ReserveFailures uint64 `json:"reserve_failures"`
+	Attached        bool   `json:"attached"`
+	Polling         bool   `json:"polling"`
+}
+
+// SemanticStats 是语义聚合的累计计数。
+type SemanticStats struct {
+	ProcessedFile      uint64 `json:"processed_file"`
+	ProcessedSyscall   uint64 `json:"processed_syscall"`
+	RawFileDropped     uint64 `json:"raw_file_dropped"`
+	RawFileRejected    uint64 `json:"raw_file_rejected"`
+	RawSyscallDropped  uint64 `json:"raw_syscall_dropped"`
+	RawSyscallRejected uint64 `json:"raw_syscall_rejected"`
+	OutFileDropped     uint64 `json:"out_file_dropped"`
+	OutFileRejected    uint64 `json:"out_file_rejected"`
+	OutSyscallDropped  uint64 `json:"out_syscall_dropped"`
+	OutSyscallRejected uint64 `json:"out_syscall_rejected"`
+}
+
+// EngineStats 是运行时引擎的累计计数。
+type EngineStats struct {
+	UnsettledEvents uint64 `json:"unsettled_events"`
+	PeakCLIStreams  uint64 `json:"peak_cli_streams"`
+	QueueRejected   uint64 `json:"queue_rejected"`
+	IdleWaits       uint64 `json:"idle_waits"`
+	SyscallDropped  uint64 `json:"syscall_dropped"`
+	FileDropped     uint64 `json:"file_dropped"`
+}
+
+// CLIStreamStats 是 CLI 订阅流的累计计数。
+type CLIStreamStats struct {
+	Active  uint64 `json:"active"`
+	Peak    uint64 `json:"peak"`
+	Dropped uint64 `json:"dropped"`
+}
+
+// PipelineStats 是事件流水线各段的累计计数快照。
+type PipelineStats struct {
+	Collector []CollectorLineStats `json:"collector"`
+	Semantic  *SemanticStats       `json:"semantic,omitempty"`
+	Engine    *EngineStats         `json:"engine,omitempty"`
+	CLI       *CLIStreamStats      `json:"cli,omitempty"`
+}
+
 // Status 是 status 命令的总览。
 //
 // 计数字段为 nil 表示对应段查询失败。
 type Status struct {
-	SupervisedRoleCount   *int          `json:"supervised_role_count"`
-	ExceptionContextCount *int          `json:"exception_context_count"`
-	ExtraContextCount     *int          `json:"extra_context_count"`
-	RoleStats             *RoleStats    `json:"role_stats"`
-	ContextStats          *ContextStats `json:"context_stats"`
-	ProcessStats          *ProcessStats `json:"process_stats"`
+	SupervisedRoleCount   *int           `json:"supervised_role_count"`
+	ExceptionContextCount *int           `json:"exception_context_count"`
+	ExtraContextCount     *int           `json:"extra_context_count"`
+	RoleStats             *RoleStats     `json:"role_stats"`
+	ContextStats          *ContextStats  `json:"context_stats"`
+	ProcessStats          *ProcessStats  `json:"process_stats"`
+	RuntimeStats          *PipelineStats `json:"runtime_stats"`
 }
 
 // 上下文属性名，同时用作 context list 的 KIND 列与 JSON 的 kind 值。

@@ -260,12 +260,78 @@ message runtimeinfo
     repeated uint32 pid       = 4;
 }
 
+// 语义子类型，取值与 hng::EventKind 一一对应
+enum EventKind {
+    EVENT_KIND_UNSPECIFIED     = 0;
+    EVENT_KIND_PROCESS         = 1;
+    EVENT_KIND_EXEC            = 2;
+    EVENT_KIND_CREDENTIAL      = 3;
+    EVENT_KIND_NAMESPACE       = 4;
+    EVENT_KIND_FILE_SYSCALL    = 5;
+    EVENT_KIND_MEMORY          = 6;
+    EVENT_KIND_NETWORK_SYSCALL = 7;
+    EVENT_KIND_KERNEL          = 8;
+    EVENT_KIND_FILE            = 9;
+}
+
+// 原子谓词作用的字段，取值与 hng::FilterField 一一对应
+enum FilterField {
+    FILTER_FIELD_UNSPECIFIED = 0;
+    FILTER_FIELD_TYPE        = 1;
+    FILTER_FIELD_KIND        = 2;
+    FILTER_FIELD_PID         = 3;
+    FILTER_FIELD_PPID        = 4;
+    FILTER_FIELD_ROLE_ID     = 5;
+    FILTER_FIELD_ROLE_LABEL  = 6;
+    FILTER_FIELD_CONTEXT_ID  = 7;
+}
+
+// 原子谓词的比较方式，取值与 hng::FilterCompare 一一对应
+enum FilterCompare {
+    FILTER_COMPARE_UNSPECIFIED = 0;
+    FILTER_COMPARE_EQ          = 1;
+    FILTER_COMPARE_NE          = 2;
+    FILTER_COMPARE_PREFIX      = 3;
+}
+
+// 逻辑节点，取值与 hng::FilterExpr 的节点种类对应
+enum FilterLogic {
+    FILTER_LOGIC_UNSPECIFIED = 0;
+    FILTER_LOGIC_AND         = 1;
+    FILTER_LOGIC_OR          = 2;
+    FILTER_LOGIC_NOT         = 3;
+}
+
+message filter_atom {
+    FilterField field = 1;
+    FilterCompare compare = 2;
+    // 数值字段与 type/kind 用 numbers；role 标签用 strings
+    repeated uint32 numbers = 3;
+    repeated string strings = 4;
+}
+
+message filter_operands {
+    FilterLogic logic = 1;
+    repeated filter_expr operands = 2;
+}
+
+message filter_expr {
+    oneof node {
+        filter_atom atom = 1;
+        filter_operands logic = 2;
+    }
+}
+
 message ReceiveEventRequest
 {
     // 命令行选项 -t
     repeated EventType etype  = 1;
     // 命令行选项 -i
     optional runtimeinfo info = 2;
+    // 单条响应最多携带的事件数；0 取服务端默认值 64，服务端钳制到 1..256
+    uint32 batch_size = 3;
+    // 布尔过滤表达式；与 etype/info 取交
+    optional filter_expr expr = 4;
 }
 
 message syscall_event_data
@@ -306,15 +372,96 @@ message streamstats
     uint64 dropped_events = 1;
 }
 
-message ReceiveEventResponse
+// 事件流中的一条事件；批内元素与 stats 互斥
+message eventrecord
 {
     eventhead head = 1;
     oneof event
     {
         syscall_event_data syscall_ev = 2;
         file_event_data file_ev       = 3;
-        streamstats stats             = 4;
     }
+}
+
+// 一次下发的事件批；队列空时发送已取到的部分批
+message ReceiveEventBatch
+{
+    repeated eventrecord records = 1;
+}
+
+message ReceiveEventResponse
+{
+    oneof payload
+    {
+        ReceiveEventBatch batch = 1;
+        streamstats stats       = 2;
+    }
+}
+
+// =============================================
+// PipelineStats
+// =============================================
+
+// 单条采集线的累计计数
+message collector_line_stats
+{
+    string line            = 1;
+    uint64 consumed        = 2;
+    uint64 consume_errors  = 3;
+    uint64 channel_dropped = 4;
+    uint64 channel_rejected = 5;
+    uint64 reserve_failures = 6;
+    bool attached          = 7;
+    bool polling           = 8;
+}
+
+// 语义聚合的累计计数
+message semantic_stats
+{
+    uint64 processed_file    = 1;
+    uint64 processed_syscall = 2;
+    uint64 raw_file_dropped     = 3;
+    uint64 raw_file_rejected    = 4;
+    uint64 raw_syscall_dropped  = 5;
+    uint64 raw_syscall_rejected = 6;
+    uint64 out_file_dropped     = 7;
+    uint64 out_file_rejected    = 8;
+    uint64 out_syscall_dropped  = 9;
+    uint64 out_syscall_rejected = 10;
+}
+
+// 运行时引擎的累计计数
+message engine_stats
+{
+    uint64 unsettled_events = 1;
+    uint64 peak_cli_streams = 2;
+    uint64 queue_rejected   = 3;
+    uint64 idle_waits       = 4;
+    uint64 syscall_dropped  = 5;
+    uint64 file_dropped     = 6;
+}
+
+// CLI 订阅流的计数
+message cli_stream_stats
+{
+    uint64 active  = 1;
+    uint64 peak    = 2;
+    uint64 dropped = 3;
+}
+
+message pipeline_stats
+{
+    repeated collector_line_stats collector = 1;
+    optional semantic_stats semantic       = 2;
+    optional engine_stats engine           = 3;
+    optional cli_stream_stats cli          = 4;
+}
+
+message GetPipelineStatsRequest {}
+
+message GetPipelineStatsResponse
+{
+    optional pipeline_stats stats = 1;
 }
 
 // 查询服务：运行时的信息
@@ -322,4 +469,6 @@ service RuntimeService
 {
     // 流式获取事件
     rpc ReceiveEvent(ReceiveEventRequest) returns (stream ReceiveEventResponse);
+    // 获取流水线各段的累计统计
+    rpc GetPipelineStats(GetPipelineStatsRequest) returns (GetPipelineStatsResponse);
 }

@@ -5,7 +5,7 @@
 #   docker build -t hng/containerd-bridge:dev agent/role_discovery/containerd_bridge
 # ============================================================
 
-ARG BASE_IMAGE=debian:13-slim
+ARG BASE_IMAGE=gcr.io/distroless/static-debian13:latest
 ARG GO_IMAGE=golang:1.26
 
 FROM ${GO_IMAGE} AS builder
@@ -32,7 +32,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM ${BASE_IMAGE}
 
-# 静态二进制，无运行时依赖；基础镜像只提供 shell 供排障（可换 distroless）
+# 构建来源只作追溯用：构建该镜像使用的基础镜像 digest
+ARG BASE_DIGEST=unknown
+LABEL org.honeyghost.base-image-digest="${BASE_DIGEST}"
+
+# 静态二进制，无运行时依赖；分发用 distroless，本地排查可把 BASE_IMAGE 换成 debian:13-slim
 COPY --from=builder /out/containerd-bridge /usr/local/bin/containerd-bridge
 
 # 宿主 containerd socket 属 root:root 且为 0660，本进程须以 root 读取

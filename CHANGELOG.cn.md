@@ -7,6 +7,35 @@
 
 None
 
+## [v0.1.2] - 2026-11-16
+
+### Added
+
+- `hghost status` 新增 RUNTIME STATS：内核侧 ringbuf 失败计数、collector/semantic/engine
+  通道与 CLI 流的异常计数。
+- `hghost events -e/--expr` 以布尔表达式过滤事件流：支持 `and`/`or`/`not`（及
+  `&&`/`||`/`!`）、括号与 `=`/`!=`/`~=`，可作用于事件类型、语义子类型、pid/ppid、
+  roleID/role 与 contextID。重复的 `-e` 取交，并与 `-i`/`-t` 取交。
+  新 CLI 的 `-e` 需要同版本 agent：旧 agent 会忽略 `expr`，`-e` 静默不生效。
+- 订阅过滤新增 `ppid` 与语义子类型 `kind`（`process`、`exec`、`credential`、
+  `namespace`、`file_syscall`、`memory`、`network_syscall`、`kernel`、`file`）。
+
+### Changed
+
+- 显式 `-t` 与 `-e` 中的 `type` 原子互斥，混用是用法错误。
+- CLI 事件流改为批量 gRPC 消息：
+  优化 CLIServer 的背压问题。目前全线承压约 30k+ 事件每秒。
+  可用 `hghost events --batch N`指定一批事件数量（默认 64，上限 256）。
+  不兼容旧 CLI。
+- CLI 每流队列默认容量由 1024 提高到 8192。  
+- 优化 agent 镜像体积。
+- 两个镜像的基础镜像改为 distroless，本地构建支持更换基础镜像。镜像健康检查改跑 `hng_agent --health-check`。  
+- `-i` 的 `roleID` / `contextID` 接受 `0`，字面匹配未落定；`pid=0` 仍被拒绝。
+
+### Fixed
+
+- containerd-bridge 对 containerd 在 `/tasks/exit` 上的 `TaskExit` 事件未做区分导致的角色误删。
+
 ## [v0.1.1] - 2026-11-12
 
 ### Added

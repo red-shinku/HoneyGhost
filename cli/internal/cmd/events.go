@@ -20,7 +20,9 @@ import (
 type eventsOptions struct {
 	Types     []string
 	Info      []string
+	Expr      []string
 	Duration  time.Duration
+	Batch     uint32
 	WritePath string
 	Tee       bool
 }
@@ -29,6 +31,7 @@ func newEventsCommand(app *App) *cobra.Command {
 	var opts eventsOptions
 	var types []model.EventType
 	var runtimeSelector model.RuntimeSelector
+	var expr *model.FilterExpr
 
 	cmd := &cobra.Command{
 		Use:   "events",
@@ -40,6 +43,9 @@ func newEventsCommand(app *App) *cobra.Command {
 			}
 			if opts.Duration < 0 {
 				return usageErrorf("--duration must not be negative: %s", opts.Duration)
+			}
+			if opts.Batch == 0 || opts.Batch > 256 {
+				return usageErrorf("--batch must be in 1..256: %d", opts.Batch)
 			}
 			if flag := cmd.Flags().Lookup("write"); flag != nil && flag.Changed && opts.WritePath == "" {
 				return usageErrorf("--write requires a non-empty file path")
@@ -55,8 +61,18 @@ func newEventsCommand(app *App) *cobra.Command {
 			if err != nil {
 				return usageError{err}
 			}
+			parsedExpr, err := selector.ParseExpr(opts.Expr)
+			if err != nil {
+				return usageError{err}
+			}
+			if cmd.Flags().Changed("type") &&
+				model.UsesField(parsedExpr, model.FilterFieldType) {
+				return usageErrorf(
+					"--type and a type predicate in --expr cannot be combined")
+			}
 			types = parsedTypes
 			runtimeSelector = parsedSelector
+			expr = parsedExpr
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
@@ -96,7 +112,9 @@ func newEventsCommand(app *App) *cobra.Command {
 				Service:  svcs.Events,
 				Selector: runtimeSelector,
 				Types:    types,
+				Expr:     expr,
 				Duration: opts.Duration,
+				Batch:    opts.Batch,
 				File:     fileWriter,
 			})
 			if cmd.Context().Err() != nil {
@@ -109,9 +127,16 @@ func newEventsCommand(app *App) *cobra.Command {
 	cmd.Flags().StringSliceVarP(&opts.Types, "type", "t", nil,
 		"event types: syscall, file, network, ipc (repeatable or comma-separated; default all)")
 	cmd.Flags().StringArrayVarP(&opts.Info, "info", "i", nil,
-		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid)")
+		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid; "+
+			"roleID/contextID accept 0 for unsettled, pid must be positive)")
+	cmd.Flags().StringArrayVarP(&opts.Expr, "expr", "e", nil,
+		"runtime filter expression with and/or/not, parentheses, and comparisons "+
+			"=, !=, ~= (keys: type, kind, pid, ppid, roleID, role, contextID; "+
+			"repeatable, combined with and)")
 	cmd.Flags().DurationVar(&opts.Duration, "duration", 0,
 		"maximum stream duration; 0 means until interrupted")
+	cmd.Flags().Uint32Var(&opts.Batch, "batch", 64,
+		"maximum events per streamed message (1..256)")
 	cmd.Flags().StringVarP(&opts.WritePath, "write", "w", "",
 		"write the event stream to this file instead of stdout")
 	cmd.Flags().BoolVar(&opts.Tee, "tee", false,
@@ -139,7 +164,9 @@ type eventsRun struct {
 	Service  api.EventService
 	Selector model.RuntimeSelector
 	Types    []model.EventType
+	Expr     *model.FilterExpr
 	Duration time.Duration
+	Batch    uint32
 	File     io.Writer // nil 表示不落盘
 }
 
@@ -151,7 +178,8 @@ func runEvents(parent context.Context, run eventsRun) (err error) {
 	ctx, cancel := streamContext(parent, run.Duration)
 	defer cancel()
 
-	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types)
+	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types,
+		api.SubscribeOptions{BatchSize: run.Batch, Expr: run.Expr})
 	if err != nil {
 		return err
 	}

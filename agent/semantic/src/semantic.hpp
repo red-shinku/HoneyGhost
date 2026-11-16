@@ -6,6 +6,7 @@
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/event_loop.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/syscalls_type.h"
 
@@ -95,6 +96,9 @@ class Semantic final : public hng::Component {
      */
     hng::ComponentState state() const override;
 
+    /// @brief 累计计数快照；可从任意线程调用
+    hng::SemanticStats stats() const;
+
    private:
     /// 就绪源的标识，与事件循环的停机 tag 不冲突
     static constexpr std::uint64_t kFileTag    = 1;
@@ -126,6 +130,8 @@ class Semantic final : public hng::Component {
     hng::EventLoop loop_;
     std::atomic<hng::ComponentState> lifecycle_{hng::ComponentState::READY};
     std::atomic<bool> stopped_{false};
+    std::atomic<std::uint64_t> processed_file_{0};
+    std::atomic<std::uint64_t> processed_syscall_{0};
 };
 
 #endif  // SEMANTIC_HPP

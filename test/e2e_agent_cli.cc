@@ -8,6 +8,8 @@
  *    SIGTERM 后在期限内以 0 退出；
  *  - CLI 关闭模式（cli.enabled = false）：日志出现 "agent started" 即就绪，
  *    SIGTERM 后以 0 退出；
+ *  - 就绪开关：socket 不存在时 --health-check 以 1 退出，socket 就绪或 CLI
+ *    关闭时以 0 退出；
  *  - 旧命令行参数：进程以 1 退出，日志出现 "unknown argument"。
  * @note 不依赖测试框架；需要 /proc 与 /tmp，无特权要求。
  * @author red_shinku
@@ -227,6 +229,30 @@ void KillAndReap(pid_t child)
     (void)::waitpid(child, nullptr, 0);
 }
 
+/**
+ * @brief 以子进程运行 hng_agent --health-check 并取退出码
+ * @param executable hng_agent 可执行文件路径
+ * @param config_path 主配置文件路径
+ * @return 健康检查退出码；未能启动或未在期限内退出为 -1
+ * @note 输出写入 /dev/null：健康检查的说明不需要参与断言
+ */
+int RunHealthCheck(const std::string& executable,
+                   const std::string& config_path)
+{
+    const pid_t child = StartAgent(
+        {executable, "--config", config_path, "--health-check"}, "/dev/null");
+    if (child < 0) {
+        return -1;
+    }
+
+    int exit_code = -1;
+    if (!WaitForExit(child, kExitTimeout, &exit_code)) {
+        KillAndReap(child);
+        return -1;
+    }
+    return exit_code;
+}
+
 /// @brief 等到 CLI 服务端能应答 RM_GetRoles
 bool WaitForServer(hng::clisv::RoleManagerService::Stub& stub)
 {
@@ -314,6 +340,10 @@ void RunCliCase(const std::string& executable)
         return;
     }
 
+    // socket 尚不存在：健康检查应失败
+    CHECK(RunHealthCheck(executable, paths.config) == 1,
+          "health check should fail while the socket is absent");
+
     const pid_t child =
         StartAgent({executable, "--config", paths.config}, paths.log);
     if (child < 0) {
@@ -329,6 +359,10 @@ void RunCliCase(const std::string& executable)
 
     bool log_printed     = false;
     if (WaitForServer(*role)) {
+        // socket 已就绪：健康检查应成功
+        CHECK(RunHealthCheck(executable, paths.config) == 0,
+              "health check should succeed once the socket exists");
+
         RunQueryChecks(*role, *context_service);
 
         ::kill(child, SIGTERM);
@@ -366,6 +400,10 @@ void RunNoCliCase(const std::string& executable)
         FinishCase(paths, failures_before, false);
         return;
     }
+
+    // CLI 关闭：没有可等待的就绪条件，健康检查应成功
+    CHECK(RunHealthCheck(executable, paths.config) == 0,
+          "health check should succeed when cli is disabled");
 
     const pid_t child =
         StartAgent({executable, "--config", paths.config}, paths.log);

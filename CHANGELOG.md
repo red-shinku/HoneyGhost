@@ -7,6 +7,33 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 None
 
+## [v0.1.2] - 2026-11-16
+### Added
+
+- `hghost status` adds RUNTIME STATS: kernel-side ringbuf failure counts, and exception counts for collector/semantic/engine channels and CLI streams.
+- `hghost events -e/--expr` filters the stream with a boolean expression:
+  `and`/`or`/`not` (also `&&`/`||`/`!`), parentheses and the comparisons `=`, `!=`, `~=`,
+  over event type, semantic kind, pid/ppid, roleID/role and contextID.
+  Repeated `-e` expressions intersect, and also intersect with `-i`/`-t`.
+  A new CLI's `-e` requires an agent of the same version; older agents ignore `expr`, so `-e` silently has no effect.
+- Subscription filters add `ppid` and the `kind` semantic subtype (`process`, `exec`, `credential`, `namespace`, `file_syscall`, `memory`, `network_syscall`, `kernel`, `file`).
+
+### Changed
+
+- An explicit `-t` cannot be combined with a `type` predicate in `-e`; mixing them is a usage error.
+- The CLI event stream is changed to batched gRPC messages:
+  to optimize the backpressure problem of CLIServer. Currently the entire line is under pressure of about 30k+ events per second.
+  You can use `hghost events --batch N` to specify the number of events in a batch (default 64, upper limit 256).
+  Incompatible with the old CLI.
+- The default capacity of each CLI stream queue is increased from 1024 to 8192.  
+- Optimize the volume of the agent image.
+- Changed the base image for both images to distroless, and local builds now support swapping the base image. The image health check now runs `hng_agent --health-check`.
+- `-i` accepts `roleID=0` and `contextID=0`, which match events whose role or context is not settled yet; `pid=0` is still rejected.
+
+### Fixed
+
+- Role misdeletion caused by containerd-bridge failing to distinguish between containerd’s `TaskExit` events on `/tasks/exit`.
+
 ## [v0.1.1] - 2026-11-12
 
 ### Added

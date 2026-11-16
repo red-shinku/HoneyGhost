@@ -102,7 +102,7 @@ class FakeLine final : public CollectorType {
             return 0;
         }
         pending_.fetch_sub(take);
-        consumed_.fetch_add(take);
+        taken_.fetch_add(take);
         if (available > take) {
             signal();
         }
@@ -111,8 +111,18 @@ class FakeLine final : public CollectorType {
 
     int epoll_fd() const noexcept override { return wake_fd_; }
     int role_filter_map_fd() const noexcept override { return -1; }
+    const char* name() const noexcept override { return "fake"; }
+    hng::CollectorLineStats stats() const override
+    {
+        hng::CollectorLineStats snapshot;
+        snapshot.line     = name();
+        snapshot.consumed = taken_.load();
+        snapshot.attached = attached_;
+        return snapshot;
+    }
+    int reserve_failures_fd() const noexcept override { return -1; }
 
-    int consumed() const { return consumed_.load(); }
+    int taken() const { return taken_.load(); }
     int consume_calls() const { return consume_calls_.load(); }
     bool detached() const { return detached_; }
 
@@ -126,7 +136,7 @@ class FakeLine final : public CollectorType {
 
     int wake_fd_;
     std::atomic<int> pending_{0};
-    std::atomic<int> consumed_{0};
+    std::atomic<int> taken_{0};
     std::atomic<int> consume_calls_{0};
     bool prepared_ = false;
     bool attached_ = false;
@@ -155,15 +165,15 @@ void run_epoll_and_stop()
     std::thread thread([&collector] { collector.run(); });
 
     first->produce(3);
-    REQUIRE(wait_until([first] { return first->consumed() == 3; }));
+    REQUIRE(wait_until([first] { return first->taken() == 3; }));
     second->produce(2);
-    REQUIRE(wait_until([second] { return second->consumed() == 2; }));
+    REQUIRE(wait_until([second] { return second->taken() == 2; }));
 
     // 热点线本次只取预算，另一条线仍能在同一轮/下一轮被服务。
     first->produce(300);
     second->produce(1);
-    REQUIRE(wait_until([first] { return first->consumed() == 303; }));
-    REQUIRE(wait_until([second] { return second->consumed() == 3; }));
+    REQUIRE(wait_until([first] { return first->taken() == 303; }));
+    REQUIRE(wait_until([second] { return second->taken() == 3; }));
 
     // 停机前刚提交的事件由 run() 的尾部排空消费。
     first->produce(7);
@@ -172,8 +182,15 @@ void run_epoll_and_stop()
     thread.join();
     REQUIRE(collector.state() == hng::ComponentState::STOPPED);
     REQUIRE(first->detached() && second->detached());
-    REQUIRE(first->consumed() == 310);
-    REQUIRE(second->consumed() == 7);
+    REQUIRE(first->taken() == 310);
+    REQUIRE(second->taken() == 7);
+
+    const std::vector<hng::CollectorLineStats> stats = collector.stats();
+    REQUIRE(stats.size() == 2);
+    REQUIRE(stats[0].line == "fake" && stats[1].line == "fake");
+    REQUIRE(stats[0].consumed == 310);
+    REQUIRE(stats[1].consumed == 7);
+    REQUIRE(stats[0].reserve_failures == 0);
 }
 
 void stop_before_run()

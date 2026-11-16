@@ -177,8 +177,8 @@ type eventService struct {
 }
 
 func (s eventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
-	types []model.EventType) (api.EventStream, error) {
-	request := &clisv.ReceiveEventRequest{}
+	types []model.EventType, opts api.SubscribeOptions) (api.EventStream, error) {
+	request := &clisv.ReceiveEventRequest{BatchSize: opts.BatchSize}
 	for _, eventType := range types {
 		converted, err := toProtoEventType(eventType)
 		if err != nil {
@@ -193,6 +193,13 @@ func (s eventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
 			ContextID: append([]uint32(nil), sel.ContextIDs...),
 			Pid:       append([]uint32(nil), sel.PIDs...),
 		}
+	}
+	if opts.Expr != nil {
+		expr, err := toProtoFilter(opts.Expr)
+		if err != nil {
+			return nil, err
+		}
+		request.Expr = expr
 	}
 
 	stream, err := s.c.events.ReceiveEvent(ctx, request)

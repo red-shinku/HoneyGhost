@@ -15,6 +15,7 @@ import (
 
 	"honeyghost/containerd_bridge/internal/protocol"
 	"honeyghost/containerd_bridge/internal/source"
+	"honeyghost/containerd_bridge/internal/translator"
 )
 
 // ============================================================
@@ -81,6 +82,16 @@ func (f *fakeSource) dropNamespace(namespace string) {
 		}
 	}
 	f.namespaces = kept
+}
+
+func (f *fakeSource) setListError(namespace string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.listErr, namespace)
+		return
+	}
+	f.listErr[namespace] = err
 }
 
 func (f *fakeSource) ListTasks(_ context.Context, namespace string) ([]source.Task, error) {
@@ -160,10 +171,18 @@ func (f *fakeSource) pushUpsert(t *testing.T, namespace, id string, pid uint32) 
 		&apievents.TaskStart{ContainerID: id, Pid: pid})
 }
 
+// pushRemove 推送容器退出：init 任务的 ID 就是容器 ID
 func (f *fakeSource) pushRemove(t *testing.T, namespace, id string) {
 	t.Helper()
 	f.subscription(t, namespace).events <- envelope(t, namespace, source.TopicExit,
-		&apievents.TaskExit{ContainerID: id, Pid: 0})
+		&apievents.TaskExit{ID: id, ContainerID: id, Pid: 0})
+}
+
+// pushExecExit 推送容器内 exec 进程的退出：container_id 指向容器，任务 ID 不同
+func (f *fakeSource) pushExecExit(t *testing.T, namespace, containerID, execID string) {
+	t.Helper()
+	f.subscription(t, namespace).events <- envelope(t, namespace, source.TopicExit,
+		&apievents.TaskExit{ID: execID, ContainerID: containerID, Pid: 0})
 }
 
 func (f *fakeSource) failStream(t *testing.T, namespace string, err error) {
@@ -349,6 +368,99 @@ func TestSessionEmitsLiveEvents(t *testing.T) {
 		"END(1)",
 		"UPSERT(c,k8s.io,live,pid=7)",
 		"REMOVE(a)",
+	)
+}
+
+// 容器内 exec 进程退出（健康检查、docker exec、k8s exec probe）与容器退出同走
+// /tasks/exit，但 exec 任务 ID 不等于容器 ID：不产出 REMOVE，后续事件仍按序输出
+func TestSessionIgnoresExecExit(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{Namespaces: []string{"k8s.io"}}, backend)
+	writer.waitFrames(t, 3)
+
+	backend.pushExecExit(t, "k8s.io", "a", "exec-7f3a")
+	backend.pushUpsert(t, "k8s.io", "c", 7)
+
+	frames := writer.waitFrames(t, 4)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"UPSERT(c,k8s.io,live,pid=7)",
+	)
+	for _, frame := range frames {
+		if strings.HasPrefix(frame, "REMOVE(") {
+			t.Fatalf("exec 退出不应产出 REMOVE: %v", frames)
+		}
+	}
+}
+
+// 周期快照：建流段之后按间隔重走同一 namespace 的段
+func TestSessionPeriodicSnapshot(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{
+		Namespaces:       []string{"k8s.io"},
+		SnapshotInterval: 20 * time.Millisecond,
+	}, backend)
+
+	frames := writer.waitFrames(t, 6)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+	)
+}
+
+// 周期段枚举失败只作废本段：返回 nil、不结算，下一段完整枚举后恢复
+func TestSessionPeriodicSnapshotFailureIsNotFatal(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	backend.setListError("k8s.io", errors.New("枚举失败"))
+
+	writer := &recordingWriter{}
+	session := &Session{
+		cfg: DefaultConfig(),
+		out: writer,
+		log: slog.New(slog.DiscardHandler),
+	}
+	streams := newSubscriptionSet(backend)
+	streams.subs["k8s.io"] = &subscription{}
+	tr := translator.New(backend)
+
+	if err := session.snapshotAll(context.Background(), backend, tr, streams); err != nil {
+		t.Fatalf("枚举失败不应结束会话: %v", err)
+	}
+	expectFrames(t, writer.written(), "BEGIN(k8s.io)")
+
+	backend.setListError("k8s.io", nil)
+	if err := session.snapshotAll(context.Background(), backend, tr, streams); err != nil {
+		t.Fatalf("恢复后的周期段失败: %v", err)
+	}
+	expectFrames(t, writer.written()[1:],
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+	)
+	if session.voids != 0 {
+		t.Fatalf("成功的一轮应清零连续作废计数: %d", session.voids)
+	}
+}
+
+// 不配置周期时不产生额外段
+func TestSessionSnapshotIntervalDisabled(t *testing.T) {
+	backend := newFakeSource("k8s.io").withTask("k8s.io", "a", 42)
+	writer := startSession(t, Config{Namespaces: []string{"k8s.io"}}, backend)
+	writer.waitFrames(t, 3)
+
+	backend.pushUpsert(t, "k8s.io", "c", 7)
+	frames := writer.waitFrames(t, 4)
+	expectFrames(t, frames,
+		"BEGIN(k8s.io)",
+		"UPSERT(a,k8s.io,snap,pid=42)",
+		"END(1)",
+		"UPSERT(c,k8s.io,live,pid=7)",
 	)
 }
 

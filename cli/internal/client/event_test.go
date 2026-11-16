@@ -1,9 +1,15 @@
 package client
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
+
+	"honeyghost/cli/internal/api"
 	"honeyghost/cli/internal/gen/hng"
 	"honeyghost/cli/internal/gen/hng/clisv"
 	"honeyghost/cli/internal/model"
@@ -22,10 +28,10 @@ func testHead() *clisv.Eventhead {
 	}
 }
 
-func syscallResponse(data *clisv.SyscallEventData) *clisv.ReceiveEventResponse {
-	return &clisv.ReceiveEventResponse{
+func syscallRecord(data *clisv.SyscallEventData) *clisv.Eventrecord {
+	return &clisv.Eventrecord{
 		Head:  testHead(),
-		Event: &clisv.ReceiveEventResponse_SyscallEv{SyscallEv: data},
+		Event: &clisv.Eventrecord_SyscallEv{SyscallEv: data},
 	}
 }
 
@@ -187,39 +193,36 @@ func TestConvertSyscallPayloads(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item, err := convertEventResponse(syscallResponse(tt.data))
+			event, err := convertEventRecord(syscallRecord(tt.data))
 			if err != nil {
-				t.Fatalf("convertEventResponse: %v", err)
+				t.Fatalf("convertEventRecord: %v", err)
 			}
-			if item.Event == nil {
-				t.Fatal("Event = nil")
+			if event.Payload.Kind != tt.kind {
+				t.Errorf("Kind = %q, want %q", event.Payload.Kind, tt.kind)
 			}
-			if item.Event.Payload.Kind != tt.kind {
-				t.Errorf("Kind = %q, want %q", item.Event.Payload.Kind, tt.kind)
-			}
-			if !reflect.DeepEqual(item.Event.Payload.Fields, tt.fields) {
-				t.Errorf("Fields = %#v, want %#v", item.Event.Payload.Fields, tt.fields)
+			if !reflect.DeepEqual(event.Payload.Fields, tt.fields) {
+				t.Errorf("Fields = %#v, want %#v", event.Payload.Fields, tt.fields)
 			}
 		})
 	}
 }
 
 func TestConvertFileEvent(t *testing.T) {
-	response := &clisv.ReceiveEventResponse{
+	record := &clisv.Eventrecord{
 		Head: testHead(),
-		Event: &clisv.ReceiveEventResponse_FileEv{FileEv: &hng.FileEventData{
+		Event: &clisv.Eventrecord_FileEv{FileEv: &hng.FileEventData{
 			SemanticFilename: "/etc/nginx/nginx.conf",
 			Flags:            1,
 			IsInnamespace:    true,
 			Comm:             "nginx",
 		}},
 	}
-	item, err := convertEventResponse(response)
+	event, err := convertEventRecord(record)
 	if err != nil {
-		t.Fatalf("convertEventResponse: %v", err)
+		t.Fatalf("convertEventRecord: %v", err)
 	}
-	if item.Event.Payload.Kind != model.PayloadFile {
-		t.Errorf("Kind = %q, want file", item.Event.Payload.Kind)
+	if event.Payload.Kind != model.PayloadFile {
+		t.Errorf("Kind = %q, want file", event.Payload.Kind)
 	}
 	want := map[string]any{
 		"semantic_filename": "/etc/nginx/nginx.conf",
@@ -227,24 +230,55 @@ func TestConvertFileEvent(t *testing.T) {
 		"is_innamespace":    true,
 		"comm":              "nginx",
 	}
-	if !reflect.DeepEqual(item.Event.Payload.Fields, want) {
-		t.Errorf("Fields = %#v, want %#v", item.Event.Payload.Fields, want)
+	if !reflect.DeepEqual(event.Payload.Fields, want) {
+		t.Errorf("Fields = %#v, want %#v", event.Payload.Fields, want)
 	}
 }
 
 func TestConvertStreamStats(t *testing.T) {
 	response := &clisv.ReceiveEventResponse{
-		Event: &clisv.ReceiveEventResponse_Stats{Stats: &clisv.Streamstats{DroppedEvents: 12}},
+		Payload: &clisv.ReceiveEventResponse_Stats{Stats: &clisv.Streamstats{DroppedEvents: 12}},
 	}
-	item, err := convertEventResponse(response)
+	items, err := convertEventResponse(response)
 	if err != nil {
 		t.Fatalf("convertEventResponse: %v", err)
 	}
-	if item.Stats == nil || item.Stats.DroppedEvents != 12 {
-		t.Fatalf("Stats = %+v, want 12 dropped", item.Stats)
+	if len(items) != 1 || items[0].Stats == nil || items[0].Stats.DroppedEvents != 12 {
+		t.Fatalf("Stats = %+v, want 12 dropped", items)
 	}
-	if item.Event != nil {
-		t.Errorf("Event = %+v, want nil", item.Event)
+	if items[0].Event != nil {
+		t.Errorf("Event = %+v, want nil", items[0].Event)
+	}
+}
+
+func TestConvertBatch(t *testing.T) {
+	response := &clisv.ReceiveEventResponse{
+		Payload: &clisv.ReceiveEventResponse_Batch{Batch: &clisv.ReceiveEventBatch{
+			Records: []*clisv.Eventrecord{
+				syscallRecord(&clisv.SyscallEventData{SData: &clisv.SyscallEventData_ProcessData{
+					ProcessData: &hng.ProcessSemanticData{SyscallName: "fork"},
+				}}),
+				{
+					Head: testHead(),
+					Event: &clisv.Eventrecord_FileEv{FileEv: &hng.FileEventData{
+						SemanticFilename: "/tmp/a",
+					}},
+				},
+			},
+		}},
+	}
+	items, err := convertEventResponse(response)
+	if err != nil {
+		t.Fatalf("convertEventResponse: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
+	}
+	if items[0].Event == nil || items[0].Event.Payload.Kind != model.PayloadProcess {
+		t.Errorf("items[0] = %+v, want process payload", items[0])
+	}
+	if items[1].Event == nil || items[1].Event.Payload.Kind != model.PayloadFile {
+		t.Errorf("items[1] = %+v, want file payload", items[1])
 	}
 }
 
@@ -252,7 +286,81 @@ func TestConvertUnknownPayload(t *testing.T) {
 	if _, err := convertEventResponse(&clisv.ReceiveEventResponse{}); err == nil {
 		t.Error("expected an error for a missing payload")
 	}
+	if _, err := convertEventRecord(&clisv.Eventrecord{}); err == nil {
+		t.Error("expected an error for a missing record payload")
+	}
 	if _, err := convertSyscallPayload(&clisv.SyscallEventData{}); err == nil {
 		t.Error("expected an error for a missing syscall payload")
+	}
+}
+
+// fakeRuntimeClient 记录订阅请求，不建立真实流。
+type fakeRuntimeClient struct {
+	request *clisv.ReceiveEventRequest
+}
+
+func (f *fakeRuntimeClient) ReceiveEvent(_ context.Context, in *clisv.ReceiveEventRequest,
+	_ ...grpc.CallOption) (grpc.ServerStreamingClient[clisv.ReceiveEventResponse], error) {
+	f.request = in
+	return nil, nil
+}
+
+func (f *fakeRuntimeClient) GetPipelineStats(context.Context,
+	*clisv.GetPipelineStatsRequest,
+	...grpc.CallOption) (*clisv.GetPipelineStatsResponse, error) {
+	return &clisv.GetPipelineStatsResponse{}, nil
+}
+
+func TestSubscribeSendsExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	expr := &model.FilterExpr{Logic: model.FilterLogicNot, Kids: []model.FilterExpr{
+		{Atom: &model.FilterAtom{
+			Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
+			Kinds: []model.EventKind{model.EventKindExec},
+		}},
+	}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{BatchSize: 7, Expr: expr}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	want, err := toProtoFilter(expr)
+	if err != nil {
+		t.Fatalf("toProtoFilter: %v", err)
+	}
+	if !proto.Equal(fake.request.GetExpr(), want) {
+		t.Errorf("Expr = %v, want %v", fake.request.GetExpr(), want)
+	}
+	if fake.request.GetBatchSize() != 7 {
+		t.Errorf("BatchSize = %d, want 7", fake.request.GetBatchSize())
+	}
+}
+
+func TestSubscribeOmitsNilExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{BatchSize: 1}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if fake.request.GetExpr() != nil {
+		t.Errorf("Expr = %v, want nil", fake.request.GetExpr())
+	}
+}
+
+func TestSubscribeRejectsInvalidExpr(t *testing.T) {
+	fake := &fakeRuntimeClient{}
+	service := eventService{c: &Client{events: fake}}
+	expr := &model.FilterExpr{Atom: &model.FilterAtom{
+		Field: model.FilterField(99), Compare: model.FilterCompareEq,
+		Numbers: []uint32{1},
+	}}
+	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
+		api.SubscribeOptions{Expr: expr}); err == nil ||
+		!strings.Contains(err.Error(), "unknown field") {
+		t.Errorf("error = %v, want an unknown field error", err)
+	}
+	if fake.request != nil {
+		t.Error("request was sent with an invalid expression")
 	}
 }

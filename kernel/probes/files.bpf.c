@@ -26,6 +26,27 @@ struct {
 } file_access_events SEC(".maps");
 
 /**
+ * @brief ringbuf 预留失败计数；每 CPU 一个 u64，用户态按 CPU 求和
+ * @note 失败包括 ringbuf 满与 NMI 上下文拿不到锁，故名为 reserve_failures
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} reserve_failures SEC(".maps");
+
+/// @brief 记录一次 ringbuf 预留失败；只在失败分支调用
+static __always_inline void count_reserve_failure(void)
+{
+    __u32 key   = 0;
+    __u64 *lost = bpf_map_lookup_elem(&reserve_failures, &key);
+    if (lost) {
+        __sync_fetch_and_add(lost, 1);
+    }
+}
+
+/**
  * @brief 判定当前进程是否处于非初始 mount 命名空间
  * @details
  * 路径参数是在调用进程的挂载命名空间视图中解释的，容器内与宿主机对同一路径的
@@ -64,6 +85,7 @@ static __always_inline struct file_access_data *init_file_access_data(void)
     struct file_access_data *data = bpf_ringbuf_reserve(
         &file_access_events, sizeof(struct file_access_data), 0);
     if (!data) {
+        count_reserve_failure();
         return NULL;
     }
     init_event_head(&data->head);

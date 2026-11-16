@@ -113,6 +113,10 @@ void run_two_lines()
     REQUIRE(semantic.state() == hng::ComponentState::STOPPED);
     REQUIRE(raw_file.empty());
     REQUIRE(raw_syscall.empty());
+
+    const hng::SemanticStats stats = semantic.stats();
+    REQUIRE(stats.processed_file == 201);
+    REQUIRE(stats.processed_syscall == 2);
 }
 
 void drain_on_stop()

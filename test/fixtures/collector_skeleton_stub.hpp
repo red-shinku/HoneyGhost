@@ -106,11 +106,14 @@ inline int ring_buffer__epoll_fd(const ring_buffer* buffer)
             hng_test_event_fd_override.value_or(hng_test_next_fd++)};  \
         bpf_map filter_storage{                                        \
             hng_test_filter_fd_override.value_or(hng_test_next_fd++)}; \
+        bpf_map failures_storage{hng_test_next_fd++};                  \
         struct {                                                       \
             bpf_map* ring;                                             \
             bpf_map* hng_role_filter;                                  \
+            bpf_map* reserve_failures;                                 \
         } maps;                                                        \
-        name() : maps{&ring##_storage, &filter_storage}                \
+        name() : maps{&ring##_storage, &filter_storage,                \
+                      &failures_storage}                                \
         {                                                              \
             hng_test_last_event_fd  = ring##_storage.fd;               \
             hng_test_last_filter_fd = filter_storage.fd;               \

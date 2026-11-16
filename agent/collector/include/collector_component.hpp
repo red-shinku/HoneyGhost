@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "agent/util/include/component.hpp"
+#include "agent/util/include/pipeline_stats.hpp"
 
 struct file_access_data;
 struct syscall_event;
@@ -64,6 +65,9 @@ class CollectorComponent final : public hng::Component {
     /// @return 有效 fd 列表；未 prepare() 或对应线无 map 时为空
     /// @note 调用方不得关闭 fd
     std::vector<int> role_filter_map_fds() const;
+
+    /// @brief 各线累计计数快照；可从任意线程调用
+    std::vector<hng::CollectorLineStats> stats() const;
 
     /// @brief 当前生命周期状态
     /// @see hng::Component::state
