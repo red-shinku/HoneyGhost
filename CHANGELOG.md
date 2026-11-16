@@ -5,6 +5,9 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
+None
+
+## [v0.1.2] - 2026-11-16
 ### Added
 
 - `hghost status` adds RUNTIME STATS: kernel-side ringbuf failure counts, and exception counts for collector/semantic/engine channels and CLI streams.
@@ -17,7 +20,6 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ### Changed
 
-- `-i` accepts `roleID=0` and `contextID=0`, which match events whose role or context is not settled yet; `pid=0` is still rejected.
 - An explicit `-t` cannot be combined with a `type` predicate in `-e`; mixing them is a usage error.
 - The CLI event stream is changed to batched gRPC messages:
   to optimize the backpressure problem of CLIServer. Currently the entire line is under pressure of about 30k+ events per second.
@@ -26,6 +28,7 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 - The default capacity of each CLI stream queue is increased from 1024 to 8192.  
 - Optimize the volume of the agent image.
 - Changed the base image for both images to distroless, and local builds now support swapping the base image. The image health check now runs `hng_agent --health-check`.
+- `-i` accepts `roleID=0` and `contextID=0`, which match events whose role or context is not settled yet; `pid=0` is still rejected.
 
 ### Fixed
 

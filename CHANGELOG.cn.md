@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+None
+
+## [v0.1.2] - 2026-11-16
+
 ### Added
 
 - `hghost status` 新增 RUNTIME STATS：内核侧 ringbuf 失败计数、collector/semantic/engine
@@ -18,7 +22,6 @@
 
 ### Changed
 
-- `-i` 的 `roleID` / `contextID` 接受 `0`，字面匹配未落定；`pid=0` 仍被拒绝。
 - 显式 `-t` 与 `-e` 中的 `type` 原子互斥，混用是用法错误。
 - CLI 事件流改为批量 gRPC 消息：
   优化 CLIServer 的背压问题。目前全线承压约 30k+ 事件每秒。
@@ -26,7 +29,8 @@
   不兼容旧 CLI。
 - CLI 每流队列默认容量由 1024 提高到 8192。  
 - 优化 agent 镜像体积。
-- 两个镜像的基础镜像改为 distroless，本地构建支持更换基础镜像。镜像健康检查改跑 `hng_agent --health-check`。
+- 两个镜像的基础镜像改为 distroless，本地构建支持更换基础镜像。镜像健康检查改跑 `hng_agent --health-check`。  
+- `-i` 的 `roleID` / `contextID` 接受 `0`，字面匹配未落定；`pid=0` 仍被拒绝。
 
 ### Fixed
 
