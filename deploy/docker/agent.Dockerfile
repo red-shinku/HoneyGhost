@@ -116,15 +116,17 @@ RUN chroot /rootfs /usr/local/bin/hng_agent --version
 
 FROM ${BASE_IMAGE} AS runtime
 
-# 构建来源只作追溯用：VERSION 与构建该镜像使用的 builder digest。
+# 构建来源只作追溯用：VERSION 与构建该镜像使用的 builder、基础镜像 digest。
 ARG VERSION=dev
 ARG BUILDER_DIGEST=unknown
+ARG BASE_DIGEST=unknown
 
 LABEL org.opencontainers.image.title="honeyghost-agent" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/red-shinku/HoneyGhost" \
       org.opencontainers.image.licenses="MIT" \
-      org.honeyghost.builder-digest="${BUILDER_DIGEST}"
+      org.honeyghost.builder-digest="${BUILDER_DIGEST}" \
+      org.honeyghost.base-image-digest="${BASE_DIGEST}"
 
 # 增量层：剪枝后的 ldd 闭包、ld.so.cache、/run/honeyghost 与二进制
 COPY --from=assemble /staging/ /

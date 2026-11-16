@@ -32,6 +32,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM ${BASE_IMAGE}
 
+# 构建来源只作追溯用：构建该镜像使用的基础镜像 digest
+ARG BASE_DIGEST=unknown
+LABEL org.honeyghost.base-image-digest="${BASE_DIGEST}"
+
 # 静态二进制，无运行时依赖；分发用 distroless，本地排查可把 BASE_IMAGE 换成 debian:13-slim
 COPY --from=builder /out/containerd-bridge /usr/local/bin/containerd-bridge
 

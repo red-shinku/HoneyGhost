@@ -56,17 +56,42 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "builder: ghcr.io/red-shinku/honeyghost-builder@$digest"
 
+      # 解析两个运行时基础镜像的 digest：本次构建实际用到的基础镜像按字节固定，
+      # 并写入镜像 label 供核对与回滚。
+      - name: 解析基础镜像 digest
+        id: base
+        env:
+          AGENT_BASE: gcr.io/distroless/cc-debian13:latest
+          BRIDGE_BASE: gcr.io/distroless/static-debian13:latest
+          BUILDER_DIGEST: ${{ steps.builder.outputs.digest }}
+        run: |
+          agent=$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' \
+            "$AGENT_BASE" | tr -d '"')
+          bridge=$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' \
+            "$BRIDGE_BASE" | tr -d '"')
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+          echo "bridge=$bridge" >> "$GITHUB_OUTPUT"
+          {
+            echo "| 镜像 | 基础镜像 | digest |"
+            echo "| --- | --- | --- |"
+            echo "| honeyghost-agent | ${AGENT_BASE%:*} | $agent |"
+            echo "| honeyghost-containerd-bridge | ${BRIDGE_BASE%:*} | $bridge |"
+            echo "| honeyghost-builder | ghcr.io/red-shinku/honeyghost-builder | $BUILDER_DIGEST |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 构建并推送 agent
         id: agent
         env:
           TAG: ${{ inputs.tag }}
           VERSION: ${{ inputs.version }}
           BUILDER_DIGEST: ${{ steps.builder.outputs.digest }}
+          BASE_IMAGE_DIGEST: ${{ steps.base.outputs.agent }}
         run: |
           docker buildx build \
             -f deploy/docker/agent.Dockerfile \
             --platform linux/amd64 \
-            --build-arg BASE_IMAGE=gcr.io/distroless/cc-debian13:latest \
+            --build-arg "BASE_IMAGE=gcr.io/distroless/cc-debian13@$BASE_IMAGE_DIGEST" \
+            --build-arg "BASE_DIGEST=$BASE_IMAGE_DIGEST" \
             --build-arg "BUILDER_IMAGE=ghcr.io/red-shinku/honeyghost-builder@$BUILDER_DIGEST" \
             --build-arg "BUILDER_DIGEST=$BUILDER_DIGEST" \
             --build-arg VERSION="$VERSION" \
@@ -85,11 +110,13 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           VERSION: ${{ inputs.version }}
+          BASE_IMAGE_DIGEST: ${{ steps.base.outputs.bridge }}
         run: |
           docker buildx build \
             -f agent/role_discovery/containerd_bridge/Dockerfile \
             --platform linux/amd64 \
-            --build-arg BASE_IMAGE=gcr.io/distroless/static-debian13:latest \
+            --build-arg "BASE_IMAGE=gcr.io/distroless/static-debian13@$BASE_IMAGE_DIGEST" \
+            --build-arg "BASE_DIGEST=$BASE_IMAGE_DIGEST" \
             --build-arg VERSION="$VERSION" \
             --build-arg COMMIT="${GITHUB_SHA::7}" \
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
