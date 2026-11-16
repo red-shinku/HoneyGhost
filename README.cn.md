@@ -245,8 +245,6 @@ docker pull fifseason/honeyghost-agent:latest
 docker pull fifseason/honeyghost-containerd-bridge:latest
 ```
 
-分发的镜像本身不含调试信息（构建期剥离 DWARF）：需要行号级调试或性能分析时，用本地构建产物。
-
 ### 本地构建
 
 项目根目录：
