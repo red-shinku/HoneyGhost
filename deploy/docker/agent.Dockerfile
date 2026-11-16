@@ -6,9 +6,12 @@
 #
 # 工具链与 userver 来自 builder 镜像（deploy/ci/builder.Dockerfile），
 # 本文件只编译仓库源码并组装运行时层。
+#
+# 运行阶段基于 distroless，不含 shell：该阶段只写 COPY、LABEL、ENTRYPOINT、
+# CMD、HEALTHCHECK，出现 RUN 即构建失败。
 # ============================================================
 
-ARG BASE_IMAGE=debian:13-slim
+ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:latest
 ARG BUILDER_IMAGE=ghcr.io/red-shinku/honeyghost-builder:latest
 
 FROM ${BUILDER_IMAGE} AS builder
@@ -50,12 +53,10 @@ RUN test -f /src/kernel/files.skel.h \
  && test -f /src/kernel/networks.skel.h \
  && test -f /build/agent/collector/libhng_collector.a
 
-# 运行时库取 ldd 闭包：运行阶段与构建阶段是同一基础镜像，复制来的库与
-# 链接时使用的完全一致，运行阶段因此不必再按包名列一遍依赖。
+# 运行时库取 ldd 闭包；装配阶段再按内容与基础镜像比对，只保留基础镜像没有的文件。
 #
-# 落点用目录的真实路径（/lib 是 usr/lib 的符号链接，直接按原路径复制会
-# 让 COPY 撞上符号链接），文件名保持 ldd 给出的 soname，否则动态加载器
-# 找不到 DT_NEEDED 里的名字。
+# 落点用目录的真实路径（/lib 指向 usr/lib），文件名保持 ldd 给出的 soname，
+# 否则动态加载器找不到 DT_NEEDED 里的名字。
 RUN mkdir -p /staging \
  && ldd /build/hng_agent | awk '{ for (i = 1; i <= NF; ++i) if ($i ~ /^\//) print $i }' | sort -u > /tmp/libs.txt \
  && while read -r lib; do \
@@ -64,18 +65,24 @@ RUN mkdir -p /staging \
         cp -L "$lib" "/staging$dir/$(basename "$lib")"; \
     done < /tmp/libs.txt
 
-# 装配阶段：把 ldd 闭包对齐到基础镜像，只留基础层没有的文件。
-FROM ${BASE_IMAGE} AS assemble
+# 只作文件来源，不执行任何命令
+FROM ${BASE_IMAGE} AS base-root
 
+# 装配阶段：有 shell，做剪枝、生成加载器缓存、合并运行根并校验
+FROM ${BUILDER_IMAGE} AS assemble
+
+COPY --from=base-root / /rootfs/
 COPY --from=builder /staging/ /staging/
+COPY --from=builder /build/hng_agent /staging/usr/local/bin/hng_agent
 
+# 剪枝：与基础镜像同名同内容（基础镜像为同名符号链接且指向同内容也算）的文件删除
 RUN set -eu; \
     : > /tmp/dropped; \
     : > /tmp/kept; \
     : > /tmp/overrides; \
     find /staging -type f | while read -r src; do \
-        rel="${src#/staging/}"; \
-        dst="/$rel"; \
+        rel="${src#/staging}"; \
+        dst="/rootfs$rel"; \
         if [ -e "$dst" ] && cmp -s "$src" "$dst"; then \
             stat -c '%s' "$src" >> /tmp/dropped; \
             rm -f "$src"; \
@@ -93,6 +100,20 @@ RUN set -eu; \
     fi; \
     rm -f /tmp/dropped /tmp/kept /tmp/overrides
 
+# 加载器缓存须构建期生成：/usr/local/lib 不在默认搜索路径，distroless 不带该缓存；
+# 增量与基础镜像在此合并成完整运行根，供 chroot 校验
+RUN set -eu; \
+    cp -a /staging/. /rootfs/; \
+    ldconfig -r /rootfs; \
+    mkdir -p /staging/etc /staging/run/honeyghost; \
+    cp /rootfs/etc/ld.so.cache /staging/etc/ld.so.cache
+
+# 构建期断言：Boost.Locale 已从链接接口里摘掉（见 CMakeLists.txt），DT_NEEDED 不含 libicu
+RUN ! readelf -d /staging/usr/local/bin/hng_agent | grep -q libicu
+
+# 构建期断言：在最终根里跑一次 --version，确认动态加载链路完整
+RUN chroot /rootfs /usr/local/bin/hng_agent --version
+
 FROM ${BASE_IMAGE} AS runtime
 
 # 构建来源只作追溯用：VERSION 与构建该镜像使用的 builder digest。
@@ -105,25 +126,15 @@ LABEL org.opencontainers.image.title="honeyghost-agent" \
       org.opencontainers.image.licenses="MIT" \
       org.honeyghost.builder-digest="${BUILDER_DIGEST}"
 
+# 增量层：剪枝后的 ldd 闭包、ld.so.cache、/run/honeyghost 与二进制
 COPY --from=assemble /staging/ /
-COPY --from=builder /build/hng_agent /usr/local/bin/hng_agent
 
 # 内建默认配置；部署时可用卷覆盖整个目录
 COPY deploy/docker/config/ /etc/honeyghost/
 
-# CLI 服务端与 containerd 桥接 socket 的父目录；运行期通常由卷覆盖
-RUN mkdir -p /run/honeyghost
-
-# fmt/spdlog 落在 /usr/local/lib，登记进动态加载器缓存
-RUN ldconfig
-
-RUN ! ldd /usr/local/bin/hng_agent | grep -q 'not found'
-
-# Boost.Locale 已从链接接口里摘掉（见 CMakeLists.txt），ICU 因此不应再被带进来
-RUN ! ldd /usr/local/bin/hng_agent | grep -q 'libicu'
-
 ENTRYPOINT ["/usr/local/bin/hng_agent"]
 CMD ["--config", "/etc/honeyghost/agent.conf"]
 
+# 无 shell，健康检查走 agent 自带的开关
 HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
-    CMD test -S /run/honeyghost/cli.sock
+    CMD ["/usr/local/bin/hng_agent", "--health-check"]
