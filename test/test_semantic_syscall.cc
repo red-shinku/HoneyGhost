@@ -11,7 +11,7 @@
  */
 
 #include "agent/semantic/src/semantic.hpp"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 
 #include <fcntl.h>
 #include <netinet/in.h>

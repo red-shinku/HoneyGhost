@@ -43,7 +43,7 @@
 #include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 
 #include <atomic>
 #include <exception>
@@ -174,12 +174,11 @@ void Assembly::Impl::build_pipeline()
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
         // network 语义线尚无 consumer：不建采集线，避免无读端通道静默丢事件
-        collector = CollectorFactory::create({&raw_file_ch.writer(),
-                                              &raw_syscall_ch.writer(),
-                                              nullptr});
-        semantic  = SemanticFactory::create(
+        collector = CollectorFactory::create(
+            {&raw_file_ch.writer(), &raw_syscall_ch.writer(), nullptr});
+        semantic = SemanticFactory::create(
             {&raw_file_ch.reader(), &raw_syscall_ch.reader(),
-              &semantic_file_ch.writer(), &semantic_syscall_ch.writer()});
+             &semantic_file_ch.writer(), &semantic_syscall_ch.writer()});
     }
 #endif
 

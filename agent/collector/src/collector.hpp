@@ -10,7 +10,7 @@
 #include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
 #include "kernel/include/networks_type.h"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 
 #include <atomic>
 #include <cstddef>
@@ -35,13 +35,13 @@ std::uint64_t ReadPercpuCounter(int fd) noexcept;
  */
 class CollectorType {
    public:
-    CollectorType()                                 = default;
-    virtual ~CollectorType()                        = default;
+    CollectorType()                                  = default;
+    virtual ~CollectorType()                         = default;
 
-    CollectorType(const CollectorType&)             = delete;
-    CollectorType& operator=(const CollectorType&)  = delete;
-    CollectorType(CollectorType&&)                  = delete;
-    CollectorType& operator=(CollectorType&&)       = delete;
+    CollectorType(const CollectorType&)              = delete;
+    CollectorType& operator=(const CollectorType&)   = delete;
+    CollectorType(CollectorType&&)                   = delete;
+    CollectorType& operator=(CollectorType&&)        = delete;
 
     /**
      * @brief 加载骨架、创建 ringbuf 并校验过滤 map fd，不挂载探针。
@@ -49,25 +49,25 @@ class CollectorType {
      * @note 成功后 role_filter_map_fd() 即可返回有效 fd，此时尚无事件产生；
      *       须再调用 attach()。失败时不保留任何已准备资源。
      */
-    virtual bool prepare()                          = 0;
+    virtual bool prepare()                           = 0;
     /**
      * @brief 在 prepare() 成功后挂载探针。
      * @return 成功为 true；未准备、已挂载或挂载失败为 false
      * @note 挂载成功后可被 consume() 消费；挂载失败保留已准备资源。
      */
-    virtual bool attach()                           = 0;
+    virtual bool attach()                            = 0;
     /**
      * @brief 加载、创建 ringbuf 并挂载探针，等价于 prepare() 后 attach()。
      * @return 成功为 true；attach() 失败时回收已准备资源并返回 false
      * @note 重复初始化返回 false；已 prepare() 而未 attach() 时返回 false，
      *       且不改变已准备状态。
      */
-    virtual bool init()                             = 0;
+    virtual bool init()                              = 0;
     /**
      * @brief 摘除探针；此后不再产生新事件。
      * @note 已准备但未挂载时为空操作。ringbuf 仍可继续 consume() 排空。
      */
-    virtual void detach()                           = 0;
+    virtual void detach()                            = 0;
     /**
      * @brief 把 ringbuf 中就绪的记录搬到输出通道。
      * @param budget 本次最多消费的记录数；实现可忽略该上限
@@ -75,25 +75,25 @@ class CollectorType {
      * @note 未 prepare() 或从未 attach() 成功时返回 0，不访问 ringbuf；
      *       detach() 后仍可继续消费剩余记录。通道满时记录被丢弃，计数在通道内。
      */
-    virtual int consume(std::size_t budget)         = 0;
+    virtual int consume(std::size_t budget)          = 0;
     /**
      * @brief 借用 ringbuf 的 epoll fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；fd 的生命周期由采集线持有。
      */
-    virtual int epoll_fd() const noexcept           = 0;
+    virtual int epoll_fd() const noexcept            = 0;
     /**
      * @brief 借用角色过滤 map fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；须复制 fd 或保持采集器存活。
      *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
      */
-    virtual int role_filter_map_fd() const noexcept = 0;
+    virtual int role_filter_map_fd() const noexcept  = 0;
 
     /// @brief 线名，用于统计标签；返回静态字符串
-    virtual const char* name() const noexcept = 0;
+    virtual const char* name() const noexcept        = 0;
 
     /// @brief 本线的累计计数快照；可从任意线程调用
     /// @note reserve_failures 由聚合层按本函数给出的 fd 读取后填入
-    virtual hng::CollectorLineStats stats() const = 0;
+    virtual hng::CollectorLineStats stats() const    = 0;
 
     /// @brief 内核预留失败计数 map 的 fd；未准备时返回 -1
     virtual int reserve_failures_fd() const noexcept = 0;

@@ -12,7 +12,7 @@
 
 #include "kernel/include/vmlinux.h"
 #include "kernel/include/role_filter.bpf.h"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 #include "kernel/include/uapi_const.h"
 
 #include <bpf/bpf_core_read.h>

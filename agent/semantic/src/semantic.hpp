@@ -8,7 +8,7 @@
 #include "agent/util/include/event_loop.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
 #include "kernel/include/files_type.h"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 
 #include <atomic>
 #include <cstddef>

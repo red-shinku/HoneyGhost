@@ -1,7 +1,8 @@
 /**
  * @file syscall_event_head.h
  * @brief 定义syscalls事件专有的头结构
- * @details syscalls事件头包含通用事件头，并新增了syscall名称和自定义的syscall类别归属。
+ * @details
+ * syscalls事件头包含通用事件头，并新增了syscall名称和自定义的syscall类别归属。
  * @author red_shinku
  * @date 2026.08.06
  */
@@ -51,7 +52,8 @@ enum syscall_event_name {
 
 /**
  * @brief 自定义syscall类别.
- * @details 根据语义划分。每个类型也对应一种数据结构，用户态以此从 ringbuf 解析数据。
+ * @details 根据语义划分。每个类型也对应一种数据结构，用户态以此从 ringbuf
+ * 解析数据。
  */
 enum syscall_event_type {
     PROCESS_EVENT,     ///< 进程生命周期
@@ -72,7 +74,8 @@ struct syscall_event_head {
 
 // 初始化函数依赖 init_event_head，仅内核态探针程序使用
 #ifdef __bpf__
-static __always_inline void init_syscall_event_head(struct syscall_event_head *s_head, enum syscall_event_name name)
+static __always_inline void init_syscall_event_head(
+    struct syscall_event_head *s_head, enum syscall_event_name name)
 {
     if (!s_head) {
         return;

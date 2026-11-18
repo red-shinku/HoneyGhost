@@ -1,5 +1,5 @@
 /**
- * @file syscalls_type.h
+ * @file syscall_event_type.h
  * @brief 此文件定义系统调用事件收集模块的数据结构
  * @details
  *
@@ -24,7 +24,8 @@
 struct process_event {
     // （kprobe wake_up_new_task），事件头 head 即新进程，因此不再携带
     // clone_flags（原用于区分 clone 创建线程/进程，现由 head 语义替代）。
-    __s32 exit_code;  ///< 进程退出码；正常退出为状态码，被信号终止为信号编号的负数
+    __s32
+        exit_code;  ///< 进程退出码；正常退出为状态码，被信号终止为信号编号的负数
 };
 
 struct exec_event {

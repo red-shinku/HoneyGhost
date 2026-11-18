@@ -42,7 +42,7 @@ set(HNG_EBPF_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/files_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/networks_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_head.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/syscalls_type.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/uapi_const.h
 )
 
