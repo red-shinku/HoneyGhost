@@ -46,6 +46,8 @@ enum syscall_event_name {
     SYSCALL_EVENT_CONNECT,
     SYSCALL_EVENT_SOCKET,
     SYSCALL_EVENT_BIND,
+    SYSCALL_EVENT_SENDTO,
+    SYSCALL_EVENT_SENDMSG,
 
     SYSCALL_EVENT_EXIT_GROUP
 };
@@ -120,6 +122,8 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_CONNECT:
         case SYSCALL_EVENT_SOCKET:
         case SYSCALL_EVENT_BIND:
+        case SYSCALL_EVENT_SENDTO:
+        case SYSCALL_EVENT_SENDMSG:
             s_head->type = NETWORK_EVENT;
             break;
         case SYSCALL_EVENT_PTRACE:

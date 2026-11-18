@@ -345,14 +345,23 @@ func eventDetail(p model.Payload) string {
 		return fmt.Sprintf("%s ns_type=%v flags=0x%x", name,
 			fields["ns_type"], uintField(fields, "flags"))
 	case model.PayloadFileSyscall:
-		return fmt.Sprintf("%s flags=0x%x mode=0%o", name,
+		detail := name
+		if path := stringField(fields, "path"); path != "" {
+			detail += " path=" + path
+		}
+		return fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
 			uintField(fields, "flags"), uintField(fields, "mode"))
 	case model.PayloadMemory:
 		return fmt.Sprintf("%s prot=0x%x flags=0x%x", name,
 			uintField(fields, "prot"), uintField(fields, "flags"))
 	case model.PayloadNetworkSyscall:
-		return fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
+		detail := fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
 			fields["family"], fields["type"], fields["protocol"])
+		if dst := networkDst(fields); dst != "" {
+			detail += fmt.Sprintf(" dst=%s src_port=%d", dst,
+				uintField(fields, "src_port"))
+		}
+		return detail
 	case model.PayloadKernel:
 		return fmt.Sprintf("%s command=%v arg=%v", name,
 			fields["command"], fields["arg"])
@@ -361,6 +370,66 @@ func eventDetail(p model.Payload) string {
 	default:
 		return p.Kind
 	}
+}
+
+// 地址族取值，与内核 <sys/socket.h> 的 AF_INET / AF_INET6 一致。
+const (
+	afINET  = 2
+	afINET6 = 10
+)
+
+// networkDst 把网络事件的目标地址与端口拼成 host:port；目标地址未采集时返回
+// 空串，此时调用方不呈现 dst（socket/bind 等没有目标的事件）。
+func networkDst(fields map[string]any) string {
+	words, _ := fields["dst_ip"].([]uint32)
+	family := uint32(uintField(fields, "family"))
+	port := uintField(fields, "dst_port")
+
+	ip := formatIP(family, words)
+	if ip == "" || (port == 0 && allZeroWords(words)) {
+		return ""
+	}
+	if family == afINET6 {
+		return "[" + ip + "]:" + strconv.FormatUint(port, 10)
+	}
+	return ip + ":" + strconv.FormatUint(port, 10)
+}
+
+// formatIP 按网络字节序把内核记录的目标地址格式化为可读字符串：IPv4 取
+// dst_ip[0] 的四个字节，IPv6 把 dst_ip[0..3] 展开为 8 组 16 位十六进制。
+// 地址族不支持或字数不足时返回空串。
+func formatIP(family uint32, words []uint32) string {
+	switch family {
+	case afINET:
+		if len(words) < 1 {
+			return ""
+		}
+		word := words[0]
+		return fmt.Sprintf("%d.%d.%d.%d", byte(word), byte(word>>8),
+			byte(word>>16), byte(word>>24))
+	case afINET6:
+		if len(words) < 4 {
+			return ""
+		}
+		groups := make([]string, 0, 8)
+		for _, word := range words[:4] {
+			groups = append(groups,
+				fmt.Sprintf("%x", uint16(byte(word))<<8|uint16(byte(word>>8))),
+				fmt.Sprintf("%x", uint16(byte(word>>16))<<8|uint16(byte(word>>24))))
+		}
+		return strings.Join(groups, ":")
+	default:
+		return ""
+	}
+}
+
+func allZeroWords(words []uint32) bool {
+	for _, word := range words {
+		if word != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func stringField(fields map[string]any, key string) string {

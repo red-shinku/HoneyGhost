@@ -16,6 +16,7 @@
 #include "kernel/include/uapi_const.h"
 
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
@@ -170,8 +171,10 @@ static __always_inline struct syscall_event *init_file_event(
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    event->file_event.flags = 0;
-    event->file_event.mode  = 0;
+    __builtin_memset(event->file_event.path, 0, sizeof(event->file_event.path));
+    event->file_event.flags          = 0;
+    event->file_event.mode           = 0;
+    event->file_event.is_innamespace = 0;
     return event;
 }
 
@@ -219,6 +222,10 @@ static __always_inline struct syscall_event *init_network_event(
     event->network_event.family   = 0;
     event->network_event.type     = 0;
     event->network_event.protocol = 0;
+    __builtin_memset(event->network_event.dst_ip, 0,
+                     sizeof(event->network_event.dst_ip));
+    event->network_event.dst_port = 0;
+    event->network_event.src_port = 0;
     return event;
 }
 
@@ -243,6 +250,163 @@ static __always_inline struct syscall_event *init_kernel_event(
     event->kernel_event.command = 0;
     event->kernel_event.arg     = 0;
     return event;
+}
+
+/**
+ * @name 事件字段采集辅助
+ * @{
+ */
+
+/**
+ * @brief 判定当前进程是否处于非初始 mount 命名空间
+ * @details
+ * 路径参数是在调用进程的挂载命名空间视图中解释的，容器内与宿主机对同一路径的
+ * 语义不同。通过 task->nsproxy->mnt_ns->ns.inum 读取当前挂载命名空间的 inode：
+ * 初始挂载命名空间的 inode 恒为 0xF0000000（4026531840，宿主根命名空间，各内核
+ * 版本稳定），其余为容器 / 自定义命名空间（inode
+ * 或大于或小于该值，故用精确比较）。
+ * @return 非初始挂载命名空间返回 1，否则返回 0。
+ * @note 任一环节读取失败按“不在命名空间中”保守处理。
+ */
+static __always_inline __u8 current_is_innamespace(void)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
+    if (!nsproxy) {
+        return 0;
+    }
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
+    if (!mnt_ns) {
+        return 0;
+    }
+    unsigned int inum = BPF_CORE_READ(mnt_ns, ns.inum);
+    return inum == 4026531840 ? 0 : 1;
+}
+
+/**
+ * @brief 解析用户态 sockaddr 地址，提取地址族、IP 与端口
+ * @param[in] addr 用户态 sockaddr 指针，允许为 NULL
+ * @param[in] addrlen sockaddr 长度
+ * @param[out] ip_out 目标 IP（网络字节序）：IPv4 用 [0]，IPv6 用 [0..3]
+ * @param[out] port_out 目标端口（主机字节序）
+ * @param[out] family_out 地址族
+ * @return 解析成功且地址族为 IPv4 / IPv6 时返回 true，否则返回 false。
+ * @note 仅在返回 true 时使用输出参数；地址族非 INET/INET6、长度不足或读取失败
+ *       均返回 false。
+ */
+static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
+                                           u32 ip_out[4], u16 *port_out,
+                                           u32 *family_out)
+{
+    if (!addr) {
+        return false;
+    }
+
+    struct sockaddr sa;
+    if (bpf_probe_read_user(&sa, sizeof(sa), addr)) {
+        return false;
+    }
+
+    if (sa.sa_family == AF_INET) {
+        if (addrlen < sizeof(struct sockaddr_in)) {
+            return false;
+        }
+        struct sockaddr_in sin;
+        if (bpf_probe_read_user(&sin, sizeof(sin), addr)) {
+            return false;
+        }
+        *family_out = AF_INET;
+        *port_out   = bpf_ntohs(sin.sin_port);
+        ip_out[0]   = sin.sin_addr.s_addr;
+        return true;
+    }
+    else if (sa.sa_family == AF_INET6) {
+        if (addrlen < sizeof(struct sockaddr_in6)) {
+            return false;
+        }
+        struct sockaddr_in6 sin6;
+        if (bpf_probe_read_user(&sin6, sizeof(sin6), addr)) {
+            return false;
+        }
+        *family_out = AF_INET6;
+        *port_out   = bpf_ntohs(sin6.sin6_port);
+        ip_out[0]   = sin6.sin6_addr.in6_u.u6_addr32[0];
+        ip_out[1]   = sin6.sin6_addr.in6_u.u6_addr32[1];
+        ip_out[2]   = sin6.sin6_addr.in6_u.u6_addr32[2];
+        ip_out[3]   = sin6.sin6_addr.in6_u.u6_addr32[3];
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief 通过当前进程的 fd 获取套接字指针
+ * @details 从 task_struct 的文件描述符表逐层读取（CO-RE），返回 fd 对应的
+ *          struct sock *，任一环节读取失败均返回 NULL。
+ * @param[in] fd 文件描述符
+ * @return 内核持有的套接字指针，失败返回 NULL。
+ * @note 返回值仅用于本次探针中的读取，不转移所有权。
+ */
+static __always_inline struct sock *get_socket_sk(u32 fd)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return NULL;
+    }
+
+    struct files_struct *files = BPF_CORE_READ(task, files);
+    if (!files) {
+        return NULL;
+    }
+
+    struct fdtable *fdt = BPF_CORE_READ(files, fdt);
+    if (!fdt) {
+        return NULL;
+    }
+
+    u32 max_fds = BPF_CORE_READ(fdt, max_fds);
+    if (fd >= max_fds) {
+        return NULL;
+    }
+
+    struct file **fd_array = BPF_CORE_READ(fdt, fd);
+    if (!fd_array) {
+        return NULL;
+    }
+
+    struct file *file = NULL;
+    if (bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd])) {
+        return NULL;
+    }
+    if (!file) {
+        return NULL;
+    }
+
+    struct socket *socket = BPF_CORE_READ(file, private_data);
+    if (!socket) {
+        return NULL;
+    }
+
+    return BPF_CORE_READ(socket, sk);
+}
+
+/**
+ * @brief 从套接字读取本地信息（源端口、协议号）并写入事件
+ * @param[in] sk 套接字指针，允许为 NULL
+ * @param[in,out] data 网络事件数据，仅更新本地端口与协议号
+ */
+static __always_inline void fill_local_info(struct sock *sk,
+                                            struct network_event *data)
+{
+    if (!sk) {
+        return;
+    }
+    data->src_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+    data->protocol = BPF_CORE_READ(sk, sk_protocol);
 }
 
 /** @} */
@@ -584,8 +748,13 @@ int trace_syscall_open(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPEN);
     if (!event) return 0;
 
-    event->file_event.flags = (u32)ctx->args[1];
-    event->file_event.mode  = (u32)ctx->args[2];
+    //! @note args[0]: const char *filename
+    bpf_probe_read_user_str(&event->file_event.path,
+                            sizeof(event->file_event.path), (void *)ctx->args[0]);
+    //! @note args[1]: int flags, args[2]: umode_t mode
+    event->file_event.flags          = (u32)ctx->args[1];
+    event->file_event.mode           = (u32)ctx->args[2];
+    event->file_event.is_innamespace = current_is_innamespace();
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -602,8 +771,13 @@ int trace_syscall_openat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPENAT);
     if (!event) return 0;
 
-    event->file_event.flags = (u32)ctx->args[2];
-    event->file_event.mode  = (u32)ctx->args[3];
+    //! @note args[1]: const char *filename
+    bpf_probe_read_user_str(&event->file_event.path,
+                            sizeof(event->file_event.path), (void *)ctx->args[1]);
+    //! @note args[2]: int flags, args[3]: umode_t mode
+    event->file_event.flags          = (u32)ctx->args[2];
+    event->file_event.mode           = (u32)ctx->args[3];
+    event->file_event.is_innamespace = current_is_innamespace();
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -620,11 +794,16 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPENAT2);
     if (!event) return 0;
 
+    //! @note args[1]: const char *filename
+    bpf_probe_read_user_str(&event->file_event.path,
+                            sizeof(event->file_event.path), (void *)ctx->args[1]);
+    //! @note args[2]: struct open_how *
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
         event->file_event.flags = (u32)how.flags;
         event->file_event.mode  = (u32)how.mode;
     }
+    event->file_event.is_innamespace = current_is_innamespace();
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -641,10 +820,14 @@ int trace_syscall_creat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_CREAT);
     if (!event) return 0;
 
+    //! @note args[0]: const char *filename
+    bpf_probe_read_user_str(&event->file_event.path,
+                            sizeof(event->file_event.path), (void *)ctx->args[0]);
     //! @note creat() 隐含了 O_CREAT | O_WRONLY | O_TRUNC
-    event->file_event.flags = O_CREAT | O_WRONLY | O_TRUNC;
+    event->file_event.flags          = O_CREAT | O_WRONLY | O_TRUNC;
     //! @note args[1]: umode_t mode
-    event->file_event.mode  = (u32)ctx->args[1];
+    event->file_event.mode           = (u32)ctx->args[1];
+    event->file_event.is_innamespace = current_is_innamespace();
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -783,6 +966,9 @@ int trace_mprotect(struct trace_event_raw_sys_enter *ctx)
  * @brief 处理 sys_enter_connect 事件并提交采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件或无法构造事件时跳过提交。
+ * @note 无论目标地址能否解析都提交事件：连接意图本身是语义的一部分，
+ *       AF_UNIX 等非 IP 连接同样可见。
+ * @note 源端口为本地临时端口，sys_enter 阶段可能尚未分配，为 0。
  */
 SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_connect(struct trace_event_raw_sys_enter *ctx)
@@ -790,10 +976,86 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_network_event(SYSCALL_EVENT_CONNECT);
     if (!event) return 0;
 
-    struct sockaddr sa;
-    if (bpf_probe_read_user(&sa, sizeof(sa), (void *)ctx->args[1]) == 0) {
-        event->network_event.family = sa.sa_family;
+    //! @note args[0]: sockfd, args[1]: 目标 sockaddr, args[2]: addrlen
+    if (parse_sockaddr((const void *)ctx->args[1], (u32)ctx->args[2],
+                       event->network_event.dst_ip,
+                       &event->network_event.dst_port,
+                       &event->network_event.family)) {
+        fill_local_info(get_socket_sk((u32)ctx->args[0]), &event->network_event);
     }
+    else {
+        /**
+         * @note 解析不出 IPv4/IPv6 时只填 sockaddr 中读到的地址族，
+         * 目标地址与端口保持 0
+         */
+        struct sockaddr sa;
+        if (bpf_probe_read_user(&sa, sizeof(sa), (void *)ctx->args[1]) == 0) {
+            event->network_event.family = sa.sa_family;
+        }
+    }
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_sendto 事件并提交采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件、目标地址不可解析或无法构造事件时跳过提交。
+ * @note 仅在目标 sockaddr 能解析为 IPv4/IPv6 时提交；已 connect 的套接字通常
+ *       不再携带目标地址，其连接信息由 connect 事件记录。
+ */
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int trace_sendto(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_network_event(SYSCALL_EVENT_SENDTO);
+    if (!event) return 0;
+
+    //! @note args[0]: sockfd, args[4]: 目标 sockaddr, args[5]: addrlen
+    if (!parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5],
+                        event->network_event.dst_ip,
+                        &event->network_event.dst_port,
+                        &event->network_event.family)) {
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    fill_local_info(get_socket_sk((u32)ctx->args[0]), &event->network_event);
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_sendmsg 事件并提交采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件、目标地址不可解析或无法构造事件时跳过提交。
+ * @note 仅在 msg_name 能解析为 IPv4/IPv6 时提交；已 connect 的套接字可传空的
+ *       msg_name，此时连接信息已由 connect 事件记录，跳过本次提交。
+ */
+SEC("tracepoint/syscalls/sys_enter_sendmsg")
+int trace_sendmsg(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_network_event(SYSCALL_EVENT_SENDMSG);
+    if (!event) return 0;
+
+    //! @note args[0]: sockfd, args[1]: struct msghdr *, args[2]: flags
+    const void *dest_addr = NULL;
+    u32 addrlen           = 0;
+    struct msghdr msg;
+    if (bpf_probe_read_user(&msg, sizeof(msg), (void *)ctx->args[1]) == 0) {
+        dest_addr = msg.msg_name;
+        addrlen   = (u32)msg.msg_namelen;
+    }
+
+    if (!parse_sockaddr(dest_addr, addrlen, event->network_event.dst_ip,
+                        &event->network_event.dst_port,
+                        &event->network_event.family)) {
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    fill_local_info(get_socket_sk((u32)ctx->args[0]), &event->network_event);
 
     bpf_ringbuf_submit(event, 0);
     return 0;

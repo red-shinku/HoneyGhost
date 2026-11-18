@@ -25,6 +25,14 @@
 #define O_TRUNC 00001000
 #endif
 
+// 套接字地址族（include/uapi/linux/socket.h）
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
+
 // 命名空间克隆标志（include/uapi/linux/sched.h）
 #ifndef CLONE_NEWNS
 #define CLONE_NEWNS 0x00020000

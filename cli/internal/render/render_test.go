@@ -390,8 +390,17 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall",
 			payload: model.Payload{Kind: model.PayloadFileSyscall, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
+				"path": "/tmp/x", "is_innamespace": true,
 			}},
-			want: "openat flags=0x3 mode=0644",
+			want: "openat path=/tmp/x flags=0x3 mode=0644",
+		},
+		{
+			name: "file_syscall_no_path",
+			payload: model.Payload{Kind: model.PayloadFileSyscall, Fields: map[string]any{
+				"syscall_name": "unlink", "flags": uint32(0), "mode": uint32(0),
+				"path": "",
+			}},
+			want: "unlink flags=0x0 mode=00",
 		},
 		{
 			name: "memory",
@@ -403,10 +412,30 @@ func TestEventDetail(t *testing.T) {
 		{
 			name: "network",
 			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+				"syscall_name": "connect", "family": uint32(2), "type": uint32(1),
+				"protocol": uint32(6), "dst_ip": []uint32{0x0a01a8c0, 0, 0, 0},
+				"dst_port": uint32(443), "src_port": uint32(50000),
+			}},
+			want: "connect family=2 type=1 protocol=6 dst=192.168.1.10:443 src_port=50000",
+		},
+		{
+			name: "network_no_dst",
+			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
 				"syscall_name": "socket", "family": uint32(2), "type": uint32(1),
-				"protocol": uint32(6),
+				"protocol": uint32(6), "dst_ip": []uint32{0, 0, 0, 0},
+				"dst_port": uint32(0), "src_port": uint32(0),
 			}},
 			want: "socket family=2 type=1 protocol=6",
+		},
+		{
+			name: "network_ipv6",
+			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+				"syscall_name": "sendto", "family": uint32(10), "type": uint32(2),
+				"protocol": uint32(17),
+				"dst_ip":   []uint32{0xb80d0120, 0, 0, 0x01000000},
+				"dst_port": uint32(53), "src_port": uint32(40000),
+			}},
+			want: "sendto family=10 type=2 protocol=17 dst=[2001:db8:0:0:0:0:0:1]:53 src_port=40000",
 		},
 		{
 			name: "kernel",
@@ -428,6 +457,64 @@ func TestEventDetail(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := eventDetail(tt.payload); got != tt.want {
 				t.Errorf("eventDetail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatIP(t *testing.T) {
+	tests := []struct {
+		name   string
+		family uint32
+		words  []uint32
+		want   string
+	}{
+		{"ipv4", afINET, []uint32{0x0a01a8c0}, "192.168.1.10"},
+		{"ipv4 zero", afINET, []uint32{0}, "0.0.0.0"},
+		{"ipv4 no words", afINET, nil, ""},
+		{"ipv6", afINET6, []uint32{0xb80d0120, 0, 0, 0x01000000},
+			"2001:db8:0:0:0:0:0:1"},
+		{"ipv6 loopback", afINET6, []uint32{0, 0, 0, 0x01000000},
+			"0:0:0:0:0:0:0:1"},
+		{"ipv6 short", afINET6, []uint32{0, 0, 0}, ""},
+		{"other family", 1, []uint32{0x0a01a8c0}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatIP(tt.family, tt.words); got != tt.want {
+				t.Errorf("formatIP(%d, %v) = %q, want %q", tt.family, tt.words, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNetworkDst(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields map[string]any
+		want   string
+	}{
+		{"ipv4", map[string]any{
+			"family": uint32(2), "dst_ip": []uint32{0x0a01a8c0, 0, 0, 0},
+			"dst_port": uint32(443),
+		}, "192.168.1.10:443"},
+		{"ipv6", map[string]any{
+			"family": uint32(10), "dst_ip": []uint32{0xb80d0120, 0, 0, 0x01000000},
+			"dst_port": uint32(53),
+		}, "[2001:db8:0:0:0:0:0:1]:53"},
+		{"unparsed", map[string]any{
+			"family": uint32(2), "dst_ip": []uint32{0, 0, 0, 0},
+			"dst_port": uint32(0),
+		}, ""},
+		{"unix", map[string]any{
+			"family": uint32(1), "dst_ip": []uint32{0, 0, 0, 0},
+			"dst_port": uint32(0),
+		}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := networkDst(tt.fields); got != tt.want {
+				t.Errorf("networkDst(%v) = %q, want %q", tt.fields, got, tt.want)
 			}
 		})
 	}

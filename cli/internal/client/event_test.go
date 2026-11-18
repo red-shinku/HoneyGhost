@@ -149,11 +149,15 @@ func TestConvertSyscallPayloads(t *testing.T) {
 		{
 			name: "file_syscall",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_FileData{
-				FileData: &hng.FileSyscallSemanticData{Flags: 3, Mode: 420, SyscallName: "openat"},
+				FileData: &hng.FileSyscallSemanticData{
+					Flags: 3, Mode: 420, Path: "/tmp/x", IsInnamespace: true,
+					SyscallName: "openat",
+				},
 			}},
 			kind: model.PayloadFileSyscall,
 			fields: map[string]any{
-				"flags": uint32(3), "mode": uint32(420), "syscall_name": "openat",
+				"flags": uint32(3), "mode": uint32(420), "path": "/tmp/x",
+				"is_innamespace": true, "syscall_name": "openat",
 			},
 		},
 		{
@@ -170,12 +174,30 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			name: "network_syscall",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NetData{
 				NetData: &hng.NetworkSyscallSemanticData{
+					Family: 2, Type: 1, Protocol: 6,
+					DstIp: []uint32{0x0a01a8c0, 0, 0, 0}, DstPort: 443, SrcPort: 50000,
+					SyscallName: "connect",
+				},
+			}},
+			kind: model.PayloadNetworkSyscall,
+			fields: map[string]any{
+				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
+				"dst_ip":   []uint32{0x0a01a8c0, 0, 0, 0},
+				"dst_port": uint32(443), "src_port": uint32(50000),
+				"syscall_name": "connect",
+			},
+		},
+		{
+			name: "network_syscall_no_dst",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NetData{
+				NetData: &hng.NetworkSyscallSemanticData{
 					Family: 2, Type: 1, Protocol: 6, SyscallName: "socket",
 				},
 			}},
 			kind: model.PayloadNetworkSyscall,
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
+				"dst_ip": []uint32{}, "dst_port": uint32(0), "src_port": uint32(0),
 				"syscall_name": "socket",
 			},
 		},

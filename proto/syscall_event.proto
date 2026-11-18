@@ -62,12 +62,13 @@ message namespace_semantic_data
 }
 
 // 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。
-// 文件路径由独立的文件事件采集模块（files.bpf.c）负责，此处仅含标志位。
 message file_syscall_semantic_data
 {
     uint32 flags        = 1;  // open 系列的 O_* 标志；renameat2 的 RENAME_* 标志
     uint32 mode         = 2;  // creat()/open(O_CREAT) 创建权限
     string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
+    string path         = 4;  // 系统调用携带的文件路径；未采集时为空
+    bool is_innamespace = 5;  // 路径是否在非初始 mount 命名空间中解释
 }
 
 // 内存事件（mmap / mprotect）。
@@ -78,13 +79,18 @@ message memory_semantic_data
     string syscall_name = 3;  // 系统调用名（如 "mmap"、"mprotect"）
 }
 
-// 网络事件（socket / bind / connect）。
+// 网络事件（socket / bind / connect / sendto / sendmsg）。
 message network_syscall_semantic_data
 {
     uint32 family       = 1;  // AF_INET / AF_INET6 / AF_UNIX 等地址族
     uint32 type         = 2;  // SOCK_STREAM / SOCK_DGRAM 等
     uint32 protocol     = 3;  // IPPROTO_TCP 等协议号
     string syscall_name = 4;  // 系统调用名（如 "socket"、"bind"、"connect"）
+    // 目标 IP，网络字节序，固定 4 个字：IPv4 用 dst_ip[0]，IPv6 用 dst_ip[0..3]；
+    // 目标地址未采集时 4 个字全为 0
+    repeated uint32 dst_ip = 5;
+    uint32 dst_port        = 6;  // 目标端口（主机字节序）
+    uint32 src_port        = 7;  // 本地端口（主机字节序）；connect 的 enter 阶段可能为 0
 }
 
 // 内核操作事件（ptrace / bpf）。

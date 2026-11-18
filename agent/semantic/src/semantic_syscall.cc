@@ -6,8 +6,9 @@
  * syscall_semantic_data。本工具不持有队列与线程状态。
  *
  * 语义化原则：去除随机性信息。除 exec 的 filename（复用 agent/semantic/path/
- * 规则引擎语义化）与 credential 的 union→oneof 归位外，其余六种事件为纯字段
- * 搬运——进程身份头部原样拷贝，syscall 名由 hdr.name 枚举映射为字符串。
+ * 规则引擎语义化）、file 的 path（normalize 消除拼写差异）与 credential 的
+ * union→oneof 归位外，其余事件为纯字段搬运——进程身份头部原样拷贝，syscall 名
+ * 由 hdr.name 枚举映射为字符串。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -81,6 +82,10 @@ const char* syscall_name_str(enum syscall_event_name name)
             return "socket";
         case SYSCALL_EVENT_BIND:
             return "bind";
+        case SYSCALL_EVENT_SENDTO:
+            return "sendto";
+        case SYSCALL_EVENT_SENDMSG:
+            return "sendmsg";
         case SYSCALL_EVENT_EXIT_GROUP:
             return "exit_group";
         default:
@@ -166,13 +171,17 @@ void namespace_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 文件系统调用事件 → file_syscall_semantic_data
- * @details 纯搬运：O_* / RENAME_* 标志与创建权限 mode。文件路径由独立的文件
- * 事件采集模块（files.bpf.c）负责语义化，此处不携带路径。
+ * @details 路径经 hng::path::normalize 消除拼写差异后作为原始路径输出，尚不做
+ * 绝对化（相对路径保持原样）；flags/mode 与 is_innamespace 原样搬运。
  */
 void file_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::file_syscall_semantic_data>();
+    std::string norm;
+    hng::path::normalize(raw.file_event.path, norm);
+    d.set_path(norm);
+    d.set_is_innamespace(raw.file_event.is_innamespace != 0);
     d.set_flags(raw.file_event.flags);
     d.set_mode(raw.file_event.mode);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
@@ -193,7 +202,8 @@ void memory_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 网络事件 → network_syscall_semantic_data
- * @details 纯搬运：地址族 / 套接字类型 / 协议号。
+ * @details 纯搬运：地址族 / 套接字类型 / 协议号，以及目标 IP、目标端口与本地
+ * 端口。dst_ip 固定输出 4 个网络字节序的字，未采集时为 0。
  */
 void network_to_semantic(const struct syscall_event& raw,
                          hng::syscall_semantic_data& out)
@@ -202,6 +212,11 @@ void network_to_semantic(const struct syscall_event& raw,
     d.set_family(raw.network_event.family);
     d.set_type(raw.network_event.type);
     d.set_protocol(raw.network_event.protocol);
+    for (int i = 0; i < 4; ++i) {
+        d.add_dst_ip(raw.network_event.dst_ip[i]);
+    }
+    d.set_dst_port(raw.network_event.dst_port);
+    d.set_src_port(raw.network_event.src_port);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 

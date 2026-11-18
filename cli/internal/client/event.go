@@ -233,9 +233,11 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 	case *clisv.SyscallEventData_FileData:
 		value := data.FileData
 		return payload(model.PayloadFileSyscall, map[string]any{
-			"flags":        value.GetFlags(),
-			"mode":         value.GetMode(),
-			"syscall_name": value.GetSyscallName(),
+			"flags":          value.GetFlags(),
+			"mode":           value.GetMode(),
+			"path":           value.GetPath(),
+			"is_innamespace": value.GetIsInnamespace(),
+			"syscall_name":   value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_MemoryData:
@@ -248,10 +250,17 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 
 	case *clisv.SyscallEventData_NetData:
 		value := data.NetData
+		dstIP := value.GetDstIp()
+		if dstIP == nil {
+			dstIP = []uint32{}
+		}
 		return payload(model.PayloadNetworkSyscall, map[string]any{
 			"family":       value.GetFamily(),
 			"type":         value.GetType(),
 			"protocol":     value.GetProtocol(),
+			"dst_ip":       dstIP,
+			"dst_port":     value.GetDstPort(),
+			"src_port":     value.GetSrcPort(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 

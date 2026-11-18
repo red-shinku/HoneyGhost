@@ -266,15 +266,20 @@ void run_namespace()
 
 struct FileCase {
     enum syscall_event_name name;
+    const char* path;
     __u32 flags;
     __u32 mode;
+    __u8 is_innamespace;
+    const char* expect_path;
     const char* name_str;
 };
 
 constexpr FileCase kFileCases[] = {
-    {SYSCALL_EVENT_OPEN, O_CREAT | O_WRONLY | O_TRUNC, 0644, "open"},
-    {SYSCALL_EVENT_RENAMEAT2, 1 /* RENAME_NOREPLACE */, 0, "renameat2"},
-    {SYSCALL_EVENT_UNLINK, 0, 0, "unlink"},
+    {SYSCALL_EVENT_OPEN, "/tmp/../etc/./passwd", O_CREAT | O_WRONLY | O_TRUNC,
+     0644, 1, "/etc/passwd", "open"},
+    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, 0,
+     "/a/c", "renameat2"},
+    {SYSCALL_EVENT_UNLINK, "", 0, 0, 0, "", "unlink"},
 };
 
 void run_file()
@@ -282,8 +287,11 @@ void run_file()
     for (const FileCase& c : kFileCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, FILE_EVENT);
-        raw.file_event.flags = c.flags;
-        raw.file_event.mode  = c.mode;
+        std::strncpy(raw.file_event.path, c.path,
+                     sizeof(raw.file_event.path) - 1);
+        raw.file_event.flags          = c.flags;
+        raw.file_event.mode           = c.mode;
+        raw.file_event.is_innamespace = c.is_innamespace;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -293,6 +301,9 @@ void run_file()
         if (!d) {
             continue;
         }
+        CHECK(d->path() == c.expect_path, "file path");
+        CHECK(d->is_innamespace() == (c.is_innamespace != 0),
+              "file is_innamespace");
         CHECK(d->flags() == c.flags, "file flags");
         CHECK(d->mode() == c.mode, "file mode");
         CHECK(d->syscall_name() == c.name_str, "file syscall_name");
@@ -343,13 +354,40 @@ struct NetworkCase {
     __u32 family;
     __u32 type;
     __u32 protocol;
+    __u32 dst_ip[4];
+    __u16 dst_port;
+    __u16 src_port;
     const char* name_str;
 };
 
+// dst_ip 按内核记录的网络字节序存放（主机为小端）：
+// 0x0a01a8c0 = 192.168.1.10，0xb80d0120/0x01000000 = 2001:db8::1
 constexpr NetworkCase kNetworkCases[] = {
-    {SYSCALL_EVENT_SOCKET, AF_INET, SOCK_STREAM, IPPROTO_TCP, "socket"},
-    {SYSCALL_EVENT_CONNECT, AF_INET6, 0, 0, "connect"},
-    {SYSCALL_EVENT_BIND, AF_UNIX, 0, 0, "bind"},
+    {SYSCALL_EVENT_SOCKET,
+     AF_INET,
+     SOCK_STREAM,
+     IPPROTO_TCP,
+     {0, 0, 0, 0},
+     0,
+     0,
+     "socket"},
+    {SYSCALL_EVENT_CONNECT,
+     AF_INET,
+     SOCK_STREAM,
+     IPPROTO_TCP,
+     {0x0a01a8c0, 0, 0, 0},
+     443,
+     50000,
+     "connect"},
+    {SYSCALL_EVENT_SENDTO,
+     AF_INET6,
+     SOCK_DGRAM,
+     IPPROTO_UDP,
+     {0xb80d0120, 0, 0, 0x01000000},
+     53,
+     40000,
+     "sendto"},
+    {SYSCALL_EVENT_BIND, AF_UNIX, 0, 0, {0, 0, 0, 0}, 0, 0, "bind"},
 };
 
 void run_network()
@@ -360,6 +398,11 @@ void run_network()
         raw.network_event.family   = c.family;
         raw.network_event.type     = c.type;
         raw.network_event.protocol = c.protocol;
+        for (int i = 0; i < 4; ++i) {
+            raw.network_event.dst_ip[i] = c.dst_ip[i];
+        }
+        raw.network_event.dst_port = c.dst_port;
+        raw.network_event.src_port = c.src_port;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -373,6 +416,12 @@ void run_network()
         CHECK(d->family() == c.family, "network family");
         CHECK(d->type() == c.type, "network type");
         CHECK(d->protocol() == c.protocol, "network protocol");
+        CHECK(d->dst_ip_size() == 4, "network dst_ip size");
+        for (int i = 0; i < 4 && i < d->dst_ip_size(); ++i) {
+            CHECK(d->dst_ip(i) == c.dst_ip[i], "network dst_ip");
+        }
+        CHECK(d->dst_port() == c.dst_port, "network dst_port");
+        CHECK(d->src_port() == c.src_port, "network src_port");
         CHECK(d->syscall_name() == c.name_str, "network syscall_name");
     }
 }

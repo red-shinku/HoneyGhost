@@ -18,8 +18,8 @@
 
 // syscall参数最大长度
 #define MAX_ARG_LEN 64
-// 可执行程序文件名最大长度
-#define MAX_EXEC_FILENAME_LEN 256
+// 路径最大长度
+#define MAX_PATH_LEN 256
 
 struct process_event {
     // （kprobe wake_up_new_task），事件头 head 即新进程，因此不再携带
@@ -29,10 +29,10 @@ struct process_event {
 };
 
 struct exec_event {
-    char filename[MAX_EXEC_FILENAME_LEN];  ///< 可执行文件路径
-    char argv0[MAX_ARG_LEN];               ///< argv[0]（程序名或启动命令）
-    char argv1[MAX_ARG_LEN];  ///< argv[1]（第一个参数；无参数时为空串）
-    __u32 flags;              ///< execveat 有效，AT_* 标志
+    char filename[MAX_PATH_LEN];  ///< 可执行文件路径
+    char argv0[MAX_ARG_LEN];      ///< argv[0]（程序名或启动命令）
+    char argv1[MAX_ARG_LEN];      ///< argv[1]（第一个参数；无参数时为空串）
+    __u32 flags;                  ///< execveat 有效，AT_* 标志
 };
 
 struct credential_event {
@@ -60,10 +60,10 @@ struct namespace_event {
 };
 
 struct file_event {
-    // char path1[256]; ///< 主路径（open、unlink、creat、rename 源路径等）
-    // char path2[256]; ///< 第二路径（link、rename 等目标路径，无则为空）
+    char path[MAX_PATH_LEN];  ///< open/openat/openat2/creat 携带的文件路径
     __u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
     __u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
+    __u8 is_innamespace;  ///< 路径是否在非初始 mount 命名空间中解释：1 是，0 否
 };
 
 struct memory_event {
@@ -72,9 +72,12 @@ struct memory_event {
 };
 
 struct network_event {
-    __u32 family;    ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
-    __u32 type;      ///< SOCK_STREAM / SOCK_DGRAM 等
-    __u32 protocol;  ///< IPPROTO_TCP 等协议号
+    __u32 family;     ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
+    __u32 type;       ///< SOCK_STREAM / SOCK_DGRAM 等
+    __u32 protocol;   ///< IPPROTO_TCP 等协议号
+    __u32 dst_ip[4];  ///< 目标 IP（网络字节序）：IPv4 用 [0]，IPv6 用 [0..3]
+    __u16 dst_port;   ///< 目标端口（主机字节序）
+    __u16 src_port;   ///< 源端口（主机字节序）；connect 的 enter 阶段可能为 0
 };
 
 struct kernel_event {
