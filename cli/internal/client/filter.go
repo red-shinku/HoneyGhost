@@ -80,9 +80,9 @@ func toProtoFilterAtom(atom *model.FilterAtom) (*clisv.FilterAtom, error) {
 			}
 			out.Numbers = append(out.Numbers, uint32(value))
 		}
-	case model.FilterFieldKind:
-		for _, kind := range atom.Kinds {
-			value, err := toProtoEventKind(kind)
+	case model.FilterFieldSubtype:
+		for _, subtype := range atom.Subtypes {
+			value, err := toProtoSubtype(subtype)
 			if err != nil {
 				return nil, err
 			}
@@ -101,8 +101,8 @@ func toProtoFilterField(field model.FilterField) (clisv.FilterField, error) {
 	switch field {
 	case model.FilterFieldType:
 		return clisv.FilterField_FILTER_FIELD_TYPE, nil
-	case model.FilterFieldKind:
-		return clisv.FilterField_FILTER_FIELD_KIND, nil
+	case model.FilterFieldSubtype:
+		return clisv.FilterField_FILTER_FIELD_SUBTYPE, nil
 	case model.FilterFieldPID:
 		return clisv.FilterField_FILTER_FIELD_PID, nil
 	case model.FilterFieldPPID:
@@ -144,27 +144,25 @@ func toProtoFilterLogic(logic model.FilterLogic) (clisv.FilterLogic, error) {
 	}
 }
 
-func toProtoEventKind(kind model.EventKind) (clisv.EventKind, error) {
-	switch kind {
-	case model.EventKindProcess:
-		return clisv.EventKind_EVENT_KIND_PROCESS, nil
-	case model.EventKindExec:
-		return clisv.EventKind_EVENT_KIND_EXEC, nil
-	case model.EventKindCredential:
-		return clisv.EventKind_EVENT_KIND_CREDENTIAL, nil
-	case model.EventKindNamespace:
-		return clisv.EventKind_EVENT_KIND_NAMESPACE, nil
-	case model.EventKindFileSyscall:
-		return clisv.EventKind_EVENT_KIND_FILE_SYSCALL, nil
-	case model.EventKindMemory:
-		return clisv.EventKind_EVENT_KIND_MEMORY, nil
-	case model.EventKindNetworkSyscall:
-		return clisv.EventKind_EVENT_KIND_NETWORK_SYSCALL, nil
-	case model.EventKindKernel:
-		return clisv.EventKind_EVENT_KIND_KERNEL, nil
-	case model.EventKindFile:
-		return clisv.EventKind_EVENT_KIND_FILE, nil
+func toProtoSubtype(subtype model.Subtype) (clisv.Subtype, error) {
+	switch subtype {
+	case model.SubtypeProcess:
+		return clisv.Subtype_SUBTYPE_PROCESS, nil
+	case model.SubtypeExec:
+		return clisv.Subtype_SUBTYPE_EXEC, nil
+	case model.SubtypeCredential:
+		return clisv.Subtype_SUBTYPE_CREDENTIAL, nil
+	case model.SubtypeNamespace:
+		return clisv.Subtype_SUBTYPE_NAMESPACE, nil
+	case model.SubtypeFileSyscall:
+		return clisv.Subtype_SUBTYPE_FILE, nil
+	case model.SubtypeMemory:
+		return clisv.Subtype_SUBTYPE_MEMORY, nil
+	case model.SubtypeNetworkSyscall:
+		return clisv.Subtype_SUBTYPE_NETWORK, nil
+	case model.SubtypeKernel:
+		return clisv.Subtype_SUBTYPE_KERNEL, nil
 	default:
-		return 0, fmt.Errorf("unknown event kind %q", kind)
+		return 0, fmt.Errorf("unknown event subtype %q", subtype)
 	}
 }

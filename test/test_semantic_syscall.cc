@@ -62,15 +62,17 @@ void fill_head(struct syscall_event& raw, enum syscall_event_name name,
 }
 
 /**
- * @brief 断言身份头部原样搬运
+ * @brief 断言身份头部与语义子类型原样搬运
  */
-void check_head(const hng::syscall_semantic_data& out)
+void check_head(const struct syscall_event& raw,
+                const hng::syscall_semantic_data& out)
 {
     CHECK(out.head.pid == 1234, "head pid");
     CHECK(out.head.pid_start_time == 111, "head pid_start_time");
     CHECK(out.head.ppid == 100, "head ppid");
     CHECK(out.head.ppid_start_time == 222, "head ppid_start_time");
     CHECK(out.head.type == hng::EventType::SYSCALL_EVENT, "head type");
+    CHECK(out.head.subtype == raw.hdr.type, "head subtype");
 }
 
 // ---- 进程生命周期 ----
@@ -97,7 +99,7 @@ void run_process()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::process_semantic_data>(&out.data);
         CHECK(d != nullptr, "process variant type");
         if (!d) {
@@ -144,7 +146,7 @@ void run_exec()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::exec_semantic_data>(&out.data);
         CHECK(d != nullptr, "exec variant type");
         if (!d) {
@@ -196,7 +198,7 @@ void run_credential()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::credential_semantic_data>(&out.data);
         CHECK(d != nullptr, "credential variant type");
         if (!d) {
@@ -250,7 +252,7 @@ void run_namespace()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::namespace_semantic_data>(&out.data);
         CHECK(d != nullptr, "namespace variant type");
         if (!d) {
@@ -295,7 +297,7 @@ void run_file()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::file_syscall_semantic_data>(&out.data);
         CHECK(d != nullptr, "file variant type");
         if (!d) {
@@ -335,7 +337,7 @@ void run_memory()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::memory_semantic_data>(&out.data);
         CHECK(d != nullptr, "memory variant type");
         if (!d) {
@@ -406,7 +408,7 @@ void run_network()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d =
             std::get_if<hng::network_syscall_semantic_data>(&out.data);
         CHECK(d != nullptr, "network variant type");
@@ -450,7 +452,7 @@ void run_kernel()
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
-        check_head(out);
+        check_head(raw, out);
         const auto* d = std::get_if<hng::kernel_semantic_data>(&out.data);
         CHECK(d != nullptr, "kernel variant type");
         if (!d) {

@@ -54,17 +54,17 @@ func TestToProtoFilterAtom(t *testing.T) {
 			},
 		},
 		{
-			name: "kind not in",
+			name: "subtype not in",
 			atom: &model.FilterAtom{
-				Field: model.FilterFieldKind, Compare: model.FilterCompareNe,
-				Kinds: []model.EventKind{model.EventKindExec, model.EventKindKernel},
+				Field: model.FilterFieldSubtype, Compare: model.FilterCompareNe,
+				Subtypes: []model.Subtype{model.SubtypeExec, model.SubtypeKernel},
 			},
 			want: &clisv.FilterAtom{
-				Field:   clisv.FilterField_FILTER_FIELD_KIND,
+				Field:   clisv.FilterField_FILTER_FIELD_SUBTYPE,
 				Compare: clisv.FilterCompare_FILTER_COMPARE_NE,
 				Numbers: []uint32{
-					uint32(clisv.EventKind_EVENT_KIND_EXEC),
-					uint32(clisv.EventKind_EVENT_KIND_KERNEL),
+					uint32(clisv.Subtype_SUBTYPE_EXEC),
+					uint32(clisv.Subtype_SUBTYPE_KERNEL),
 				},
 			},
 		},
@@ -169,8 +169,8 @@ func TestToProtoFilterNested(t *testing.T) {
 					Types: []model.EventType{model.EventTypeFile},
 				}},
 				{Atom: &model.FilterAtom{
-					Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
-					Kinds: []model.EventKind{model.EventKindExec},
+					Field: model.FilterFieldSubtype, Compare: model.FilterCompareEq,
+					Subtypes: []model.Subtype{model.SubtypeExec},
 				}},
 			}},
 			{Logic: model.FilterLogicNot, Kids: []model.FilterExpr{
@@ -188,9 +188,9 @@ func TestToProtoFilterNested(t *testing.T) {
 			protoAtom(clisv.FilterField_FILTER_FIELD_TYPE,
 				clisv.FilterCompare_FILTER_COMPARE_EQ,
 				[]uint32{uint32(clisv.EventType_EVENT_TYPE_FILE)}, nil),
-			protoAtom(clisv.FilterField_FILTER_FIELD_KIND,
+			protoAtom(clisv.FilterField_FILTER_FIELD_SUBTYPE,
 				clisv.FilterCompare_FILTER_COMPARE_EQ,
-				[]uint32{uint32(clisv.EventKind_EVENT_KIND_EXEC)}, nil)),
+				[]uint32{uint32(clisv.Subtype_SUBTYPE_EXEC)}, nil)),
 		protoLogic(clisv.FilterLogic_FILTER_LOGIC_NOT,
 			protoAtom(clisv.FilterField_FILTER_FIELD_ROLE_LABEL,
 				clisv.FilterCompare_FILTER_COMPARE_PREFIX, nil, []string{"registry/"})))
@@ -264,12 +264,12 @@ func TestToProtoFilterErrors(t *testing.T) {
 			want: "unknown event type",
 		},
 		{
-			name: "unknown event kind",
+			name: "unknown event subtype",
 			expr: &model.FilterExpr{Atom: &model.FilterAtom{
-				Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
-				Kinds: []model.EventKind{"bogus"},
+				Field: model.FilterFieldSubtype, Compare: model.FilterCompareEq,
+				Subtypes: []model.Subtype{"bogus"},
 			}},
-			want: "unknown event kind",
+			want: "unknown event subtype",
 		},
 		{
 			name: "prefix on numeric field",

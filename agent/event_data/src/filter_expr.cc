@@ -53,8 +53,8 @@ uint32_t field_value(hng::FilterField field, const hng::RuntimeInformation& info
     switch (field) {
         case hng::FilterField::TYPE:
             return static_cast<uint32_t>(info.etype);
-        case hng::FilterField::KIND:
-            return static_cast<uint32_t>(info.kind);
+        case hng::FilterField::SUBTYPE:
+            return static_cast<uint32_t>(info.subtype);
         case hng::FilterField::PID:
             return info.process.pid;
         case hng::FilterField::PPID:

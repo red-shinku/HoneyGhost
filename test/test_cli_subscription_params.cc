@@ -47,16 +47,17 @@ using hng::clisv::filter_atom;
 using hng::clisv::filter_expr;
 using hng::clisv::ReceiveEventRequest;
 
-hng::RuntimeInformation make_info(
-    uint32_t pid, hng::EventType etype, uint32_t roleID, uint32_t contextID,
-    hng::role_label_t roleLabel = {}, uint32_t ppid = 0,
-    hng::EventKind kind = hng::EventKind::UNSPECIFIED)
+hng::RuntimeInformation make_info(uint32_t pid, hng::EventType etype,
+                                  uint32_t roleID, uint32_t contextID,
+                                  hng::role_label_t roleLabel     = {},
+                                  uint32_t ppid                   = 0,
+                                  enum syscall_event_type subtype = UNKNOWN_EVENT)
 {
     hng::RuntimeInformation info;
     info.process   = hng::Process{pid, pid * 10};
     info.parent    = hng::Process{ppid, ppid * 10};
     info.etype     = etype;
-    info.kind      = kind;
+    info.subtype   = subtype;
     info.roleID    = roleID;
     info.roleLabel = roleLabel;
     info.contextID = contextID;
@@ -180,11 +181,11 @@ filter_expr not_expr(filter_expr operand)
     return logic_expr(hng::clisv::FILTER_LOGIC_NOT, {std::move(operand)});
 }
 
-/// 表达式取值：type / kind 用底层枚举的数值
+/// 表达式取值：type / subtype 用底层枚举的数值
 constexpr uint32_t kTypeSyscall =
     static_cast<uint32_t>(hng::EventType::SYSCALL_EVENT);
-constexpr uint32_t kKindExec = static_cast<uint32_t>(hng::EventKind::EXEC);
-constexpr uint32_t kKindFile = static_cast<uint32_t>(hng::EventKind::FILE);
+constexpr uint32_t kSubtypeExec   = static_cast<uint32_t>(EXEC_EVENT);
+constexpr uint32_t kSubtypeKernel = static_cast<uint32_t>(KERNEL_EVENT);
 
 const std::vector<Case>& cases()
 {
@@ -292,9 +293,9 @@ const std::vector<Case>& expression_cases()
         const filter_expr type_syscall =
             numeric(hng::clisv::FILTER_FIELD_TYPE, hng::clisv::FILTER_COMPARE_EQ,
                     {kTypeSyscall});
-        const filter_expr kind_exec =
-            numeric(hng::clisv::FILTER_FIELD_KIND, hng::clisv::FILTER_COMPARE_EQ,
-                    {kKindExec});
+        const filter_expr subtype_exec =
+            numeric(hng::clisv::FILTER_FIELD_SUBTYPE,
+                    hng::clisv::FILTER_COMPARE_EQ, {kSubtypeExec});
         const filter_expr pid_1001_2002 =
             numeric(hng::clisv::FILTER_FIELD_PID, hng::clisv::FILTER_COMPARE_EQ,
                     {1001, 2002});
@@ -309,9 +310,9 @@ const std::vector<Case>& expression_cases()
                     hng::clisv::FILTER_COMPARE_EQ, {7, 8});
         const filter_expr role_id_0 = numeric(hng::clisv::FILTER_FIELD_ROLE_ID,
                                               hng::clisv::FILTER_COMPARE_EQ, {0});
-        const filter_expr kind_file =
-            numeric(hng::clisv::FILTER_FIELD_KIND, hng::clisv::FILTER_COMPARE_EQ,
-                    {kKindFile});
+        const filter_expr subtype_kernel =
+            numeric(hng::clisv::FILTER_FIELD_SUBTYPE,
+                    hng::clisv::FILTER_COMPARE_EQ, {kSubtypeKernel});
         const filter_expr role_nginx =
             label(hng::clisv::FILTER_COMPARE_EQ, {"nginx:1.25"});
         const filter_expr context_id_3 =
@@ -324,12 +325,13 @@ const std::vector<Case>& expression_cases()
             label(hng::clisv::FILTER_COMPARE_NE, {"nginx:1.25"});
         const filter_expr role_prefix =
             label(hng::clisv::FILTER_COMPARE_PREFIX, {"nginx:", "redis:"});
-        const filter_expr kind_exec_and_pid_1001 =
-            and_expr({kind_exec, pid_1001});
-        const filter_expr pid_1001_or_kind_exec = or_expr({pid_1001, kind_exec});
-        const filter_expr not_kind_exec         = not_expr(kind_exec);
-        const filter_expr not_kind_exec_or_pid_1001 =
-            not_expr(or_expr({kind_exec, pid_1001}));
+        const filter_expr subtype_exec_and_pid_1001 =
+            and_expr({subtype_exec, pid_1001});
+        const filter_expr pid_1001_or_subtype_exec =
+            or_expr({pid_1001, subtype_exec});
+        const filter_expr not_subtype_exec = not_expr(subtype_exec);
+        const filter_expr not_subtype_exec_or_pid_1001 =
+            not_expr(or_expr({subtype_exec, pid_1001}));
 
         const auto set = [](filter_expr expr) {
             return [expr = std::move(expr)](ReceiveEventRequest& r) {
@@ -343,17 +345,16 @@ const std::vector<Case>& expression_cases()
             {"表达式 atom：type 不命中", set(type_syscall),
              make_info(1, hng::EventType::FILE_EVENT, 0, 0), false},
 
-            {"表达式 atom：kind 命中", set(kind_exec),
-             make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::EXEC),
+            {"表达式 atom：subtype 命中", set(subtype_exec),
+             make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, EXEC_EVENT),
              true},
-            {"表达式 atom：kind 不命中", set(kind_exec),
+            {"表达式 atom：subtype 不命中", set(subtype_exec),
              make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::PROCESS),
+                       PROCESS_EVENT),
              false},
-            {"表达式 atom：kind=9 命中 file 事件", set(kind_file),
-             make_info(1, hng::EventType::FILE_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::FILE),
+            {"表达式 atom：subtype=8 命中 kernel 事件", set(subtype_kernel),
+             make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
+                       KERNEL_EVENT),
              true},
 
             {"表达式 atom：pid 命中", set(pid_1001_2002),
@@ -403,40 +404,39 @@ const std::vector<Case>& expression_cases()
              make_info(1, hng::EventType::SYSCALL_EVENT, 9, 0, "postgres:16"),
              false},
 
-            {"表达式 AND：两原子均命中", set(kind_exec_and_pid_1001),
+            {"表达式 AND：两原子均命中", set(subtype_exec_and_pid_1001),
              make_info(1001, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::EXEC),
+                       EXEC_EVENT),
              true},
-            {"表达式 AND：仅一原子命中", set(kind_exec_and_pid_1001),
+            {"表达式 AND：仅一原子命中", set(subtype_exec_and_pid_1001),
              make_info(3003, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::EXEC),
+                       EXEC_EVENT),
              false},
 
-            {"表达式 OR：任一原子命中", set(pid_1001_or_kind_exec),
+            {"表达式 OR：任一原子命中", set(pid_1001_or_subtype_exec),
              make_info(3003, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::EXEC),
+                       EXEC_EVENT),
              true},
-            {"表达式 OR：两原子均不命中", set(pid_1001_or_kind_exec),
+            {"表达式 OR：两原子均不命中", set(pid_1001_or_subtype_exec),
              make_info(3003, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::PROCESS),
+                       PROCESS_EVENT),
              false},
 
-            {"表达式 NOT：原子不成立时命中", set(not_kind_exec),
+            {"表达式 NOT：原子不成立时命中", set(not_subtype_exec),
              make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::PROCESS),
+                       PROCESS_EVENT),
              true},
-            {"表达式 NOT：原子成立时不命中", set(not_kind_exec),
-             make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::EXEC),
+            {"表达式 NOT：原子成立时不命中", set(not_subtype_exec),
+             make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, EXEC_EVENT),
              false},
 
-            {"表达式嵌套：not (A or B) 命中", set(not_kind_exec_or_pid_1001),
+            {"表达式嵌套：not (A or B) 命中", set(not_subtype_exec_or_pid_1001),
              make_info(3003, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::PROCESS),
+                       PROCESS_EVENT),
              true},
-            {"表达式嵌套：not (A or B) 不命中", set(not_kind_exec_or_pid_1001),
+            {"表达式嵌套：not (A or B) 不命中", set(not_subtype_exec_or_pid_1001),
              make_info(1001, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
-                       hng::EventKind::PROCESS),
+                       PROCESS_EVENT),
              false},
 
             {"表达式与 -i 取交：均命中",
@@ -584,16 +584,16 @@ const std::vector<InvalidCase>& invalid_cases()
                                          hng::clisv::FILTER_COMPARE_EQ, {4});
                          }});
 
-        cases.push_back({"非法：kind 取值为 0", [](ReceiveEventRequest& r) {
+        cases.push_back({"非法：subtype 取值为 0", [](ReceiveEventRequest& r) {
                              *r.mutable_expr() =
-                                 numeric(hng::clisv::FILTER_FIELD_KIND,
+                                 numeric(hng::clisv::FILTER_FIELD_SUBTYPE,
                                          hng::clisv::FILTER_COMPARE_EQ, {0});
                          }});
 
-        cases.push_back({"非法：kind 取值为 10", [](ReceiveEventRequest& r) {
+        cases.push_back({"非法：subtype 取值为 9", [](ReceiveEventRequest& r) {
                              *r.mutable_expr() =
-                                 numeric(hng::clisv::FILTER_FIELD_KIND,
-                                         hng::clisv::FILTER_COMPARE_EQ, {10});
+                                 numeric(hng::clisv::FILTER_FIELD_SUBTYPE,
+                                         hng::clisv::FILTER_COMPARE_EQ, {9});
                          }});
 
         cases.push_back({"非法：节点数超过 128", [](ReceiveEventRequest& r) {

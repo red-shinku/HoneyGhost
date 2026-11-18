@@ -16,7 +16,7 @@
  *  - 取值集合无序、含重复时，构造期排序去重后仍能命中；
  *  - and / or / not 的组合，以及空操作数（and 恒真、or 恒假）；
  *  - != 表示不命中集合中任何值，~= 表示标签前缀，not 下 0 与空标签仍是字面值；
- *  - ppid 与 kind 只作为表达式原子出现；
+ *  - ppid 与 subtype 只作为表达式原子出现；
  *  - 维度与表达式、各表达式之间均取交集；
  *  - 拷贝同时保持维度与表达式，默认构造的表达式恒真。
  * @author red-shinku
@@ -42,16 +42,18 @@ int g_fail = 0;
         }                                                                        \
     } while (0)
 
-hng::RuntimeInformation make_info(
-    uint32_t pid, uint64_t start_time, hng::EventType etype, uint32_t roleID,
-    uint32_t contextID, hng::role_label_t roleLabel = {},
-    hng::EventKind kind = hng::EventKind::UNSPECIFIED, uint32_t ppid = 0)
+hng::RuntimeInformation make_info(uint32_t pid, uint64_t start_time,
+                                  hng::EventType etype, uint32_t roleID,
+                                  uint32_t contextID,
+                                  hng::role_label_t roleLabel     = {},
+                                  enum syscall_event_type subtype = UNKNOWN_EVENT,
+                                  uint32_t ppid                   = 0)
 {
     hng::RuntimeInformation info;
     info.process   = hng::Process{pid, start_time};
     info.parent    = hng::Process{ppid, static_cast<uint64_t>(ppid) * 10};
     info.etype     = etype;
-    info.kind      = kind;
+    info.subtype   = subtype;
     info.roleID    = roleID;
     info.roleLabel = std::move(roleLabel);
     info.contextID = contextID;
@@ -262,18 +264,18 @@ void run_unordered_duplicates_are_sorted()
 void run_expression_logic()
 {
     const hng::FilterExpr is_exec =
-        atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {2});
+        atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {2});
     const hng::FilterExpr is_pid7 =
         atom(hng::FilterField::PID, hng::FilterCompare::EQ, {7});
 
-    const hng::RuntimeInformation exec7 = make_info(
-        7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "", hng::EventKind::EXEC);
-    const hng::RuntimeInformation exec8 = make_info(
-        8, 80, hng::EventType::SYSCALL_EVENT, 0, 0, "", hng::EventKind::EXEC);
-    const hng::RuntimeInformation process7 = make_info(
-        7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "", hng::EventKind::PROCESS);
-    const hng::RuntimeInformation process8 = make_info(
-        8, 80, hng::EventType::SYSCALL_EVENT, 0, 0, "", hng::EventKind::PROCESS);
+    const hng::RuntimeInformation exec7 =
+        make_info(7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "", EXEC_EVENT);
+    const hng::RuntimeInformation exec8 =
+        make_info(8, 80, hng::EventType::SYSCALL_EVENT, 0, 0, "", EXEC_EVENT);
+    const hng::RuntimeInformation process7 =
+        make_info(7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "", PROCESS_EVENT);
+    const hng::RuntimeInformation process8 =
+        make_info(8, 80, hng::EventType::SYSCALL_EVENT, 0, 0, "", PROCESS_EVENT);
 
     const hng::FilterExpr both = hng::FilterExpr::make_and({is_exec, is_pid7});
     CHECK(both.matches(exec7), "and：两个原子全中应命中");
@@ -374,13 +376,12 @@ void run_expression_compare_semantics()
           "not role=nginx 会命中未落定（空标签），排除需配合 roleID!=0");
 }
 
-void run_parent_and_kind_atoms()
+void run_parent_and_subtype_atoms()
 {
-    const hng::RuntimeInformation exec_child =
-        make_info(7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "",
-                  hng::EventKind::EXEC, 900);
-    const hng::RuntimeInformation file_child = make_info(
-        8, 80, hng::EventType::FILE_EVENT, 0, 0, "", hng::EventKind::FILE, 0);
+    const hng::RuntimeInformation exec_child = make_info(
+        7, 70, hng::EventType::SYSCALL_EVENT, 0, 0, "", EXEC_EVENT, 900);
+    const hng::RuntimeInformation memory_child =
+        make_info(8, 80, hng::EventType::FILE_EVENT, 0, 0, "", MEMORY_EVENT, 0);
 
     CHECK(atom(hng::FilterField::PPID, hng::FilterCompare::EQ, {900})
               .matches(exec_child),
@@ -389,7 +390,7 @@ void run_parent_and_kind_atoms()
                .matches(exec_child),
           "父进程 pid 不在集合中不应命中");
     CHECK(atom(hng::FilterField::PPID, hng::FilterCompare::EQ, {0})
-              .matches(file_child),
+              .matches(memory_child),
           "ppid=0 是合法取值，应能字面命中");
     CHECK(!atom(hng::FilterField::PPID, hng::FilterCompare::EQ, {0})
                .matches(exec_child),
@@ -398,39 +399,40 @@ void run_parent_and_kind_atoms()
               .matches(exec_child),
           "PPID != 0 应命中父进程已存在的进程");
 
-    CHECK(atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {2})
+    CHECK(atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {2})
               .matches(exec_child),
-          "KIND 原子应取语义子类型");
-    CHECK(!atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {1})
+          "SUBTYPE 原子应取语义子类型");
+    CHECK(!atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {1})
                .matches(exec_child),
           "语义子类型不在集合中不应命中");
-    CHECK(atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {9})
-              .matches(file_child),
-          "file 流的语义子类型为 FILE");
-    CHECK(atom(hng::FilterField::KIND, hng::FilterCompare::NE, {1})
-              .matches(file_child),
-          "KIND != 1 应命中非进程生命周期事件");
+    CHECK(atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {6})
+              .matches(memory_child),
+          "MEMORY 事件应被 6 命中");
+    CHECK(atom(hng::FilterField::SUBTYPE, hng::FilterCompare::NE, {1})
+              .matches(memory_child),
+          "SUBTYPE != 1 应命中非进程生命周期事件");
 }
 
 void run_expressions_intersect_dimensions()
 {
     RuntimeInfoFilter filter;
     filter.set_process({7})
-        .add_expression(atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {2}))
+        .add_expression(
+            atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {2}))
         .add_expression(
             atom(hng::FilterField::ROLE_ID, hng::FilterCompare::EQ, {3}));
 
     CHECK(filter.should_take(make_info(7, 70, hng::EventType::SYSCALL_EVENT, 3, 0,
-                                       "", hng::EventKind::EXEC)),
+                                       "", EXEC_EVENT)),
           "维度与各表达式全中应命中");
     CHECK(!filter.should_take(make_info(8, 80, hng::EventType::SYSCALL_EVENT, 3,
-                                        0, "", hng::EventKind::EXEC)),
+                                        0, "", EXEC_EVENT)),
           "维度不中即不命中");
     CHECK(!filter.should_take(make_info(7, 70, hng::EventType::SYSCALL_EVENT, 3,
-                                        0, "", hng::EventKind::PROCESS)),
+                                        0, "", PROCESS_EVENT)),
           "表达式其一不中即不命中");
     CHECK(!filter.should_take(make_info(7, 70, hng::EventType::SYSCALL_EVENT, 4,
-                                        0, "", hng::EventKind::EXEC)),
+                                        0, "", EXEC_EVENT)),
           "表达式其二不中即不命中");
 }
 
@@ -440,7 +442,7 @@ void run_default_expression_is_true()
     CHECK(take_all.matches(make_info(1, 10, hng::EventType::FILE_EVENT, 0, 0)),
           "默认构造的表达式恒真");
     CHECK(take_all.matches(make_info(99, 990, hng::EventType::IPC_EVENT, 7, 8,
-                                     "nginx:1.25", hng::EventKind::KERNEL, 5)),
+                                     "nginx:1.25", KERNEL_EVENT, 5)),
           "默认构造的表达式恒真（任意信息）");
 
     RuntimeInfoFilter filter;
@@ -453,17 +455,17 @@ void run_copy_keeps_expressions()
 {
     RuntimeInfoFilter filter;
     filter.set_process({7}).add_expression(
-        atom(hng::FilterField::KIND, hng::FilterCompare::EQ, {2}));
+        atom(hng::FilterField::SUBTYPE, hng::FilterCompare::EQ, {2}));
 
     const RuntimeInfoFilter copy = filter;
     CHECK(copy.should_take(make_info(7, 70, hng::EventType::SYSCALL_EVENT, 0, 0,
-                                     "", hng::EventKind::EXEC)),
+                                     "", EXEC_EVENT)),
           "拷贝应保持表达式");
     CHECK(!copy.should_take(make_info(7, 70, hng::EventType::SYSCALL_EVENT, 0, 0,
-                                      "", hng::EventKind::PROCESS)),
+                                      "", PROCESS_EVENT)),
           "拷贝应保持表达式（语义子类型）");
     CHECK(!copy.should_take(make_info(8, 80, hng::EventType::SYSCALL_EVENT, 0, 0,
-                                      "", hng::EventKind::EXEC)),
+                                      "", EXEC_EVENT)),
           "拷贝应保持维度");
 }
 
@@ -485,7 +487,7 @@ int main()
     run_unordered_duplicates_are_sorted();
     run_expression_logic();
     run_expression_compare_semantics();
-    run_parent_and_kind_atoms();
+    run_parent_and_subtype_atoms();
     run_expressions_intersect_dimensions();
     run_default_expression_is_true();
     run_copy_keeps_expressions();

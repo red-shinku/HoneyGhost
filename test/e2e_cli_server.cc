@@ -327,7 +327,7 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     event.runtimeInfo.process      = hng::Process{pid, pid * 10};
     event.runtimeInfo.parent       = hng::Process{1, 0};
     event.runtimeInfo.etype        = hng::EventType::SYSCALL_EVENT;
-    event.runtimeInfo.kind         = hng::EventKind::PROCESS;
+    event.runtimeInfo.subtype      = PROCESS_EVENT;
     event.runtimeInfo.roleID       = kRoleID;
     event.runtimeInfo.roleLabel    = kRoleLabel;
     event.runtimeInfo.contextID    = kContextID;
@@ -335,6 +335,7 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     event.data.head.pid            = pid;
     event.data.head.pid_start_time = pid * 10;
     event.data.head.type           = hng::EventType::SYSCALL_EVENT;
+    event.data.head.subtype        = PROCESS_EVENT;
     event.data.data.emplace<0>().set_syscall_name("e2e");
     return event;
 }
@@ -975,16 +976,16 @@ std::vector<hng::clisv::eventrecord> CollectRecords(
 /// @brief -e 表达式：AND 原子取交、NOT 取反、非法表达式被拒绝
 void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
 {
-    // kind=process and pid=<pid>：只应收到该进程的系统调用事件
+    // subtype=process and pid=<pid>：只应收到该进程的系统调用事件
     {
         hng::clisv::ReceiveEventRequest request;
         auto* logic = request.mutable_expr()->mutable_logic();
         logic->set_logic(hng::clisv::FILTER_LOGIC_AND);
-        auto* kind_atom = logic->add_operands()->mutable_atom();
-        kind_atom->set_field(hng::clisv::FILTER_FIELD_KIND);
-        kind_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
-        kind_atom->add_numbers(
-            static_cast<uint32_t>(hng::clisv::EVENT_KIND_PROCESS));
+        auto* subtype_atom = logic->add_operands()->mutable_atom();
+        subtype_atom->set_field(hng::clisv::FILTER_FIELD_SUBTYPE);
+        subtype_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+        subtype_atom->add_numbers(
+            static_cast<uint32_t>(hng::clisv::SUBTYPE_PROCESS));
         auto* pid_atom = logic->add_operands()->mutable_atom();
         pid_atom->set_field(hng::clisv::FILTER_FIELD_PID);
         pid_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
@@ -992,7 +993,7 @@ void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
 
         const std::vector<hng::clisv::eventrecord> records =
             CollectRecords(runtime, request);
-        CHECK(!records.empty(), "kind=process and pid 应收到事件");
+        CHECK(!records.empty(), "subtype=process and pid 应收到事件");
         for (const hng::clisv::eventrecord& record : records) {
             CHECK(record.event_case() == hng::clisv::eventrecord::kSyscallEv,
                   "事件应为系统调用事件");

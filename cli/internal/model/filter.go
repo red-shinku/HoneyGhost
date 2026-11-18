@@ -5,7 +5,7 @@ type FilterField int
 
 const (
 	FilterFieldType FilterField = iota + 1
-	FilterFieldKind
+	FilterFieldSubtype
 	FilterFieldPID
 	FilterFieldPPID
 	FilterFieldRoleID
@@ -35,32 +35,31 @@ const (
 	FilterLogicNot
 )
 
-// EventKind 是事件的语义子类型，与输出 payload.kind 同名。
-type EventKind string
+// Subtype 是事件的语义子类型，与输出 payload 的变体名同名。
+type Subtype string
 
 const (
-	EventKindProcess        EventKind = "process"
-	EventKindExec           EventKind = "exec"
-	EventKindCredential     EventKind = "credential"
-	EventKindNamespace      EventKind = "namespace"
-	EventKindFileSyscall    EventKind = "file_syscall"
-	EventKindMemory         EventKind = "memory"
-	EventKindNetworkSyscall EventKind = "network_syscall"
-	EventKindKernel         EventKind = "kernel"
-	EventKindFile           EventKind = "file"
+	SubtypeProcess        Subtype = "process"
+	SubtypeExec           Subtype = "exec"
+	SubtypeCredential     Subtype = "credential"
+	SubtypeNamespace      Subtype = "namespace"
+	SubtypeFileSyscall    Subtype = "file_syscall"
+	SubtypeMemory         Subtype = "memory"
+	SubtypeNetworkSyscall Subtype = "network_syscall"
+	SubtypeKernel         Subtype = "kernel"
 )
 
 // FilterAtom 是单个谓词。
 //
-// 取值按字段分列：数值字段用 Numbers，type 用 Types，kind 用 Kinds，
+// 取值按字段分列：数值字段用 Numbers，type 用 Types，subtype 用 Subtypes，
 // role 标签用 Strings。每个取值集合在解析期排序去重。
 type FilterAtom struct {
-	Field   FilterField
-	Compare FilterCompare
-	Numbers []uint32
-	Strings []string
-	Types   []EventType
-	Kinds   []EventKind
+	Field    FilterField
+	Compare  FilterCompare
+	Numbers  []uint32
+	Strings  []string
+	Types    []EventType
+	Subtypes []Subtype
 }
 
 // FilterExpr 是不可变布尔表达式；零值为没有原子与 kid 的叶子。

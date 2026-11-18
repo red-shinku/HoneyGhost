@@ -17,23 +17,22 @@ const (
 	maxAtomValues = 4096
 )
 
-// kindOrder 是 kind 取值的输出顺序，与 plan13 §2.1 的编号一致。
-var kindOrder = map[model.EventKind]int{
-	model.EventKindProcess:        0,
-	model.EventKindExec:           1,
-	model.EventKindCredential:     2,
-	model.EventKindNamespace:      3,
-	model.EventKindFileSyscall:    4,
-	model.EventKindMemory:         5,
-	model.EventKindNetworkSyscall: 6,
-	model.EventKindKernel:         7,
-	model.EventKindFile:           8,
+// subtypeOrder 是 subtype 取值的输出顺序，按内核 syscall_event_type 的语义顺序排列。
+var subtypeOrder = map[model.Subtype]int{
+	model.SubtypeProcess:        0,
+	model.SubtypeExec:           1,
+	model.SubtypeCredential:     2,
+	model.SubtypeNamespace:      3,
+	model.SubtypeFileSyscall:    4,
+	model.SubtypeMemory:         5,
+	model.SubtypeNetworkSyscall: 6,
+	model.SubtypeKernel:         7,
 }
 
 // exprKeys 是 -e 允许的 key；key 大小写敏感。
 var exprKeys = map[string]model.FilterField{
 	"type":      model.FilterFieldType,
-	"kind":      model.FilterFieldKind,
+	"subtype":   model.FilterFieldSubtype,
 	"pid":       model.FilterFieldPID,
 	"ppid":      model.FilterFieldPPID,
 	"roleID":    model.FilterFieldRoleID,
@@ -254,7 +253,7 @@ func (p *exprParser) parseAtom() (*model.FilterExpr, int, error) {
 	field, ok := exprKeys[key]
 	if !ok {
 		return nil, 0, p.errorf(start+1,
-			"unknown key %q (want type, kind, pid, ppid, roleID, role, or contextID)", key)
+			"unknown key %q (want type, subtype, pid, ppid, roleID, role, or contextID)", key)
 	}
 
 	p.skipSpaces()
@@ -287,18 +286,18 @@ func (p *exprParser) parseAtom() (*model.FilterExpr, int, error) {
 			set[eventType] = true
 		}
 		atom.Types = sortedExprEventTypes(set)
-	case model.FilterFieldKind:
-		set := make(map[model.EventKind]bool, len(values))
+	case model.FilterFieldSubtype:
+		set := make(map[model.Subtype]bool, len(values))
 		for i, value := range values {
-			kind, ok := parseExprEventKind(value)
+			subtype, ok := parseExprSubtype(value)
 			if !ok {
 				return nil, 0, p.errorf(columns[i],
-					"invalid kind %q (want process, exec, credential, namespace, "+
-						"file_syscall, memory, network_syscall, kernel, or file)", value)
+					"invalid subtype %q (want process, exec, credential, namespace, "+
+						"file_syscall, memory, network_syscall, or kernel)", value)
 			}
-			set[kind] = true
+			set[subtype] = true
 		}
-		atom.Kinds = sortedExprEventKinds(set)
+		atom.Subtypes = sortedExprSubtypes(set)
 	case model.FilterFieldRoleLabel:
 		atom.Strings = sortedExprStrings(values)
 	default:
@@ -511,10 +510,10 @@ func parseExprEventType(value string) (model.EventType, bool) {
 	return eventType, ok
 }
 
-func parseExprEventKind(value string) (model.EventKind, bool) {
-	kind := model.EventKind(strings.ToLower(value))
-	_, ok := kindOrder[kind]
-	return kind, ok
+func parseExprSubtype(value string) (model.Subtype, bool) {
+	subtype := model.Subtype(strings.ToLower(value))
+	_, ok := subtypeOrder[subtype]
+	return subtype, ok
 }
 
 func sortedExprEventTypes(set map[model.EventType]bool) []model.EventType {
@@ -528,13 +527,13 @@ func sortedExprEventTypes(set map[model.EventType]bool) []model.EventType {
 	return out
 }
 
-func sortedExprEventKinds(set map[model.EventKind]bool) []model.EventKind {
-	out := make([]model.EventKind, 0, len(set))
-	for kind := range set {
-		out = append(out, kind)
+func sortedExprSubtypes(set map[model.Subtype]bool) []model.Subtype {
+	out := make([]model.Subtype, 0, len(set))
+	for subtype := range set {
+		out = append(out, subtype)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return kindOrder[out[i]] < kindOrder[out[j]]
+		return subtypeOrder[out[i]] < subtypeOrder[out[j]]
 	})
 	return out
 }

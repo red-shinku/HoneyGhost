@@ -260,25 +260,24 @@ message runtimeinfo
     repeated uint32 pid       = 4;
 }
 
-// 语义子类型，取值与 hng::EventKind 一一对应
-enum EventKind {
-    EVENT_KIND_UNSPECIFIED     = 0;
-    EVENT_KIND_PROCESS         = 1;
-    EVENT_KIND_EXEC            = 2;
-    EVENT_KIND_CREDENTIAL      = 3;
-    EVENT_KIND_NAMESPACE       = 4;
-    EVENT_KIND_FILE_SYSCALL    = 5;
-    EVENT_KIND_MEMORY          = 6;
-    EVENT_KIND_NETWORK_SYSCALL = 7;
-    EVENT_KIND_KERNEL          = 8;
-    EVENT_KIND_FILE            = 9;
+// 语义子类型，取值与内核 enum syscall_event_type 同数值
+enum Subtype {
+    SUBTYPE_UNSPECIFIED = 0;
+    SUBTYPE_PROCESS     = 1;
+    SUBTYPE_EXEC        = 2;
+    SUBTYPE_CREDENTIAL  = 3;
+    SUBTYPE_NAMESPACE   = 4;
+    SUBTYPE_FILE        = 5;
+    SUBTYPE_MEMORY      = 6;
+    SUBTYPE_NETWORK     = 7;
+    SUBTYPE_KERNEL      = 8;
 }
 
 // 原子谓词作用的字段，取值与 hng::FilterField 一一对应
 enum FilterField {
     FILTER_FIELD_UNSPECIFIED = 0;
     FILTER_FIELD_TYPE        = 1;
-    FILTER_FIELD_KIND        = 2;
+    FILTER_FIELD_SUBTYPE     = 2;
     FILTER_FIELD_PID         = 3;
     FILTER_FIELD_PPID        = 4;
     FILTER_FIELD_ROLE_ID     = 5;
@@ -305,7 +304,7 @@ enum FilterLogic {
 message filter_atom {
     FilterField field = 1;
     FilterCompare compare = 2;
-    // 数值字段与 type/kind 用 numbers；role 标签用 strings
+    // 数值字段与 type/subtype 用 numbers；role 标签用 strings
     repeated uint32 numbers = 3;
     repeated string strings = 4;
 }
@@ -364,6 +363,7 @@ message eventhead
     uint32 ppid            = 6;
     uint64 ppid_start_time = 7;
     EventType type         = 8;
+    Subtype subtype        = 9;
 }
 
 // 本流丢弃事件的累计计数，可多次上报

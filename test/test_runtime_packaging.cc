@@ -6,7 +6,8 @@
  *  - 进程身份取自事件头的 (pid, pid_start_time)，与 ppid 无关；
  *  - 父进程身份取自事件头的 (ppid, ppid_start_time)，与主体进程互不影响；
  *  - 事件来源恒为 SYSCALL_EVENT；
- *  - 语义子类型取内层载荷序号（PROCESS..KERNEL），内层载荷变化不影响 etype；
+ *  - 语义子类型取自事件头的 subtype（PROCESS..KERNEL），不由载荷 variant
+ * 下标推导；
  *  - roleID / contextID 原样透传，0（未落定）不被改写、不视为异常；
  *  - 载荷被完整搬运：头部与内层载荷均可从产物中取回；
  *  - 源事件以右值传入时同样保留载荷。
@@ -16,6 +17,7 @@
 
 #include "agent/runtime_engine/src/runtime_packaging.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <utility>
 #include <variant>
@@ -41,6 +43,7 @@ hng::syscall_semantic_data make_syscall(uint32_t pid, uint64_t pid_start_time,
     ev.head.ppid            = ppid;
     ev.head.ppid_start_time = ppid_start_time;
     ev.head.type            = hng::EventType::SYSCALL_EVENT;
+    ev.head.subtype         = UNKNOWN_EVENT;
     return ev;
 }
 
@@ -52,6 +55,7 @@ const hng::syscall_semantic_data& syscall_of(const hng::RuntimeEvent& event)
 void run_syscall_identity_and_type()
 {
     hng::syscall_semantic_data src = make_syscall(1001, 555, 900, 111);
+    src.head.subtype               = PROCESS_EVENT;
     src.data.emplace<hng::process_semantic_data>();
 
     const hng::RuntimeEvent event =
@@ -62,8 +66,8 @@ void run_syscall_identity_and_type()
           "进程身份应取事件头的 pid_start_time");
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "事件来源应恒为 SYSCALL_EVENT");
-    CHECK(event.runtimeInfo.kind == hng::EventKind::PROCESS,
-          "内层第 1 个载荷应推出 PROCESS");
+    CHECK(event.runtimeInfo.subtype == PROCESS_EVENT,
+          "语义子类型应取事件头的 subtype");
     CHECK(event.runtimeInfo.roleID == 7 && event.runtimeInfo.contextID == 33,
           "归属应按入参透传");
     CHECK(event.runtimeInfo.roleLabel == "nginx:1.25", "角色标签应按入参透传");
@@ -74,6 +78,7 @@ void run_syscall_payload_kinds()
 {
     // 内层换成别的载荷，事件来源仍是 SYSCALL_EVENT
     hng::syscall_semantic_data src = make_syscall(3, 30, 1, 10);
+    src.head.subtype               = EXEC_EVENT;
     auto& exec_payload             = src.data.emplace<hng::exec_semantic_data>();
     exec_payload.set_semantic_filename("/bin/sh");
     exec_payload.set_syscall_name("execve");
@@ -83,8 +88,7 @@ void run_syscall_payload_kinds()
 
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "内层 exec 载荷仍应推出 SYSCALL_EVENT");
-    CHECK(event.runtimeInfo.kind == hng::EventKind::EXEC,
-          "内层第 2 个载荷应推出 EXEC");
+    CHECK(event.runtimeInfo.subtype == EXEC_EVENT, "语义子类型应取事件头的 EXEC");
     const hng::syscall_semantic_data& packed = syscall_of(event);
     CHECK(packed.data.index() == 1, "内层载荷应保持为 exec");
     const hng::exec_semantic_data& exec_packed =
@@ -139,66 +143,77 @@ void run_parent_from_head()
           "父进程字段不应影响主体进程");
 }
 
-/// @brief 打包一条只有一个内层载荷的 syscall 事件并核对 kind 与 etype
-void check_syscall_kind(const hng::syscall_semantic_data& src,
-                        hng::EventKind expected, const char* msg)
+/// @brief 打包一条已填 subtype 的 syscall 事件并核对 subtype 与 etype
+void check_syscall_subtype(const hng::syscall_semantic_data& src,
+                           enum syscall_event_type expected, const char* msg)
 {
     const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
-    CHECK(event.runtimeInfo.kind == expected, msg);
+    CHECK(event.runtimeInfo.subtype == expected, msg);
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "内层载荷变化不应影响 etype");
 }
 
-void run_syscall_event_kinds()
+void run_syscall_event_subtypes()
 {
     hng::syscall_semantic_data src = make_syscall(9, 90, 1, 10);
 
+    src.head.subtype               = PROCESS_EVENT;
     src.data.emplace<hng::process_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::PROCESS,
-                       "第 1 个载荷应映射为 PROCESS");
+    check_syscall_subtype(src, PROCESS_EVENT, "第 1 个载荷应为 PROCESS");
 
+    src.head.subtype = EXEC_EVENT;
     src.data.emplace<hng::exec_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::EXEC, "第 2 个载荷应映射为 EXEC");
+    check_syscall_subtype(src, EXEC_EVENT, "第 2 个载荷应为 EXEC");
 
+    src.head.subtype = CREDENTIAL_EVENT;
     src.data.emplace<hng::credential_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::CREDENTIAL,
-                       "第 3 个载荷应映射为 CREDENTIAL");
+    check_syscall_subtype(src, CREDENTIAL_EVENT, "第 3 个载荷应为 CREDENTIAL");
 
+    src.head.subtype = NAMESPACE_EVENT;
     src.data.emplace<hng::namespace_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::NAMESPACE,
-                       "第 4 个载荷应映射为 NAMESPACE");
+    check_syscall_subtype(src, NAMESPACE_EVENT, "第 4 个载荷应为 NAMESPACE");
 
+    src.head.subtype = FILE_EVENT;
     src.data.emplace<hng::file_syscall_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::FILE_SYSCALL,
-                       "第 5 个载荷应映射为 FILE_SYSCALL");
+    check_syscall_subtype(src, FILE_EVENT, "第 5 个载荷应为 FILE");
 
+    src.head.subtype = MEMORY_EVENT;
     src.data.emplace<hng::memory_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::MEMORY, "第 6 个载荷应映射为 MEMORY");
+    check_syscall_subtype(src, MEMORY_EVENT, "第 6 个载荷应为 MEMORY");
 
+    src.head.subtype = NETWORK_EVENT;
     src.data.emplace<hng::network_syscall_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::NETWORK_SYSCALL,
-                       "第 7 个载荷应映射为 NETWORK_SYSCALL");
+    check_syscall_subtype(src, NETWORK_EVENT, "第 7 个载荷应为 NETWORK");
 
+    src.head.subtype = KERNEL_EVENT;
     src.data.emplace<hng::kernel_semantic_data>();
-    check_syscall_kind(src, hng::EventKind::KERNEL, "第 8 个载荷应映射为 KERNEL");
+    check_syscall_subtype(src, KERNEL_EVENT, "第 8 个载荷应为 KERNEL");
 }
 
-void run_event_kind_values()
+void run_subtype_not_derived_from_index()
 {
-    CHECK(static_cast<uint8_t>(hng::EventKind::UNSPECIFIED) == 0,
-          "UNSPECIFIED 取 0");
-    CHECK(static_cast<uint8_t>(hng::EventKind::PROCESS) == 1, "PROCESS 取 1");
-    CHECK(static_cast<uint8_t>(hng::EventKind::EXEC) == 2, "EXEC 取 2");
-    CHECK(static_cast<uint8_t>(hng::EventKind::CREDENTIAL) == 3,
-          "CREDENTIAL 取 3");
-    CHECK(static_cast<uint8_t>(hng::EventKind::NAMESPACE) == 4, "NAMESPACE 取 4");
-    CHECK(static_cast<uint8_t>(hng::EventKind::FILE_SYSCALL) == 5,
-          "FILE_SYSCALL 取 5");
-    CHECK(static_cast<uint8_t>(hng::EventKind::MEMORY) == 6, "MEMORY 取 6");
-    CHECK(static_cast<uint8_t>(hng::EventKind::NETWORK_SYSCALL) == 7,
-          "NETWORK_SYSCALL 取 7");
-    CHECK(static_cast<uint8_t>(hng::EventKind::KERNEL) == 8, "KERNEL 取 8");
-    CHECK(static_cast<uint8_t>(hng::EventKind::FILE) == 9, "FILE 取 9");
+    // 头里的数值与载荷变体故意错位：产物必须原样保留头里的值
+    hng::syscall_semantic_data src = make_syscall(10, 100, 1, 10);
+    src.head.subtype               = KERNEL_EVENT;
+    src.data.emplace<hng::process_semantic_data>();
+
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    CHECK(event.runtimeInfo.subtype == KERNEL_EVENT,
+          "subtype 不应由变体下标推出");
+    CHECK(event.data.data.index() == 0, "载荷本身不应被改写");
+}
+
+void run_event_subtype_values()
+{
+    CHECK(static_cast<uint8_t>(UNKNOWN_EVENT) == 0, "UNKNOWN_EVENT 取 0");
+    CHECK(static_cast<uint8_t>(PROCESS_EVENT) == 1, "PROCESS_EVENT 取 1");
+    CHECK(static_cast<uint8_t>(EXEC_EVENT) == 2, "EXEC_EVENT 取 2");
+    CHECK(static_cast<uint8_t>(CREDENTIAL_EVENT) == 3, "CREDENTIAL_EVENT 取 3");
+    CHECK(static_cast<uint8_t>(NAMESPACE_EVENT) == 4, "NAMESPACE_EVENT 取 4");
+    CHECK(static_cast<uint8_t>(FILE_EVENT) == 5, "FILE_EVENT 取 5");
+    CHECK(static_cast<uint8_t>(MEMORY_EVENT) == 6, "MEMORY_EVENT 取 6");
+    CHECK(static_cast<uint8_t>(NETWORK_EVENT) == 7, "NETWORK_EVENT 取 7");
+    CHECK(static_cast<uint8_t>(KERNEL_EVENT) == 8, "KERNEL_EVENT 取 8");
 }
 
 }  // namespace
@@ -208,8 +223,9 @@ int main()
     run_syscall_identity_and_type();
     run_syscall_payload_kinds();
     run_parent_from_head();
-    run_syscall_event_kinds();
-    run_event_kind_values();
+    run_syscall_event_subtypes();
+    run_subtype_not_derived_from_index();
+    run_event_subtype_values();
     run_unsettled_ids();
     run_payload_carried_by_value();
 

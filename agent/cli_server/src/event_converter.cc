@@ -57,6 +57,62 @@ void MoveSyscallPayload(hng::syscall_semantic_data& src,
     }
 }
 
+/// @brief 语义子类型：内核枚举 → 报文
+/// @note 两侧数值一致，由下方 static_assert 在编译期锁定
+hng::clisv::Subtype ToProtoSubtype(enum syscall_event_type subtype)
+{
+    switch (subtype) {
+        case UNKNOWN_EVENT:
+            return hng::clisv::SUBTYPE_UNSPECIFIED;
+        case PROCESS_EVENT:
+            return hng::clisv::SUBTYPE_PROCESS;
+        case EXEC_EVENT:
+            return hng::clisv::SUBTYPE_EXEC;
+        case CREDENTIAL_EVENT:
+            return hng::clisv::SUBTYPE_CREDENTIAL;
+        case NAMESPACE_EVENT:
+            return hng::clisv::SUBTYPE_NAMESPACE;
+        case FILE_EVENT:
+            return hng::clisv::SUBTYPE_FILE;
+        case MEMORY_EVENT:
+            return hng::clisv::SUBTYPE_MEMORY;
+        case NETWORK_EVENT:
+            return hng::clisv::SUBTYPE_NETWORK;
+        case KERNEL_EVENT:
+            return hng::clisv::SUBTYPE_KERNEL;
+    }
+    return hng::clisv::SUBTYPE_UNSPECIFIED;
+}
+
+// 内核 syscall_event_type 与 proto Subtype 同数值是词汇统一的前提
+static_assert(static_cast<int>(UNKNOWN_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_UNSPECIFIED),
+              "UNKNOWN_EVENT must equal SUBTYPE_UNSPECIFIED");
+static_assert(static_cast<int>(PROCESS_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_PROCESS),
+              "PROCESS_EVENT must equal SUBTYPE_PROCESS");
+static_assert(static_cast<int>(EXEC_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_EXEC),
+              "EXEC_EVENT must equal SUBTYPE_EXEC");
+static_assert(static_cast<int>(CREDENTIAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_CREDENTIAL),
+              "CREDENTIAL_EVENT must equal SUBTYPE_CREDENTIAL");
+static_assert(static_cast<int>(NAMESPACE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NAMESPACE),
+              "NAMESPACE_EVENT must equal SUBTYPE_NAMESPACE");
+static_assert(static_cast<int>(FILE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_FILE),
+              "FILE_EVENT must equal SUBTYPE_FILE");
+static_assert(static_cast<int>(MEMORY_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_MEMORY),
+              "MEMORY_EVENT must equal SUBTYPE_MEMORY");
+static_assert(static_cast<int>(NETWORK_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NETWORK),
+              "NETWORK_EVENT must equal SUBTYPE_NETWORK");
+static_assert(static_cast<int>(KERNEL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_KERNEL),
+              "KERNEL_EVENT must equal SUBTYPE_KERNEL");
+
 }  // namespace
 
 hng::clisv::EventType ToProtoEventType(hng::EventType etype)
@@ -107,6 +163,7 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
     head->set_ppid(syscall.head.ppid);
     head->set_ppid_start_time(syscall.head.ppid_start_time);
     head->set_type(ToProtoEventType(syscall.head.type));
+    head->set_subtype(ToProtoSubtype(syscall.head.subtype));
     MoveSyscallPayload(syscall, *out.mutable_syscall_ev());
 }
 

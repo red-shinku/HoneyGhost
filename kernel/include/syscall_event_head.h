@@ -55,17 +55,20 @@ enum syscall_event_name {
 /**
  * @brief 自定义syscall类别.
  * @details 根据语义划分。每个类型也对应一种数据结构，用户态以此从 ringbuf
- * 解析数据。
+ * 解析数据。取值与 proto 的 Subtype 同数值；PROCESS_EVENT..KERNEL_EVENT 的
+ * 顺序与 syscall_semantic_data 载荷 variant 的顺序一一对应，故 variant 第 i
+ * 个备选对应取值 i + 1。0 保留给未归类的事件。
  */
 enum syscall_event_type {
-    PROCESS_EVENT,     ///< 进程生命周期
-    EXEC_EVENT,        ///< 执行语义
-    CREDENTIAL_EVENT,  ///< 权限变化
-    NAMESPACE_EVENT,   ///< 命名空间事件
-    FILE_EVENT,        ///< 文件操作
-    MEMORY_EVENT,      ///< 内存操作
-    NETWORK_EVENT,     ///< 网络连接
-    KERNEL_EVENT       ///< 内核操作
+    UNKNOWN_EVENT    = 0,  ///< 未归类
+    PROCESS_EVENT    = 1,  ///< 进程生命周期
+    EXEC_EVENT       = 2,  ///< 执行语义
+    CREDENTIAL_EVENT = 3,  ///< 权限变化
+    NAMESPACE_EVENT  = 4,  ///< 命名空间事件
+    FILE_EVENT       = 5,  ///< 文件操作
+    MEMORY_EVENT     = 6,  ///< 内存操作
+    NETWORK_EVENT    = 7,  ///< 网络连接
+    KERNEL_EVENT     = 8   ///< 内核操作
 };
 
 struct syscall_event_head {
@@ -129,6 +132,10 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_PTRACE:
         case SYSCALL_EVENT_BPF:
             s_head->type = KERNEL_EVENT;
+            break;
+        default:
+            // 新增 name 尚未归类时落到 0，避免沿用上一条事件的取值
+            s_head->type = UNKNOWN_EVENT;
             break;
     }
 }

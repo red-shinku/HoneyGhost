@@ -131,7 +131,7 @@ func newEventsCommand(app *App) *cobra.Command {
 			"roleID/contextID accept 0 for unsettled, pid must be positive)")
 	cmd.Flags().StringArrayVarP(&opts.Expr, "expr", "e", nil,
 		"runtime filter expression with and/or/not, parentheses, and comparisons "+
-			"=, !=, ~= (keys: type, kind, pid, ppid, roleID, role, contextID; "+
+			"=, !=, ~= (keys: type, subtype, pid, ppid, roleID, role, contextID; "+
 			"repeatable, combined with and)")
 	cmd.Flags().DurationVar(&opts.Duration, "duration", 0,
 		"maximum stream duration; 0 means until interrupted")

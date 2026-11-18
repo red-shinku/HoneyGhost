@@ -57,8 +57,38 @@ hng::RuntimeEvent make_syscall()
     event.data.head.ppid            = kPpid;
     event.data.head.ppid_start_time = kPpidStart;
     event.data.head.type            = hng::EventType::SYSCALL_EVENT;
+    event.data.head.subtype         = EXEC_EVENT;
     return event;
 }
+
+// 内核 syscall_event_type 与 proto Subtype 必须同数值
+static_assert(static_cast<int>(UNKNOWN_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_UNSPECIFIED),
+              "UNKNOWN_EVENT must equal SUBTYPE_UNSPECIFIED");
+static_assert(static_cast<int>(PROCESS_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_PROCESS),
+              "PROCESS_EVENT must equal SUBTYPE_PROCESS");
+static_assert(static_cast<int>(EXEC_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_EXEC),
+              "EXEC_EVENT must equal SUBTYPE_EXEC");
+static_assert(static_cast<int>(CREDENTIAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_CREDENTIAL),
+              "CREDENTIAL_EVENT must equal SUBTYPE_CREDENTIAL");
+static_assert(static_cast<int>(NAMESPACE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NAMESPACE),
+              "NAMESPACE_EVENT must equal SUBTYPE_NAMESPACE");
+static_assert(static_cast<int>(FILE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_FILE),
+              "FILE_EVENT must equal SUBTYPE_FILE");
+static_assert(static_cast<int>(MEMORY_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_MEMORY),
+              "MEMORY_EVENT must equal SUBTYPE_MEMORY");
+static_assert(static_cast<int>(NETWORK_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NETWORK),
+              "NETWORK_EVENT must equal SUBTYPE_NETWORK");
+static_assert(static_cast<int>(KERNEL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_KERNEL),
+              "KERNEL_EVENT must equal SUBTYPE_KERNEL");
 
 using SDataCase = hng::clisv::syscall_event_data::SDataCase;
 
@@ -171,7 +201,38 @@ void run_head_fields()
           "ppid 的 start_time 取自事件头");
     CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_SYSCALL,
           "事件类型取自事件头");
+    CHECK(msg.head().subtype() == hng::clisv::SUBTYPE_EXEC,
+          "语义子类型取自事件头");
     CHECK(msg.head().rolelabel() == kRoleLabel, "roleLabel 直传");
+}
+
+/// 内核枚举的每个取值都应落到同数值的 Subtype
+void run_subtype_mapping()
+{
+    struct Case {
+        enum syscall_event_type subtype;
+        hng::clisv::Subtype expected;
+    };
+    const Case cases[] = {
+        {UNKNOWN_EVENT, hng::clisv::SUBTYPE_UNSPECIFIED},
+        {PROCESS_EVENT, hng::clisv::SUBTYPE_PROCESS},
+        {EXEC_EVENT, hng::clisv::SUBTYPE_EXEC},
+        {CREDENTIAL_EVENT, hng::clisv::SUBTYPE_CREDENTIAL},
+        {NAMESPACE_EVENT, hng::clisv::SUBTYPE_NAMESPACE},
+        {FILE_EVENT, hng::clisv::SUBTYPE_FILE},
+        {MEMORY_EVENT, hng::clisv::SUBTYPE_MEMORY},
+        {NETWORK_EVENT, hng::clisv::SUBTYPE_NETWORK},
+        {KERNEL_EVENT, hng::clisv::SUBTYPE_KERNEL},
+    };
+    for (const Case& c : cases) {
+        hng::RuntimeEvent event = make_syscall();
+        event.data.head.subtype = c.subtype;
+
+        hng::clisv::eventrecord msg;
+        hng::cli::ToProto(event, msg);
+        CHECK(msg.head().subtype() == c.expected,
+              "内核 subtype 应映射到同数值的报文 Subtype");
+    }
 }
 
 void run_event_type_round_trip()
@@ -192,6 +253,7 @@ int main()
 {
     run_syscall_payload_mapping();
     run_head_fields();
+    run_subtype_mapping();
     run_event_type_round_trip();
 
     if (g_fail) {

@@ -1024,15 +1024,15 @@ func TestEventsExprPassedToSubscribe(t *testing.T) {
 		},
 	}}
 	_, _, err := executeWithServices(t, svcs, "events",
-		"-e", "kind=exec or pid=7", "-e", "not role=systemd")
+		"-e", "subtype=exec or pid=7", "-e", "not role=systemd")
 	if err != nil {
 		t.Fatalf("events -e: %v", err)
 	}
 	want := &model.FilterExpr{Logic: model.FilterLogicAnd, Kids: []model.FilterExpr{
 		{Logic: model.FilterLogicOr, Kids: []model.FilterExpr{
 			{Atom: &model.FilterAtom{
-				Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
-				Kinds: []model.EventKind{model.EventKindExec},
+				Field: model.FilterFieldSubtype, Compare: model.FilterCompareEq,
+				Subtypes: []model.Subtype{model.SubtypeExec},
 			}},
 			{Atom: &model.FilterAtom{
 				Field: model.FilterFieldPID, Compare: model.FilterCompareEq,
@@ -1071,6 +1071,19 @@ func TestEventsInvalidExpr(t *testing.T) {
 	}
 }
 
+func TestEventsOldKindKeyRejected(t *testing.T) {
+	_, _, err := executeWithoutDial(t, "events", "-e", "kind=exec")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if ExitCode(err, false) != 2 {
+		t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
+	}
+	if !strings.Contains(err.Error(), `unknown key "kind"`) {
+		t.Errorf("error = %q, want an unknown key error", err.Error())
+	}
+}
+
 func TestEventsTypeExprConflict(t *testing.T) {
 	for _, args := range [][]string{
 		{"events", "-t", "syscall", "-e", "type=syscall"},
@@ -1098,7 +1111,7 @@ func TestEventsTypeExprConflict(t *testing.T) {
 		},
 	}}
 	if _, _, err := executeWithServices(t, svcs, "events",
-		"-t", "file", "-e", "kind=exec"); err != nil {
+		"-t", "file", "-e", "subtype=exec"); err != nil {
 		t.Errorf("events -t with a non-type expression: %v", err)
 	}
 	if _, _, err := executeWithServices(t, svcs, "events",

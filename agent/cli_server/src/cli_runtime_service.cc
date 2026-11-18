@@ -152,8 +152,8 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
         case hng::clisv::FILTER_FIELD_TYPE:
             result.field = hng::FilterField::TYPE;
             break;
-        case hng::clisv::FILTER_FIELD_KIND:
-            result.field = hng::FilterField::KIND;
+        case hng::clisv::FILTER_FIELD_SUBTYPE:
+            result.field = hng::FilterField::SUBTYPE;
             break;
         case hng::clisv::FILTER_FIELD_PID:
             result.field = hng::FilterField::PID;
@@ -245,10 +245,10 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
                     return std::nullopt;
                 }
                 break;
-            case hng::FilterField::KIND:
-                if (value < 1 || value > 9) {
-                    error = "invalid filter expression: kind value " +
-                            std::to_string(value) + " is out of range 1..9";
+            case hng::FilterField::SUBTYPE:
+                if (value < 1 || value > 8) {
+                    error = "invalid filter expression: subtype value " +
+                            std::to_string(value) + " is out of range 1..8";
                     return std::nullopt;
                 }
                 break;

@@ -368,8 +368,8 @@ func TestSubscribeSendsExpr(t *testing.T) {
 	service := eventService{c: &Client{events: fake}}
 	expr := &model.FilterExpr{Logic: model.FilterLogicNot, Kids: []model.FilterExpr{
 		{Atom: &model.FilterAtom{
-			Field: model.FilterFieldKind, Compare: model.FilterCompareEq,
-			Kinds: []model.EventKind{model.EventKindExec},
+			Field: model.FilterFieldSubtype, Compare: model.FilterCompareEq,
+			Subtypes: []model.Subtype{model.SubtypeExec},
 		}},
 	}}
 	if _, err := service.Subscribe(context.Background(), model.RuntimeSelector{}, nil,
