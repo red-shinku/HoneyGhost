@@ -413,6 +413,8 @@ message collector_line_stats
     uint64 reserve_failures = 6;
     bool attached          = 7;
     bool polling           = 8;
+    uint64 skipped_probes  = 9;
+    uint64 attach_failed   = 10;
 }
 
 // 语义聚合的累计计数

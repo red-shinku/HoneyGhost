@@ -100,7 +100,13 @@ add_executable(test_kernel_preflight
     test_kernel_preflight.cc
     ${HNG_SOURCE_DIR}/agent/assembly/src/kernel_preflight.cc)
 target_include_directories(test_kernel_preflight PRIVATE ${HNG_SOURCE_DIR})
+target_link_libraries(test_kernel_preflight PRIVATE hng_util)
 add_test(NAME test_kernel_preflight COMMAND test_kernel_preflight)
+
+# tracefs 根与 tracepoint 存在性：临时目录伪造 events 树与挂载表，无特权
+add_executable(test_tracefs test_tracefs.cc)
+target_link_libraries(test_tracefs PRIVATE hng_util)
+add_test(NAME test_tracefs COMMAND test_tracefs)
 
 # 可执行目标的用法输出：不阻塞信号、不构造装配层
 add_test(NAME hng_agent_help COMMAND hng_agent --help)
@@ -337,15 +343,21 @@ foreach(probe files syscalls networks)
     configure_file(fixtures/collector_skeleton_stub.hpp
         ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
+configure_file(fixtures/collector_skeleton_stub.hpp
+    ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf.h COPYONLY)
 configure_file(fixtures/libbpf_version_stub.h
     ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
 add_executable(test_collector_filter_map
     test_collector_filter_map.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/file_event_collector.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/probe_attach.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/network_event_collector.cc)
 target_include_directories(test_collector_filter_map PRIVATE
     ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
+target_link_libraries(test_collector_filter_map PRIVATE hng_util hng_log)
+target_compile_definitions(test_collector_filter_map
+    PRIVATE HNG_LOG_TAG="collector")
 add_test(NAME test_collector_filter_map COMMAND test_collector_filter_map)
 
 # 采集聚合：假线 + eventfd 验证 epoll 唤醒、预算与停机排空，不依赖 libbpf。

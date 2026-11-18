@@ -25,6 +25,7 @@ add_library(hng_collector STATIC
     src/collector.cc
     src/collector_component.cc
     src/file_event_collector.cc
+    src/probe_attach.cc
     src/syscall_event_collector.cc
     src/network_event_collector.cc)
 target_include_directories(hng_collector
@@ -32,6 +33,7 @@ target_include_directories(hng_collector
     PRIVATE ${HNG_COLLECTOR_LIBBPF_INCLUDE_DIR})
 target_link_libraries(hng_collector
     PRIVATE ${HNG_COLLECTOR_LIBBPF_LIBRARY}
-            hng_log)
+            hng_log
+            hng_util)
 target_compile_definitions(hng_collector PRIVATE HNG_LOG_TAG="collector")
 add_dependencies(hng_collector hng_ebpf)

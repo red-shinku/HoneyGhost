@@ -98,6 +98,8 @@ type CollectorLineStats struct {
 	ChannelDropped  uint64 `json:"channel_dropped"`
 	ChannelRejected uint64 `json:"channel_rejected"`
 	ReserveFailures uint64 `json:"reserve_failures"`
+	SkippedProbes   uint64 `json:"skipped_probes"`
+	AttachFailed    uint64 `json:"attach_failed"`
 	Attached        bool   `json:"attached"`
 	Polling         bool   `json:"polling"`
 }

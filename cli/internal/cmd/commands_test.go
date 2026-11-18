@@ -721,7 +721,8 @@ func TestStatus(t *testing.T) {
 			stats: func(context.Context) (model.PipelineStats, error) {
 				return model.PipelineStats{
 					Collector: []model.CollectorLineStats{{
-						Line: "syscall", Consumed: 5, ChannelDropped: 1, Attached: true,
+						Line: "syscall", Consumed: 5, ChannelDropped: 1,
+						SkippedProbes: 7, AttachFailed: 8, Attached: true,
 					}},
 					Semantic: &model.SemanticStats{ProcessedSyscall: 4},
 					Engine:   &model.EngineStats{PeakCLIStreams: 2},
@@ -741,7 +742,7 @@ func TestStatus(t *testing.T) {
 		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
 		"PROCESS STATS", "pid_reused", "RUNTIME STATS", "syscall",
-		"SEMANTIC", "ENGINE", "CLI STREAMS",
+		"SKIPPED", "ATTACH_FAIL", "SEMANTIC", "ENGINE", "CLI STREAMS",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("stdout missing %q:\n%s", line, out)

@@ -99,6 +99,8 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         item->set_channel_dropped(line.channel_dropped);
         item->set_channel_rejected(line.channel_rejected);
         item->set_reserve_failures(line.reserve_failures);
+        item->set_skipped_probes(line.skipped_probes);
+        item->set_attach_failed(line.attach_failed);
         item->set_attached(line.attached);
         item->set_polling(line.polling);
     }

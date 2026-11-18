@@ -21,20 +21,22 @@ namespace hng {
  *       channel_dropped/channel_rejected 是输出通道的拒收次数。
  */
 struct CollectorLineStats {
-    std::string line;                  ///< 线名：file、syscall 或 network
-    std::uint64_t consumed       = 0;  ///< 已从 ringbuf 消费的记录数
-    std::uint64_t consume_errors = 0;  ///< ring_buffer 消费返回错误的次数
-    std::uint64_t channel_dropped  = 0;  ///< 输出通道满导致的拒收
-    std::uint64_t channel_rejected = 0;  ///< 输出通道关闭导致的拒收
-    std::uint64_t reserve_failures = 0;  ///< 内核 ringbuf 预留失败次数
-    bool attached = false;              ///< 探针当前是否已挂载
-    bool polling  = false;              ///< 是否退回超时轮询
+    std::string line;                        ///< 线名：file、syscall 或 network
+    std::uint64_t consumed         = 0;      ///< 已从 ringbuf 消费的记录数
+    std::uint64_t consume_errors   = 0;      ///< ring_buffer 消费返回错误的次数
+    std::uint64_t channel_dropped  = 0;      ///< 输出通道满导致的拒收
+    std::uint64_t channel_rejected = 0;      ///< 输出通道关闭导致的拒收
+    std::uint64_t reserve_failures = 0;      ///< 内核 ringbuf 预留失败次数
+    std::uint64_t skipped_probes   = 0;      ///< 缺失 tracepoint 被跳过的探针数
+    std::uint64_t attach_failed    = 0;      ///< 探针挂载失败次数
+    bool attached                  = false;  ///< 探针当前是否已挂载
+    bool polling                   = false;  ///< 是否退回超时轮询
 };
 
 /// @brief 语义聚合的累计计数
 struct SemanticStats {
-    std::uint64_t processed_file    = 0;  ///< 已转换的文件原始事件
-    std::uint64_t processed_syscall = 0;  ///< 已转换的系统调用原始事件
+    std::uint64_t processed_file       = 0;  ///< 已转换的文件原始事件
+    std::uint64_t processed_syscall    = 0;  ///< 已转换的系统调用原始事件
     std::uint64_t raw_file_dropped     = 0;
     std::uint64_t raw_file_rejected    = 0;
     std::uint64_t raw_syscall_dropped  = 0;
@@ -77,7 +79,7 @@ struct PipelineStats {
  */
 class PipelineStatsService {
    public:
-    virtual ~PipelineStatsService() = default;
+    virtual ~PipelineStatsService()        = default;
     virtual PipelineStats snapshot() const = 0;
 };
 

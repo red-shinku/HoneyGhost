@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -46,14 +47,19 @@ class CollectorType {
     /**
      * @brief 加载骨架、创建 ringbuf 并校验过滤 map fd，不挂载探针。
      * @return 成功为 true；已准备或加载、map 校验、ringbuf 创建失败为 false
-     * @note 成功后 role_filter_map_fd() 即可返回有效 fd，此时尚无事件产生；
-     *       须再调用 attach()。失败时不保留任何已准备资源。
+     * @note 加载前会关闭 tracepoint 不存在的程序的 autoload，计数见
+     *       stats().skipped_probes。成功后 role_filter_map_fd() 即可返回
+     *       有效 fd，此时尚无事件产生；须再调用 attach()。失败时不保留
+     *       任何已准备资源。
      */
     virtual bool prepare()                           = 0;
     /**
-     * @brief 在 prepare() 成功后挂载探针。
-     * @return 成功为 true；未准备、已挂载或挂载失败为 false
-     * @note 挂载成功后可被 consume() 消费；挂载失败保留已准备资源。
+     * @brief 在 prepare() 成功后逐个挂载探针。
+     * @return 有任一探针挂载成功，或没有需要挂载的探针时为 true；
+     *         未准备、已挂载或全部尝试均失败为 false
+     * @note 单个探针失败只累加 stats().attach_failed，不影响其余探针；
+     *       返回 false 时保留已准备资源，可重试 attach()。
+     *       挂载成功后可被 consume() 消费。
      */
     virtual bool attach()                            = 0;
     /**
@@ -122,6 +128,30 @@ class CollectorType {
         return attached_.load(std::memory_order_relaxed);
     }
 
+    /// @brief 累计 prepare() 因 tracepoint 缺失关闭 autoload 的探针数
+    void mark_skipped_probes(std::uint64_t count = 1) noexcept
+    {
+        skipped_probes_.fetch_add(count, std::memory_order_relaxed);
+    }
+
+    /// @brief 已跳过 autoload 的探针数
+    std::uint64_t skipped_probes() const noexcept
+    {
+        return skipped_probes_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief 累计 attach() 挂载失败的探针数
+    void mark_attach_failed(std::uint64_t count = 1) noexcept
+    {
+        attach_failed_.fetch_add(count, std::memory_order_relaxed);
+    }
+
+    /// @brief 挂载失败的探针数
+    std::uint64_t attach_failed() const noexcept
+    {
+        return attach_failed_.load(std::memory_order_relaxed);
+    }
+
     /// @brief 累计从 ringbuf 搬出的记录数
     void mark_consumed(std::uint64_t count = 1) noexcept
     {
@@ -149,6 +179,8 @@ class CollectorType {
    protected:
     std::atomic<bool> polling_{false};
     std::atomic<bool> attached_{false};
+    std::atomic<std::uint64_t> skipped_probes_{0};
+    std::atomic<std::uint64_t> attach_failed_{0};
     std::atomic<std::uint64_t> consumed_{0};
     std::atomic<std::uint64_t> consume_errors_{0};
 };
@@ -230,7 +262,13 @@ class Collector final : public hng::Component {
 /** @brief 文件事件采集线；借用的通道写端必须比采集器活得更久。 */
 class FileEventCollector : public CollectorType {
    public:
-    explicit FileEventCollector(hng::EventChannelWriter<file_access_data>& sink);
+    /**
+     * @brief 绑定输出通道
+     * @param sink 输出通道写端
+     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
+     */
+    explicit FileEventCollector(hng::EventChannelWriter<file_access_data>& sink,
+                                std::filesystem::path tracefs_root = {});
     ~FileEventCollector() override;
 
     bool prepare() override;
@@ -246,6 +284,7 @@ class FileEventCollector : public CollectorType {
 
    private:
     hng::EventChannelWriter<file_access_data>& file_sink;
+    std::filesystem::path tracefs_root_;
     std::unique_ptr<hng::detail::FileCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;
@@ -254,7 +293,13 @@ class FileEventCollector : public CollectorType {
 /** @brief 系统调用事件采集线；借用的通道写端必须比采集器活得更久。 */
 class SyscallEventCollector : public CollectorType {
    public:
-    explicit SyscallEventCollector(hng::EventChannelWriter<syscall_event>& sink);
+    /**
+     * @brief 绑定输出通道
+     * @param sink 输出通道写端
+     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
+     */
+    explicit SyscallEventCollector(hng::EventChannelWriter<syscall_event>& sink,
+                                   std::filesystem::path tracefs_root = {});
     ~SyscallEventCollector() override;
 
     bool prepare() override;
@@ -270,6 +315,7 @@ class SyscallEventCollector : public CollectorType {
 
    private:
     hng::EventChannelWriter<syscall_event>& syscall_sink;
+    std::filesystem::path tracefs_root_;
     std::unique_ptr<hng::detail::SyscallCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;
@@ -278,7 +324,13 @@ class SyscallEventCollector : public CollectorType {
 /** @brief 网络事件采集线；借用的通道写端必须比采集器活得更久。 */
 class NetworkEventCollector : public CollectorType {
    public:
-    explicit NetworkEventCollector(hng::EventChannelWriter<network_data>& sink);
+    /**
+     * @brief 绑定输出通道
+     * @param sink 输出通道写端
+     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
+     */
+    explicit NetworkEventCollector(hng::EventChannelWriter<network_data>& sink,
+                                   std::filesystem::path tracefs_root = {});
     ~NetworkEventCollector() override;
 
     bool prepare() override;
@@ -294,6 +346,7 @@ class NetworkEventCollector : public CollectorType {
 
    private:
     hng::EventChannelWriter<network_data>& network_sink;
+    std::filesystem::path tracefs_root_;
     std::unique_ptr<hng::detail::NetworkCollectorState> state_;
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;

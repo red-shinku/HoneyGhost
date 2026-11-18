@@ -3,6 +3,8 @@
  * @brief 文件事件采集线：ringbuf 资源、探针挂载与按预算消费。
  */
 #include "agent/collector/src/collector.hpp"
+#include "agent/collector/src/probe_attach.hpp"
+#include "agent/util/include/tracefs.hpp"
 #include "kernel/files.skel.h"
 
 #include <bpf/libbpf_version.h>
@@ -12,23 +14,33 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace hng::detail {
-/** @brief 按声明的逆序销毁成员：先 ringbuf，再探针骨架。 */
+/** @brief 按声明的逆序销毁成员：先链接，再 ringbuf，最后探针骨架。 */
 struct FileCollectorState {
     std::unique_ptr<::files_collector, decltype(&::files_collector__destroy)>
         skeleton{nullptr, &::files_collector__destroy};
     std::unique_ptr<::ring_buffer, decltype(&::ring_buffer__free)> buffer{
         nullptr, &::ring_buffer__free};
-    bool attached = false;  ///< attach() 已成功挂载探针
-    bool ready    = false;  ///< ringbuf 已可被 consume() 消费
-    int reserve_failures_fd = -1;  ///< 内核 ringbuf 预留失败计数 map
+    std::vector<::bpf_link*> links;   ///< 已挂载探针的链接，由本状态持有
+    bool attached           = false;  ///< attach() 已成功挂载探针
+    bool ready              = false;  ///< ringbuf 已可被 consume() 消费
+    int reserve_failures_fd = -1;     ///< 内核 ringbuf 预留失败计数 map
+
+    ~FileCollectorState()
+    {
+        for (::bpf_link* link : links) {
+            ::bpf_link__destroy(link);
+        }
+    }
 };
 }  // namespace hng::detail
 
 FileEventCollector::FileEventCollector(
-    hng::EventChannelWriter<file_access_data>& sink)
-    : file_sink(sink)
+    hng::EventChannelWriter<file_access_data>& sink,
+    std::filesystem::path tracefs_root)
+    : file_sink(sink), tracefs_root_(std::move(tracefs_root))
 {
 }
 
@@ -66,8 +78,15 @@ bool FileEventCollector::prepare()
     if (!candidate) {
         return false;
     }
-    candidate->skeleton.reset(files_collector__open_and_load());
+    candidate->skeleton.reset(files_collector__open());
     if (!candidate->skeleton) {
+        return false;
+    }
+    const std::filesystem::path tracefs_root =
+        tracefs_root_.empty() ? hng::detail::find_tracefs_root() : tracefs_root_;
+    const int skipped = hng::detail::skip_missing_tracepoints(
+        candidate->skeleton->obj, tracefs_root);
+    if (files_collector__load(candidate->skeleton.get()) != 0) {
         return false;
     }
     const int events_fd =
@@ -84,6 +103,7 @@ bool FileEventCollector::prepare()
     if (!candidate->buffer) {
         return false;
     }
+    mark_skipped_probes(static_cast<std::uint64_t>(skipped));
     state_ = std::move(candidate);
     return true;
 }
@@ -93,7 +113,12 @@ bool FileEventCollector::attach()
     if (!state_ || state_->attached) {
         return false;
     }
-    if (files_collector__attach(state_->skeleton.get())) {
+    const int failures =
+        hng::detail::attach_programs(state_->skeleton->obj, state_->links);
+    if (failures > 0) {
+        mark_attach_failed(static_cast<std::uint64_t>(failures));
+    }
+    if (failures > 0 && state_->links.empty()) {
         return false;
     }
     state_->attached = true;
@@ -119,7 +144,10 @@ void FileEventCollector::detach()
     if (!state_ || !state_->attached) {
         return;
     }
-    files_collector__detach(state_->skeleton.get());
+    for (::bpf_link* link : state_->links) {
+        ::bpf_link__destroy(link);
+    }
+    state_->links.clear();
     state_->attached = false;
     mark_attached(false);
 }
@@ -166,12 +194,14 @@ const char* FileEventCollector::name() const noexcept { return "file"; }
 hng::CollectorLineStats FileEventCollector::stats() const
 {
     hng::CollectorLineStats snapshot;
-    snapshot.line            = name();
-    snapshot.consumed        = consumed();
-    snapshot.consume_errors  = consume_errors();
-    snapshot.channel_dropped = file_sink.dropped();
+    snapshot.line             = name();
+    snapshot.consumed         = consumed();
+    snapshot.consume_errors   = consume_errors();
+    snapshot.channel_dropped  = file_sink.dropped();
     snapshot.channel_rejected = file_sink.rejected();
-    snapshot.attached = attached();
-    snapshot.polling  = polling();
+    snapshot.skipped_probes   = skipped_probes();
+    snapshot.attach_failed    = attach_failed();
+    snapshot.attached         = attached();
+    snapshot.polling          = polling();
     return snapshot;
 }

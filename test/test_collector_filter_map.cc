@@ -9,10 +9,14 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace {
@@ -25,6 +29,110 @@ int checks = 0;
                                      std::to_string(__LINE__));               \
     } while (false)
 
+/// @brief 把 tracepoint/<group>/<event> 拆成组名与事件名
+bool split_tracepoint(const std::string& section, std::string& group,
+                      std::string& event)
+{
+    constexpr std::string_view prefix = "tracepoint/";
+    if (section.rfind(prefix, 0) != 0) {
+        return false;
+    }
+    const std::size_t separator = section.find('/', prefix.size());
+    if (separator == std::string::npos) {
+        return false;
+    }
+    group = section.substr(prefix.size(), separator - prefix.size());
+    event = section.substr(separator + 1);
+    return !group.empty() && !event.empty() &&
+           event.find('/') == std::string::npos;
+}
+
+/// @brief 由 mkdtemp 独占创建的 tracefs 根，析构时整体删除
+struct TempTracefs {
+    std::filesystem::path root;
+
+    TempTracefs()
+    {
+        std::string pattern = (std::filesystem::temp_directory_path() /
+                               "hng_collector_tracefs_XXXXXX")
+                                  .string();
+        if (::mkdtemp(pattern.data()) != nullptr) {
+            root = pattern;
+        }
+    }
+
+    ~TempTracefs()
+    {
+        if (!root.empty()) {
+            std::error_code error;
+            std::filesystem::remove_all(root, error);
+        }
+    }
+
+    /// @brief 为 tracepoint/<group>/<event> 创建 events/<group>/<event>/id
+    void add(const std::string& section)
+    {
+        if (root.empty()) {
+            return;
+        }
+        std::string group;
+        std::string event;
+        if (!split_tracepoint(section, group, event)) {
+            return;
+        }
+        const std::filesystem::path directory = root / "events" / group / event;
+        std::filesystem::create_directories(directory);
+        std::ofstream id(directory / "id");
+        id << "1\n";
+    }
+};
+
+/// @brief 写上三个骨架的全部程序 section
+void add_all_programs(TempTracefs& tracefs)
+{
+    for (const char* skeleton :
+         {"files_collector", "syscalls_collector", "networks_collector"}) {
+        for (const std::string& section : hng_test_program_sections(skeleton)) {
+            tracefs.add(section);
+        }
+    }
+}
+
+int program_count(const char* skeleton)
+{
+    return static_cast<int>(hng_test_program_sections(skeleton).size());
+}
+
+/// @brief 按 section 取替身程序
+bpf_program* find_program(const std::string& section)
+{
+    REQUIRE(hng_test_last_object != nullptr);
+    for (bpf_program& program : hng_test_last_object->programs) {
+        if (program.section == section) {
+            return &program;
+        }
+    }
+    return nullptr;
+}
+
+template <class Collector>
+struct CollectorInfo;
+
+template <>
+struct CollectorInfo<FileEventCollector> {
+    static constexpr const char* skeleton = "files_collector";
+};
+
+template <>
+struct CollectorInfo<SyscallEventCollector> {
+    static constexpr const char* skeleton = "syscalls_collector";
+};
+
+template <>
+struct CollectorInfo<NetworkEventCollector> {
+    static constexpr const char* skeleton = "networks_collector";
+};
+
 void reset_consume()
 {
     hng_test_consume_calls     = 0;
@@ -34,6 +142,12 @@ void reset_consume()
     hng_test_deliver_payload   = false;
     hng_test_payload           = nullptr;
     hng_test_payload_size      = 0;
+}
+
+void reset_attach_controls()
+{
+    hng_test_attach_failure = false;
+    hng_test_attach_failure_sections.clear();
 }
 
 // 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
@@ -101,13 +215,14 @@ bool same_event(const Event& left, const Event& right)
 }
 
 template <class Collector, class Event>
-void verify()
+void verify(const std::filesystem::path& tracefs_root)
 {
+    reset_attach_controls();
     hng::EventChannel<Event> channel(4);
     reset_consume();
     // prepare 只加载骨架、建 ringbuf 并取 map fd；探针未挂载前不消费。
     {
-        Collector collector(channel.writer());
+        Collector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.role_filter_map_fd() == -1);
         REQUIRE(collector.epoll_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
@@ -125,6 +240,8 @@ void verify()
 
         const int attaches_before = hng_test_attach_calls;
         REQUIRE(collector.prepare());
+        const int programs =
+            static_cast<int>(hng_test_last_object->programs.size());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd && fd >= 0);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
@@ -141,7 +258,8 @@ void verify()
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
 
         REQUIRE(collector.attach());
-        REQUIRE(hng_test_attach_calls == attaches_before + 1);
+        REQUIRE(hng_test_attach_calls == attaches_before + programs);
+        REQUIRE(hng_test_live_links == programs);
         REQUIRE(!collector.attach());
         REQUIRE(!collector.init());
         REQUIRE(collector.role_filter_map_fd() == fd);
@@ -157,42 +275,51 @@ void verify()
         REQUIRE(collector.consume(1) == -EIO);
         REQUIRE(hng_test_consume_calls == 1);
 
-        // detach 只停止新事件，ringbuf 仍可继续排空。
-        const int detaches_before = hng_test_detach_calls;
+        // detach 只停止新事件，销毁链接；ringbuf 仍可继续排空。
         collector.detach();
-        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        REQUIRE(hng_test_live_links == 0);
+        REQUIRE(collector.epoll_fd() >= 0);
         collector.detach();
-        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        REQUIRE(hng_test_live_links == 0);
         reset_consume();
         hng_test_consume_successes = 1;
         REQUIRE(collector.consume(1) == 1);
         REQUIRE(hng_test_consume_calls == 1);
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 
-    // 独立 attach 失败保留已准备资源，重试成功；析构仍回收全部资源。
+    // 全部探针 attach 失败时保留已准备资源，重试成功；析构仍回收全部资源。
     {
-        Collector collector(channel.writer());
+        Collector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.prepare());
+        const int programs =
+            static_cast<int>(hng_test_last_object->programs.size());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
         reset_consume();
         hng_test_attach_failure = true;
         REQUIRE(!collector.attach());
+        REQUIRE(collector.stats().attach_failed ==
+                static_cast<std::uint64_t>(programs));
+        REQUIRE(collector.stats().skipped_probes == 0);
+        REQUIRE(hng_test_live_links == 0);
         REQUIRE(collector.role_filter_map_fd() == fd);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         hng_test_attach_failure = false;
         REQUIRE(collector.attach());
+        REQUIRE(hng_test_live_links == programs);
         REQUIRE(collector.role_filter_map_fd() == fd);
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 
     {
-        Collector collector(channel.writer());
+        Collector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.role_filter_map_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
@@ -296,46 +423,187 @@ void verify()
         reset_consume();
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 
     // 0 是有效 fd，不能按布尔值判断有效性。
     hng_test_filter_fd_override = 0;
     {
-        Collector collector(channel.writer());
+        Collector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.init());
         REQUIRE(collector.role_filter_map_fd() == 0);
     }
     hng_test_filter_fd_override.reset();
     hng_test_event_fd_override = 0;
     {
-        Collector collector(channel.writer());
+        Collector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.init());
         REQUIRE(hng_test_last_ring->map_fd == 0);
     }
     hng_test_event_fd_override.reset();
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
+}
+
+/// @brief tracepoint 缺失的程序不 autoload，也不参与 attach
+template <class Collector, class Event>
+void verify_skips_missing_tracepoint()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_all_programs(tracefs);
+    const auto& sections =
+        hng_test_program_sections(CollectorInfo<Collector>::skeleton);
+    std::string missing;
+    for (const std::string& section : sections) {
+        if (section.rfind("tracepoint/", 0) == 0) {
+            missing = section;
+            break;
+        }
+    }
+    REQUIRE(!missing.empty());
+    std::string group;
+    std::string event;
+    REQUIRE(split_tracepoint(missing, group, event));
+    std::error_code error;
+    std::filesystem::remove_all(tracefs.root / "events" / group / event, error);
+
+    hng::EventChannel<Event> channel(4);
+    Collector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+
+    const int programs = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before = hng_test_attach_calls;
+    REQUIRE(collector.stats().skipped_probes == 1);
+    REQUIRE(collector.stats().attach_failed == 0);
+    bpf_program* skipped = find_program(missing);
+    REQUIRE(skipped != nullptr && !skipped->autoload);
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + programs - 1);
+    REQUIRE(hng_test_live_links == programs - 1);
+    REQUIRE(!skipped->attached);
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.skipped_probes == 1);
+    REQUIRE(stats.attach_failed == 0);
+    REQUIRE(stats.attached);
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+    REQUIRE(!collector.stats().attached);
+}
+
+/// @brief 全部 tracepoint 缺失时只跳过，不拖垮启动；非 tracepoint 程序照常挂载
+template <class Collector, class Event>
+void verify_all_tracepoints_skipped()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;  // 不创建任何 events 条目
+    REQUIRE(!tracefs.root.empty());
+    const auto& sections =
+        hng_test_program_sections(CollectorInfo<Collector>::skeleton);
+    int tracepoints = 0;
+    for (const std::string& section : sections) {
+        if (section.rfind("tracepoint/", 0) == 0) {
+            ++tracepoints;
+        }
+    }
+    REQUIRE(tracepoints > 0);
+
+    hng::EventChannel<Event> channel(4);
+    Collector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+    const int total = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before = hng_test_attach_calls;
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + total - tracepoints);
+    REQUIRE(hng_test_live_links == total - tracepoints);
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.skipped_probes == static_cast<std::uint64_t>(tracepoints));
+    REQUIRE(stats.attach_failed == 0);
+    REQUIRE(stats.attached);
+    for (const bpf_program& program : hng_test_last_object->programs) {
+        const bool is_tracepoint = program.section.rfind("tracepoint/", 0) == 0;
+        REQUIRE(program.autoload == !is_tracepoint);
+        REQUIRE(program.attached == !is_tracepoint);
+    }
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+}
+
+/// @brief 单个程序 attach 失败只计数，其余仍挂载
+template <class Collector, class Event>
+void verify_partial_attach_failure()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_all_programs(tracefs);
+    const auto& sections =
+        hng_test_program_sections(CollectorInfo<Collector>::skeleton);
+    REQUIRE(sections.size() > 1);
+    const std::string failed = sections[1];
+
+    hng::EventChannel<Event> channel(4);
+    Collector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+    const int programs = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before           = hng_test_attach_calls;
+    hng_test_attach_failure_sections = {failed};
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + programs);
+    REQUIRE(hng_test_live_links == programs - 1);
+    for (const bpf_program& program : hng_test_last_object->programs) {
+        REQUIRE(program.attached == (program.section != failed));
+    }
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.attach_failed == 1);
+    REQUIRE(stats.skipped_probes == 0);
+    REQUIRE(stats.attached);
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+    reset_attach_controls();
 }
 
 void verify_multiple_instances()
 {
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_all_programs(tracefs);
     hng::EventChannel<file_access_data> files(1), more_files(1);
     hng::EventChannel<syscall_event> syscalls(1);
     hng::EventChannel<network_data> networks(1);
     std::unique_ptr<CollectorType> first =
-        std::make_unique<FileEventCollector>(files.writer());
-    auto second = std::make_unique<FileEventCollector>(more_files.writer());
-    auto third  = std::make_unique<SyscallEventCollector>(syscalls.writer());
-    auto fourth = std::make_unique<NetworkEventCollector>(networks.writer());
+        std::make_unique<FileEventCollector>(files.writer(), tracefs.root);
+    auto second =
+        std::make_unique<FileEventCollector>(more_files.writer(), tracefs.root);
+    auto third =
+        std::make_unique<SyscallEventCollector>(syscalls.writer(), tracefs.root);
+    auto fourth =
+        std::make_unique<NetworkEventCollector>(networks.writer(), tracefs.root);
     REQUIRE(first->init() && second->init() && third->init() && fourth->init());
+    const int files_count    = program_count("files_collector");
+    const int syscalls_count = program_count("syscalls_collector");
+    const int networks_count = program_count("networks_collector");
+    REQUIRE(hng_test_live_links ==
+            2 * files_count + syscalls_count + networks_count);
     REQUIRE(hng_test_live_skeletons == 4 && hng_test_live_rings == 4);
     first.reset();  // 验证虚析构；其余采集器的资源仍然存活。
     REQUIRE(hng_test_live_skeletons == 3 && hng_test_live_rings == 3);
+    REQUIRE(hng_test_live_links == files_count + syscalls_count + networks_count);
     REQUIRE(!hng_test_bad_cleanup_order);
     third.reset();
     second.reset();
     fourth.reset();
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 }
 }  // namespace
@@ -343,9 +611,21 @@ void verify_multiple_instances()
 int main()
 {
     try {
-        verify<FileEventCollector, file_access_data>();
-        verify<SyscallEventCollector, syscall_event>();
-        verify<NetworkEventCollector, network_data>();
+        TempTracefs tracefs;
+        REQUIRE(!tracefs.root.empty());
+        add_all_programs(tracefs);
+        verify<FileEventCollector, file_access_data>(tracefs.root);
+        verify<SyscallEventCollector, syscall_event>(tracefs.root);
+        verify<NetworkEventCollector, network_data>(tracefs.root);
+        verify_skips_missing_tracepoint<FileEventCollector, file_access_data>();
+        verify_skips_missing_tracepoint<SyscallEventCollector, syscall_event>();
+        verify_skips_missing_tracepoint<NetworkEventCollector, network_data>();
+        verify_all_tracepoints_skipped<FileEventCollector, file_access_data>();
+        verify_all_tracepoints_skipped<SyscallEventCollector, syscall_event>();
+        verify_all_tracepoints_skipped<NetworkEventCollector, network_data>();
+        verify_partial_attach_failure<FileEventCollector, file_access_data>();
+        verify_partial_attach_failure<SyscallEventCollector, syscall_event>();
+        verify_partial_attach_failure<NetworkEventCollector, network_data>();
         verify_multiple_instances();
         std::printf("PASS: collector filter map, %d checks (skeleton mocks)\n",
                     checks);

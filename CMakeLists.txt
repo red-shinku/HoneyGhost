@@ -78,6 +78,18 @@ target_link_libraries(hng_log
 target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
 
 # ============================================================
+# 公共工具
+#
+# 只依赖标准库；tracefs 解析供装配层预检与采集器共用。
+# ============================================================
+add_library(hng_util STATIC
+    agent/util/src/tracefs.cc
+)
+target_include_directories(hng_util PUBLIC
+    ${HNG_SOURCE_DIR}
+)
+
+# ============================================================
 # 配置来源（通用 INI 文档 + 主配置 schema）
 #
 # 只依赖标准库。本阶段只提供目标与测试，不接入 hng_agent 或其它目标。

@@ -251,6 +251,36 @@ func TestConvertStreamStats(t *testing.T) {
 	}
 }
 
+func TestConvertPipelineStats(t *testing.T) {
+	in := &clisv.PipelineStats{Collector: []*clisv.CollectorLineStats{{
+		Line:            "file",
+		Consumed:        10,
+		ConsumeErrors:   1,
+		ChannelDropped:  2,
+		ChannelRejected: 3,
+		ReserveFailures: 4,
+		SkippedProbes:   5,
+		AttachFailed:    6,
+		Attached:        true,
+		Polling:         true,
+	}}}
+	want := model.PipelineStats{Collector: []model.CollectorLineStats{{
+		Line:            "file",
+		Consumed:        10,
+		ConsumeErrors:   1,
+		ChannelDropped:  2,
+		ChannelRejected: 3,
+		ReserveFailures: 4,
+		SkippedProbes:   5,
+		AttachFailed:    6,
+		Attached:        true,
+		Polling:         true,
+	}}}
+	if got := convertPipelineStats(in); !reflect.DeepEqual(got, want) {
+		t.Errorf("convertPipelineStats = %#v, want %#v", got, want)
+	}
+}
+
 func TestConvertBatch(t *testing.T) {
 	response := &clisv.ReceiveEventResponse{
 		Payload: &clisv.ReceiveEventResponse_Batch{Batch: &clisv.ReceiveEventBatch{
