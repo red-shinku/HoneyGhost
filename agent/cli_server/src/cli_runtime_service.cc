@@ -107,14 +107,9 @@ void FillPipelineStats(const hng::PipelineStats& stats,
     if (stats.semantic) {
         const hng::SemanticStats& source   = *stats.semantic;
         hng::clisv::semantic_stats* target = out.mutable_semantic();
-        target->set_processed_file(source.processed_file);
         target->set_processed_syscall(source.processed_syscall);
-        target->set_raw_file_dropped(source.raw_file_dropped);
-        target->set_raw_file_rejected(source.raw_file_rejected);
         target->set_raw_syscall_dropped(source.raw_syscall_dropped);
         target->set_raw_syscall_rejected(source.raw_syscall_rejected);
-        target->set_out_file_dropped(source.out_file_dropped);
-        target->set_out_file_rejected(source.out_file_rejected);
         target->set_out_syscall_dropped(source.out_syscall_dropped);
         target->set_out_syscall_rejected(source.out_syscall_rejected);
     }
@@ -126,7 +121,6 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         target->set_queue_rejected(source.queue_rejected);
         target->set_idle_waits(source.idle_waits);
         target->set_syscall_dropped(source.syscall_dropped);
-        target->set_file_dropped(source.file_dropped);
     }
     hng::clisv::cli_stream_stats* cli = out.mutable_cli();
     cli->set_active(stats.cli.active);

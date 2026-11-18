@@ -20,7 +20,7 @@
  * @details
  * 注意：异常评分的单位是 DetectContext，
  * 虽然评分所依赖的基线以角色为单位存储，但是在这里
- * 角色的文件访问、网络、IPC 等行为需要被归类到具体的 DetectContext 中。
+ * 角色的网络、IPC 等行为需要被归类到具体的 DetectContext 中。
  *
  * 异常检测器维护 ContextID -> DetectContext
  */
@@ -41,7 +41,6 @@ class Detector {
 
     // 该队列的上游是语义化模块
     hng::SPSC_Queue<hng::syscall_semantic_data>& syscall_event_queue;
-    hng::SPSC_Queue<hng::file_semantic_data>& file_event_queue;
 };
 
 #endif  // DETECTOR_HPP_

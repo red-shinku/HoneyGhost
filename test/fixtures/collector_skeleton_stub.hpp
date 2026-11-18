@@ -204,17 +204,6 @@ inline int bpf_link__destroy(bpf_link* link)
 inline const std::vector<std::string>& hng_test_program_sections(
     std::string_view skeleton)
 {
-    static const std::vector<std::string> files = {
-        "tracepoint/syscalls/sys_enter_openat",
-        "tracepoint/syscalls/sys_enter_open",
-        "tracepoint/syscalls/sys_enter_creat",
-        "tracepoint/syscalls/sys_enter_openat2",
-    };
-    static const std::vector<std::string> networks = {
-        "tracepoint/syscalls/sys_enter_connect",
-        "tracepoint/syscalls/sys_enter_sendto",
-        "tracepoint/syscalls/sys_enter_sendmsg",
-    };
     static const std::vector<std::string> syscalls = {
         "kprobe/wake_up_new_task",
         "tracepoint/sched/sched_process_exit",
@@ -242,8 +231,6 @@ inline const std::vector<std::string>& hng_test_program_sections(
         "tracepoint/syscalls/sys_enter_ptrace",
         "tracepoint/syscalls/sys_enter_bpf",
     };
-    if (skeleton == "files_collector") return files;
-    if (skeleton == "networks_collector") return networks;
     if (skeleton == "syscalls_collector") return syscalls;
     static const std::vector<std::string> empty;
     return empty;
@@ -326,8 +313,6 @@ inline std::vector<bpf_program> hng_test_make_programs(std::string_view skeleton
         }                                                                         \
         return skeleton;                                                          \
     }
-HNG_TEST_SKELETON(files_collector, file_access_events)
 HNG_TEST_SKELETON(syscalls_collector, syscall_events)
-HNG_TEST_SKELETON(networks_collector, network_events)
 #undef HNG_TEST_SKELETON
 #endif

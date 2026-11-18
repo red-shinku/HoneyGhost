@@ -7,12 +7,9 @@
 #ifndef HNG_RUNTIME_EVENT_HPP_
 #define HNG_RUNTIME_EVENT_HPP_
 
-#include <variant>
-
 #include "agent/event_data/include/process.hpp"
 #include "agent/event_data/include/role.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
-#include "agent/event_data/include/file_event.hpp"
 
 namespace hng {
 
@@ -23,9 +20,10 @@ struct RuntimeInformation {
     /// 事件的 ppid 随之改变；父进程的 pid 被复用后还会误命中另一个实体。
     /// 故它不是稳定的祖先链。
     hng::Process parent;
-    hng::EventType etype;  ///< 事件维度，由载荷 variant 索引推出
-    hng::EventKind kind;   ///< 语义子类型，细化 etype
-    uint32_t roleID;       ///< 0 表示此刻未落定
+    hng::EventType etype;  ///< 事件来源；系统调用采集线恒为 SYSCALL_EVENT
+    /// 语义子类型，由 syscall_semantic_data 内层载荷 variant 索引推出
+    hng::EventKind kind;
+    uint32_t roleID;  ///< 0 表示此刻未落定
     /// 归属角色在包装时刻的标签快照；未落定时为空
     /// @note 与 roleID 同属角色维度，取同一个归属快照
     hng::role_label_t roleLabel;
@@ -34,7 +32,7 @@ struct RuntimeInformation {
 
 struct RuntimeEvent {
     RuntimeInformation runtimeInfo;
-    std::variant<hng::syscall_semantic_data, hng::file_semantic_data> data;
+    hng::syscall_semantic_data data;
 };
 
 }  // namespace hng

@@ -14,8 +14,7 @@ namespace hng {
 
 /**
  * @brief 顶层事件大类，写入通用事件头 event_head::type，标记事件所属采集流
- * @details 四种事件分别对应四路 采集 / 语义化
- * 模块（syscall、file、network、ipc）。
+ * @details 当前唯一的事件来源是系统调用采集线；其余取值保留至 CLI 词汇收敛。
  * 注意强类型枚举，避免与 kernel 侧无作用域枚举 syscall_event_type
  * 的同名成员在裸用时的歧义。
  */
@@ -29,10 +28,9 @@ enum class EventType : uint8_t {
 /**
  * @brief 语义子类型，细化顶层事件大类 hng::EventType
  * @details 取值与 syscall_event.proto 的载荷 oneof 序号、cli_service.proto 的
- * EventKind 一致：syscall 流取内层载荷序号（从 1 起），file 流固定为 FILE。
- * 0 保留给未指定。
- * @note FILE_SYSCALL 是 syscall 流里的 open / unlink 等文件系统调用载荷，
- * FILE 是 file 采集流的事件，两者不可混用。
+ * EventKind 一致：取内层载荷序号（从 1 起）。0 保留给未指定。
+ * @note FILE_SYSCALL 是 open / unlink 等文件系统调用载荷；FILE 是已删除的
+ * 文件采集流遗留的编号，当前无事件来源。
  * @see hng::EventType
  */
 enum class EventKind : uint8_t {

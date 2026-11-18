@@ -8,8 +8,6 @@
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
-#include "kernel/include/files_type.h"
-#include "kernel/include/networks_type.h"
 #include "kernel/include/syscall_event_type.h"
 
 #include <atomic>
@@ -21,9 +19,7 @@
 
 // 生成骨架、libbpf 资源与释放方式均为实现细节，定义只存在于 src/。
 namespace hng::detail {
-struct FileCollectorState;
 struct SyscallCollectorState;
-struct NetworkCollectorState;
 
 /// @brief 读取单键 per-CPU u64 计数并求和；fd 无效或读取失败返回 0
 std::uint64_t ReadPercpuCounter(int fd) noexcept;
@@ -259,37 +255,6 @@ class Collector final : public hng::Component {
     int stop_event_fd_ = -1;  ///< eventfd，stop() 写、run() 的 epoll 等待
 };
 
-/** @brief 文件事件采集线；借用的通道写端必须比采集器活得更久。 */
-class FileEventCollector : public CollectorType {
-   public:
-    /**
-     * @brief 绑定输出通道
-     * @param sink 输出通道写端
-     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
-     */
-    explicit FileEventCollector(hng::EventChannelWriter<file_access_data>& sink,
-                                std::filesystem::path tracefs_root = {});
-    ~FileEventCollector() override;
-
-    bool prepare() override;
-    bool attach() override;
-    bool init() override;
-    void detach() override;
-    int consume(std::size_t budget) override;
-    int epoll_fd() const noexcept override;
-    int role_filter_map_fd() const noexcept override;
-    const char* name() const noexcept override;
-    hng::CollectorLineStats stats() const override;
-    int reserve_failures_fd() const noexcept override;
-
-   private:
-    hng::EventChannelWriter<file_access_data>& file_sink;
-    std::filesystem::path tracefs_root_;
-    std::unique_ptr<hng::detail::FileCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data,
-                               std::size_t data_sz) noexcept;
-};
-
 /** @brief 系统调用事件采集线；借用的通道写端必须比采集器活得更久。 */
 class SyscallEventCollector : public CollectorType {
    public:
@@ -320,39 +285,5 @@ class SyscallEventCollector : public CollectorType {
     static int handle_rb_event(void* ctx, void* data,
                                std::size_t data_sz) noexcept;
 };
-
-/** @brief 网络事件采集线；借用的通道写端必须比采集器活得更久。 */
-class NetworkEventCollector : public CollectorType {
-   public:
-    /**
-     * @brief 绑定输出通道
-     * @param sink 输出通道写端
-     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
-     */
-    explicit NetworkEventCollector(hng::EventChannelWriter<network_data>& sink,
-                                   std::filesystem::path tracefs_root = {});
-    ~NetworkEventCollector() override;
-
-    bool prepare() override;
-    bool attach() override;
-    bool init() override;
-    void detach() override;
-    int consume(std::size_t budget) override;
-    int epoll_fd() const noexcept override;
-    int role_filter_map_fd() const noexcept override;
-    const char* name() const noexcept override;
-    hng::CollectorLineStats stats() const override;
-    int reserve_failures_fd() const noexcept override;
-
-   private:
-    hng::EventChannelWriter<network_data>& network_sink;
-    std::filesystem::path tracefs_root_;
-    std::unique_ptr<hng::detail::NetworkCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data,
-                               std::size_t data_sz) noexcept;
-};
-
-/** @brief IPC 探针与载荷尚未定义，暂仅保留类型声明。 */
-class IPCEventCollector;
 
 #endif  // COLLECTOR_HPP

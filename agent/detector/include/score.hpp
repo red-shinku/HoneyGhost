@@ -15,6 +15,7 @@ struct Score {
     float fusion_score        = 0.0f;  ///< 多维度融合评分
 
     float syscall_seq_score   = 0.0f;
+    // TODO: 文件事件线已删除，该评分维度的来源待重新定义
     float file_visiting_score = 0.0f;
     float network_score       = 0.0f;
     float ipc_score           = 0.0f;

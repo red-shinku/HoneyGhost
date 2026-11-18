@@ -4,7 +4,6 @@
  * @details
  * 纯转换，无 IO / 无协程。覆盖：
  *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
- *  - 文件事件落到 file_ev；
  *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
  *    其余取自事件头；
  *  - 归属未落定时 roleLabel 留空；
@@ -44,23 +43,20 @@ constexpr uint32_t kContextID = 9;
 constexpr char kRoleLabel[]   = "nginx:1.25";
 
 /// 一条归属已落定的 syscall 事件，事件头填齐
-hng::RuntimeEvent make_syscall(hng::EventType type)
+hng::RuntimeEvent make_syscall()
 {
     hng::RuntimeEvent event{};
-    event.runtimeInfo.process   = hng::Process{kPid, kPidStart};
-    event.runtimeInfo.etype     = type;
-    event.runtimeInfo.roleID    = kRoleID;
-    event.runtimeInfo.roleLabel = kRoleLabel;
-    event.runtimeInfo.contextID = kContextID;
-    event.data.emplace<hng::syscall_semantic_data>();
+    event.runtimeInfo.process       = hng::Process{kPid, kPidStart};
+    event.runtimeInfo.etype         = hng::EventType::SYSCALL_EVENT;
+    event.runtimeInfo.roleID        = kRoleID;
+    event.runtimeInfo.roleLabel     = kRoleLabel;
+    event.runtimeInfo.contextID     = kContextID;
 
-    hng::syscall_semantic_data& syscall =
-        std::get<hng::syscall_semantic_data>(event.data);
-    syscall.head.pid             = kPid;
-    syscall.head.pid_start_time  = kPidStart;
-    syscall.head.ppid            = kPpid;
-    syscall.head.ppid_start_time = kPpidStart;
-    syscall.head.type            = type;
+    event.data.head.pid             = kPid;
+    event.data.head.pid_start_time  = kPidStart;
+    event.data.head.ppid            = kPpid;
+    event.data.head.ppid_start_time = kPpidStart;
+    event.data.head.type            = hng::EventType::SYSCALL_EVENT;
     return event;
 }
 
@@ -145,8 +141,8 @@ void run_syscall_payload_mapping()
     };
 
     for (const PayloadCase& c : table) {
-        hng::RuntimeEvent event = make_syscall(hng::EventType::SYSCALL_EVENT);
-        c.fill(std::get<hng::syscall_semantic_data>(event.data));
+        hng::RuntimeEvent event = make_syscall();
+        c.fill(event.data);
 
         hng::clisv::eventrecord msg;
         hng::cli::ToProto(event, msg);
@@ -161,7 +157,7 @@ void run_syscall_payload_mapping()
 
 void run_head_fields()
 {
-    hng::RuntimeEvent event = make_syscall(hng::EventType::FILE_EVENT);
+    hng::RuntimeEvent event = make_syscall();
 
     hng::clisv::eventrecord msg;
     hng::cli::ToProto(event, msg);
@@ -173,38 +169,9 @@ void run_head_fields()
     CHECK(msg.head().ppid() == kPpid, "ppid 取自事件头");
     CHECK(msg.head().ppid_start_time() == kPpidStart,
           "ppid 的 start_time 取自事件头");
-    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_FILE, "事件类型取自事件头");
+    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_SYSCALL,
+          "事件类型取自事件头");
     CHECK(msg.head().rolelabel() == kRoleLabel, "roleLabel 直传");
-}
-
-void run_file_event()
-{
-    hng::RuntimeEvent event{};
-    event.runtimeInfo.process   = hng::Process{kPid, kPidStart};
-    event.runtimeInfo.etype     = hng::EventType::FILE_EVENT;
-    event.runtimeInfo.roleID    = 0;
-    event.runtimeInfo.contextID = 0;
-    event.data.emplace<hng::file_semantic_data>();
-
-    hng::file_semantic_data& file = std::get<hng::file_semantic_data>(event.data);
-    file.head.pid                 = kPid;
-    file.head.pid_start_time      = kPidStart;
-    file.head.ppid                = kPpid;
-    file.head.ppid_start_time     = kPpidStart;
-    file.head.type                = hng::EventType::FILE_EVENT;
-    file.data.set_semantic_filename("/tmp/a");
-    file.data.set_comm("cat");
-
-    hng::clisv::eventrecord msg;
-    hng::cli::ToProto(event, msg);
-
-    CHECK(msg.event_case() == hng::clisv::eventrecord::kFileEv,
-          "文件事件应走 file_ev");
-    CHECK(msg.file_ev().semantic_filename() == "/tmp/a", "文件载荷应被搬进报文");
-    CHECK(msg.file_ev().comm() == "cat", "文件载荷字段不应丢");
-    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_FILE, "事件类型随之");
-    CHECK(msg.head().roleid() == 0, "未落定的归属传 0");
-    CHECK(msg.head().rolelabel().empty(), "未落定的归属不带标签");
 }
 
 void run_event_type_round_trip()
@@ -225,7 +192,6 @@ int main()
 {
     run_syscall_payload_mapping();
     run_head_fields();
-    run_file_event();
     run_event_type_round_trip();
 
     if (g_fail) {

@@ -21,7 +21,7 @@ namespace hng {
  *       channel_dropped/channel_rejected 是输出通道的拒收次数。
  */
 struct CollectorLineStats {
-    std::string line;                        ///< 线名：file、syscall 或 network
+    std::string line;                        ///< 线名，取自采集线的 name()
     std::uint64_t consumed         = 0;      ///< 已从 ringbuf 消费的记录数
     std::uint64_t consume_errors   = 0;      ///< ring_buffer 消费返回错误的次数
     std::uint64_t channel_dropped  = 0;      ///< 输出通道满导致的拒收
@@ -35,14 +35,9 @@ struct CollectorLineStats {
 
 /// @brief 语义聚合的累计计数
 struct SemanticStats {
-    std::uint64_t processed_file       = 0;  ///< 已转换的文件原始事件
     std::uint64_t processed_syscall    = 0;  ///< 已转换的系统调用原始事件
-    std::uint64_t raw_file_dropped     = 0;
-    std::uint64_t raw_file_rejected    = 0;
     std::uint64_t raw_syscall_dropped  = 0;
     std::uint64_t raw_syscall_rejected = 0;
-    std::uint64_t out_file_dropped     = 0;
-    std::uint64_t out_file_rejected    = 0;
     std::uint64_t out_syscall_dropped  = 0;
     std::uint64_t out_syscall_rejected = 0;
 };
@@ -54,7 +49,6 @@ struct PipelineEngineStats {
     std::uint64_t queue_rejected   = 0;
     std::uint64_t idle_waits       = 0;
     std::uint64_t syscall_dropped  = 0;
-    std::uint64_t file_dropped     = 0;
 };
 
 /// @brief CLI 订阅流的累计计数

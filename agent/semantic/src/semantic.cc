@@ -11,8 +11,8 @@
 
 namespace {
 
-/// 每条线在单轮中最多处理的原始事件数
-constexpr std::size_t kBudgetPerLine = 64;
+/// 每轮最多处理的原始事件数
+constexpr std::size_t kBudget = 64;
 
 const char* state_name(hng::ComponentState state) noexcept
 {
@@ -32,61 +32,28 @@ const char* state_name(hng::ComponentState state) noexcept
 }  // namespace
 
 Semantic::Semantic(
-    hng::EventChannelReader<file_access_data>* raw_file,
     hng::EventChannelReader<struct syscall_event>* raw_syscall,
-    hng::EventChannelWriter<hng::file_semantic_data>* out_file,
     hng::EventChannelWriter<hng::syscall_semantic_data>* out_syscall)
-    : raw_file_(raw_file),
-      raw_syscall_(raw_syscall),
-      out_file_(out_file),
-      out_syscall_(out_syscall)
+    : raw_syscall_(raw_syscall), out_syscall_(out_syscall)
 {
-    const bool file_enabled = raw_file_ != nullptr && out_file_ != nullptr;
     const bool syscall_enabled =
         raw_syscall_ != nullptr && out_syscall_ != nullptr;
 
-    HNG_LOG_INFO("semantic created: file line {}, syscall line {}",
-                 file_enabled ? "enabled" : "disabled",
+    HNG_LOG_INFO("semantic created: syscall line {}",
                  syscall_enabled ? "enabled" : "disabled");
-    if ((raw_file_ != nullptr) != (out_file_ != nullptr)) {
-        HNG_LOG_ERROR(
-            "semantic file line misconfigured: raw and output channels must "
-            "both be set");
-    }
     if ((raw_syscall_ != nullptr) != (out_syscall_ != nullptr)) {
         HNG_LOG_ERROR(
             "semantic syscall line misconfigured: raw and output channels must "
             "both be set");
     }
-    if (!file_enabled && !syscall_enabled) {
+    if (!syscall_enabled) {
         HNG_LOG_WARN(
-            "semantic has no complete input lines; run() will wait for stop");
+            "semantic has no complete input line; run() will wait for stop");
     }
-    HNG_LOG_DEBUG("semantic budget: {} events per line", kBudgetPerLine);
+    HNG_LOG_DEBUG("semantic budget: {} events per round", kBudget);
 }
 
 Semantic::~Semantic() = default;
-
-std::size_t Semantic::drain_file(std::size_t budget)
-{
-    if (!raw_file_ || !out_file_) {
-        return 0;
-    }
-    std::size_t processed = 0;
-    while (processed < budget) {
-        file_access_data raw;
-        if (!raw_file_->try_pop(raw)) {
-            break;
-        }
-        hng::file_semantic_data out;
-        file_tool_.transform_one(raw, out);
-        // 输出通道满或已关闭时丢弃，计数在通道内
-        out_file_->push(std::move(out));
-        ++processed;
-    }
-    processed_file_.fetch_add(processed, std::memory_order_relaxed);
-    return processed;
-}
 
 std::size_t Semantic::drain_syscall(std::size_t budget)
 {
@@ -111,9 +78,6 @@ std::size_t Semantic::drain_syscall(std::size_t budget)
 
 void Semantic::register_sources()
 {
-    if (raw_file_ != nullptr && out_file_ != nullptr) {
-        loop_.add(raw_file_->fd(), kFileTag);
-    }
     if (raw_syscall_ != nullptr && out_syscall_ != nullptr) {
         loop_.add(raw_syscall_->fd(), kSyscallTag);
     }
@@ -130,21 +94,18 @@ void Semantic::run()
 
     HNG_LOG_INFO("semantic running");
 
-    std::size_t file_events    = 0;
     std::size_t syscall_events = 0;
     try {
         register_sources();
         hng::EventLoop::Ready ready[hng::EventLoop::capacity()];
         while (!stopped_.load(std::memory_order_acquire)) {
-            const std::size_t file_count     = drain_file(kBudgetPerLine);
-            const std::size_t syscall_count  = drain_syscall(kBudgetPerLine);
-            file_events                     += file_count;
+            const std::size_t syscall_count  = drain_syscall(kBudget);
             syscall_events                  += syscall_count;
-            if (file_count + syscall_count != 0) {
+            if (syscall_count != 0) {
                 continue;
             }
-            // 两条输入都取空：它们各自在取空时交还了通知权，此处的阻塞不会
-            // 丢唤醒。就绪源由下一轮的排空取走。
+            // 输入取空时交还了通知权，此处的阻塞不会丢唤醒。
+            // 就绪源由下一轮的排空取走。
             (void)loop_.wait(ready, hng::EventLoop::capacity());
         }
     }
@@ -154,37 +115,27 @@ void Semantic::run()
 
     // 采集侧已停机后输入不再增长，排空后退出。
     while (true) {
-        const std::size_t file_count     = drain_file(kBudgetPerLine);
-        const std::size_t syscall_count  = drain_syscall(kBudgetPerLine);
-        file_events                     += file_count;
+        const std::size_t syscall_count  = drain_syscall(kBudget);
         syscall_events                  += syscall_count;
-        if (file_count + syscall_count == 0) {
+        if (syscall_count == 0) {
             break;
         }
     }
 
     // 关闭输出通道：读端据此得知不会再有语义事件
-    if (out_file_ != nullptr) {
-        out_file_->close();
-    }
     if (out_syscall_ != nullptr) {
         out_syscall_->close();
     }
 
-    HNG_LOG_INFO(
-        "semantic stopped: processed {} file event(s), {} syscall event(s)",
-        file_events, syscall_events);
-    HNG_LOG_INFO(
-        "semantic drops: raw file {}, raw syscall {}, out file {}, out syscall "
-        "{}",
-        raw_file_ == nullptr ? 0 : raw_file_->dropped() + raw_file_->rejected(),
-        raw_syscall_ == nullptr
-            ? 0
-            : raw_syscall_->dropped() + raw_syscall_->rejected(),
-        out_file_ == nullptr ? 0 : out_file_->dropped() + out_file_->rejected(),
-        out_syscall_ == nullptr
-            ? 0
-            : out_syscall_->dropped() + out_syscall_->rejected());
+    HNG_LOG_INFO("semantic stopped: processed {} syscall event(s)",
+                 syscall_events);
+    HNG_LOG_INFO("semantic drops: raw syscall {}, out syscall {}",
+                 raw_syscall_ == nullptr
+                     ? 0
+                     : raw_syscall_->dropped() + raw_syscall_->rejected(),
+                 out_syscall_ == nullptr
+                     ? 0
+                     : out_syscall_->dropped() + out_syscall_->rejected());
 
     lifecycle_.store(hng::ComponentState::STOPPED, std::memory_order_release);
 }
@@ -227,21 +178,11 @@ hng::ComponentState Semantic::state() const
 hng::SemanticStats Semantic::stats() const
 {
     hng::SemanticStats snapshot;
-    snapshot.processed_file =
-        processed_file_.load(std::memory_order_relaxed);
     snapshot.processed_syscall =
         processed_syscall_.load(std::memory_order_relaxed);
-    if (raw_file_ != nullptr) {
-        snapshot.raw_file_dropped  = raw_file_->dropped();
-        snapshot.raw_file_rejected = raw_file_->rejected();
-    }
     if (raw_syscall_ != nullptr) {
         snapshot.raw_syscall_dropped  = raw_syscall_->dropped();
         snapshot.raw_syscall_rejected = raw_syscall_->rejected();
-    }
-    if (out_file_ != nullptr) {
-        snapshot.out_file_dropped  = out_file_->dropped();
-        snapshot.out_file_rejected = out_file_->rejected();
     }
     if (out_syscall_ != nullptr) {
         snapshot.out_syscall_dropped  = out_syscall_->dropped();

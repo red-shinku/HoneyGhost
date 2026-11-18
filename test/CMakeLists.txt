@@ -16,15 +16,11 @@ if(NOT TARGET hng_semantic)
         "（不要直接对 test/ 执行 cmake）")
 endif()
 
-add_executable(test_semantic_file test_semantic_file.cc)
-target_link_libraries(test_semantic_file PRIVATE hng_semantic)
-add_test(NAME test_semantic_file COMMAND test_semantic_file)
-
 add_executable(test_semantic_syscall test_semantic_syscall.cc)
 target_link_libraries(test_semantic_syscall PRIVATE hng_semantic)
 add_test(NAME test_semantic_syscall COMMAND test_semantic_syscall)
 
-# 语义聚合：真实 SPSC 双线验证转换、预算轮转与停机排空
+# 语义聚合：真实 SPSC 单线验证转换、预算与停机排空
 add_executable(test_semantic_aggregate test_semantic_aggregate.cc)
 target_link_libraries(test_semantic_aggregate PRIVATE
     hng_semantic Threads::Threads)
@@ -339,7 +335,7 @@ endif()
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/bpf)
-foreach(probe files syscalls networks)
+foreach(probe syscalls)
     configure_file(fixtures/collector_skeleton_stub.hpp
         ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
@@ -349,10 +345,8 @@ configure_file(fixtures/libbpf_version_stub.h
     ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
 add_executable(test_collector_filter_map
     test_collector_filter_map.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/file_event_collector.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/probe_attach.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/network_event_collector.cc)
+    ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc)
 target_include_directories(test_collector_filter_map PRIVATE
     ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
 target_link_libraries(test_collector_filter_map PRIVATE hng_util hng_log)

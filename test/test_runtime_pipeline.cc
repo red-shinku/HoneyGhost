@@ -6,11 +6,11 @@
  * 覆盖：
  *  - 空队列与未接线队列：不取任何事件；
  *  - 生命周期分派：诞生 → 注册 + 角色继承 + 开窗，退出 → 注销 + 关窗；
- *  - exec / 其他类型 / 文件事件各自的决策入口与缺省决策；
+ *  - exec / 其他类型各自的决策入口与缺省决策；
  *  - 归属快照与决策值互不干扰：决策为空时快照仍照实填；
  *  - 角色归属的父进程回退：自身未落定时取父进程归属，已落定时不受影响；
- *  - 轮询纪律：每轮每条队列各取至多一条，顺序固定为 syscall → file；
- *  - 槽位不足时不取事件。
+ *  - 取事件纪律：每轮取至多一条；
+ *  - 槽位为 0 时不取事件。
  * @author red-shinku
  * @date 2026.10.11
  */
@@ -184,12 +184,10 @@ struct Env {
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
     hng::EventChannel<hng::syscall_semantic_data> sys_ch{16};
-    hng::EventChannel<hng::file_semantic_data> file_ch{16};
 
     ContextMaintainer cm;
-    RuntimePipeline pipe{&sys_ch.reader(), &file_ch.reader(), &cm,
-                         &process_join,    &process_update,   &role_join,
-                         &role_lookup};
+    RuntimePipeline pipe{&sys_ch.reader(), &cm,        &process_join,
+                         &process_update,  &role_join, &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -239,19 +237,6 @@ hng::syscall_semantic_data make_credential(uint32_t pid, uint64_t pstart,
     return ev;
 }
 
-hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* path,
-                                  uint32_t ppid = 0, uint64_t ppstart = 0)
-{
-    hng::file_semantic_data ev;
-    ev.head.pid             = pid;
-    ev.head.pid_start_time  = pstart;
-    ev.head.ppid            = ppid;
-    ev.head.ppid_start_time = ppstart;
-    ev.head.type            = hng::EventType::FILE_EVENT;
-    ev.data.set_semantic_filename(path);
-    return ev;
-}
-
 /// 一条草稿的默认决策（无派生）
 bool is_default_decision(const ContextDeriveDecision& d)
 {
@@ -259,7 +244,7 @@ bool is_default_decision(const ContextDeriveDecision& d)
 }
 
 /// 逐轮取事件直到出现空轮，最多取 max_events 条
-/// @note 每轮每条队列各取至多一条，故同一条队列的多条事件需多轮才能取尽
+/// @note 每轮取至多一条，故多条事件需多轮才能取尽
 std::size_t drain(RuntimePipeline& pipe, RuntimeDraft* drafts,
                   std::size_t max_events)
 {
@@ -282,9 +267,9 @@ void run_empty()
     RuntimeDraft drafts[2]{};
     CHECK(env.pipe.take_round(drafts, 2) == 0, "空队列不产出草稿");
 
-    // 两条队列都未接线：取轮不崩、不产出
-    RuntimePipeline bare(nullptr, nullptr, &env.cm, &env.process_join,
-                         &env.process_update, &env.role_join, &env.role_lookup);
+    // 队列未接线：取轮不崩、不产出
+    RuntimePipeline bare(nullptr, &env.cm, &env.process_join, &env.process_update,
+                         &env.role_join, &env.role_lookup);
     CHECK(bare.take_round(drafts, 2) == 0, "未接线的队列不产出草稿");
 }
 
@@ -403,7 +388,7 @@ void run_plain_event()
     // 窗口配额 2：窗口期内无 exec 的普通事件连续消耗配额，末次触发 NO_EXEC 派生
     ContextMaintainer cm(2);
     cm.set_context_service(&env.ctx_svc, &env.ctx_svc, &env.ctx_svc);
-    RuntimePipeline pipe(&env.sys_ch.reader(), nullptr, &cm, &env.process_join,
+    RuntimePipeline pipe(&env.sys_ch.reader(), &cm, &env.process_join,
                          &env.process_update, &env.role_join, &env.role_lookup);
 
     const hng::Process worker = mk(9100, 910);
@@ -423,65 +408,27 @@ void run_plain_event()
           "派生后的归属快照应即新 context");
 }
 
-void run_file_event()
-{
-    Env env;
-    const hng::Process parent = mk(50, 500);
-    env.ctx_svc.seed(parent, 100);
-
-    // 只接线文件队列：syscall 队列为空指针
-    RuntimePipeline pipe(nullptr, &env.file_ch.reader(), &env.cm,
-                         &env.process_join, &env.process_update, &env.role_join,
-                         &env.role_lookup);
-
-    env.sys_ch.writer().push(
-        make_lifecycle(1, 1, 0, 0, "fork"));  // 未接线，应被忽略
-    env.file_ch.writer().push(make_file(5500, 555, "/etc/passwd"));
-
-    RuntimeDraft drafts[2]{};
-    CHECK(pipe.take_round(drafts, 2) == 1, "只取已接线队列的事件");
-    CHECK(pipe.take_round(drafts, 2) == 0, "未接线的队列不产出草稿");
-
-    const RuntimeDraft& d = drafts[0];
-    CHECK(d.event.runtimeInfo.etype == hng::EventType::FILE_EVENT,
-          "文件载荷应推出 FILE_EVENT");
-    CHECK(d.event.runtimeInfo.process == mk(5500, 555),
-          "文件事件的进程身份应取事件头");
-
-    // 窗口外进程的文件事件不推进决策
-    CHECK(is_default_decision(d.decision), "窗口外进程的文件事件无派生");
-    CHECK(env.file_ch.empty(), "已取出的文件事件不再滞留");
-}
-
-// ---- 轮询纪律 ----
+// ---- 取事件纪律 ----
 
 void run_round_discipline()
 {
     Env env;
     env.sys_ch.writer().push(make_credential(1, 10, 0, 0));
-    env.sys_ch.writer().push(make_credential(1, 10, 0, 0));
-    env.file_ch.writer().push(make_file(2, 20, "/a"));
-    env.file_ch.writer().push(make_file(3, 30, "/b"));
+    env.sys_ch.writer().push(make_credential(2, 20, 0, 0));
 
     RuntimeDraft drafts[2]{};
-    CHECK(env.pipe.take_round(drafts, 2) == 2, "每轮每条队列各取至多一条");
-    CHECK(drafts[0].event.runtimeInfo.process == mk(1, 10), "syscall 先于 file");
-    CHECK(drafts[1].event.runtimeInfo.process == mk(2, 20), "file 队列取队首");
+    CHECK(env.pipe.take_round(drafts, 2) == 1, "每轮取至多一条");
+    CHECK(drafts[0].event.runtimeInfo.process == mk(1, 10), "取队首");
 
-    CHECK(env.pipe.take_round(drafts, 2) == 2, "下一轮取走剩余两条");
-    CHECK(drafts[0].event.runtimeInfo.process == mk(1, 10),
-          "上轮未取走的 syscall 事件留在队列");
-    CHECK(drafts[1].event.runtimeInfo.process == mk(3, 30), "file 队列前进一条");
+    CHECK(env.pipe.take_round(drafts, 2) == 1, "下一轮取走剩余一条");
+    CHECK(drafts[0].event.runtimeInfo.process == mk(2, 20), "队列前进一条");
 
     CHECK(env.pipe.take_round(drafts, 2) == 0, "空队列不再产出草稿");
 
-    // 只有一条槽位时只取最高优先级的一条
+    // 槽位为 0 时不取事件
     env.sys_ch.writer().push(make_credential(4, 40, 0, 0));
-    env.file_ch.writer().push(make_file(5, 50, "/c"));
-    CHECK(env.pipe.take_round(drafts, 1) == 1, "槽位不足时只取一条");
-    CHECK(drafts[0].event.runtimeInfo.process == mk(4, 40), "取的是最高优先级");
     CHECK(env.pipe.take_round(drafts, 0) == 0, "槽位为 0 时不取事件");
-    CHECK(env.file_ch.size() == 1, "槽位不足时未取走的事件仍在队列");
+    CHECK(env.sys_ch.size() == 1, "槽位为 0 时事件仍在队列");
 }
 
 // ---- 角色归属未命中 ----
@@ -546,17 +493,6 @@ void run_role_inherited_from_parent()
         CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(4)");
         CHECK(drafts[0].event.runtimeInfo.roleID == 0, "父即自身时不回退");
     }
-
-    // 文件事件同样按父进程回退
-    {
-        Env env;
-        env.role_lookup.role_of_pid[50] = 9;
-        env.file_ch.writer().push(make_file(9400, 940, "/a", 50, 500));
-
-        RuntimeDraft drafts[1]{};
-        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条(5)");
-        CHECK(drafts[0].event.runtimeInfo.roleID == 9, "文件事件同样回退");
-    }
 }
 
 }  // namespace
@@ -569,7 +505,6 @@ int main()
     run_exec_derive();
     run_exec_keep_keeps_snapshot();
     run_plain_event();
-    run_file_event();
     run_round_discipline();
     run_role_miss();
     run_role_inherited_from_parent();

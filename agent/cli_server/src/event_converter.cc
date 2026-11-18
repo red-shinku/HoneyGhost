@@ -10,7 +10,6 @@
 #include <utility>
 #include <variant>
 
-#include "agent/event_data/include/file_event.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
 
 namespace hng::cli {
@@ -97,29 +96,18 @@ hng::EventType FromProtoEventType(hng::clisv::EventType etype)
 void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
 {
     const hng::RuntimeInformation& info = event.runtimeInfo;
+    hng::syscall_semantic_data& syscall = event.data;
 
     hng::clisv::eventhead* head         = out.mutable_head();
     head->set_rolelabel(info.roleLabel);
     head->set_roleid(info.roleID);
     head->set_contextid(info.contextID);
     head->set_pid(info.process.pid);
-
-    if (hng::syscall_semantic_data* syscall =
-            std::get_if<hng::syscall_semantic_data>(&event.data)) {
-        head->set_pid_start_time(syscall->head.pid_start_time);
-        head->set_ppid(syscall->head.ppid);
-        head->set_ppid_start_time(syscall->head.ppid_start_time);
-        head->set_type(ToProtoEventType(syscall->head.type));
-        MoveSyscallPayload(*syscall, *out.mutable_syscall_ev());
-        return;
-    }
-
-    hng::file_semantic_data& file = std::get<hng::file_semantic_data>(event.data);
-    head->set_pid_start_time(file.head.pid_start_time);
-    head->set_ppid(file.head.ppid);
-    head->set_ppid_start_time(file.head.ppid_start_time);
-    head->set_type(ToProtoEventType(file.head.type));
-    out.set_allocated_file_ev(new hng::file_event_data(std::move(file.data)));
+    head->set_pid_start_time(syscall.head.pid_start_time);
+    head->set_ppid(syscall.head.ppid);
+    head->set_ppid_start_time(syscall.head.ppid_start_time);
+    head->set_type(ToProtoEventType(syscall.head.type));
+    MoveSyscallPayload(syscall, *out.mutable_syscall_ev());
 }
 
 }  // namespace hng::cli

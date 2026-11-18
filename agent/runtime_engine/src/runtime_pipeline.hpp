@@ -26,12 +26,11 @@ struct RuntimeDraft {
 
 /**
  * @brief 取出语义事件消费的流水线
- * @details 由引擎线程独占使用，自身不加锁。每轮按固定优先级轮询通道
+ * @details 由引擎线程独占使用，自身不加锁。每轮取至多一条事件
  */
 class RuntimePipeline {
    public:
     /// @param syscall_input 系统调用语义通道读端，未接线传 nullptr
-    /// @param file_input 文件语义通道读端，未接线传 nullptr
     /// @param ctx_maintainer 上下文维护模块，非拥有
     /// @param process_join 控制平面进程注册接口，非拥有
     /// @param process_update 控制平面进程镜像更新接口，非拥有
@@ -39,13 +38,12 @@ class RuntimePipeline {
     /// @param role_lookup 控制平面角色查询接口，非拥有
     RuntimePipeline(
         hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
-        hng::EventChannelReader<hng::file_semantic_data>* file_input,
         ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
         ProcessUpdateService* process_update, RoleJoinService* role_join,
         RoleLookupService* role_lookup);
 
     /// @brief 取一轮事件并组装草稿
-    /// @param[out] out 本轮产物，槽位数不得少于已接线通道数；可跨轮复用
+    /// @param[out] out 本轮产物，槽位数不得少于 1；可跨轮复用
     /// @param[in] capacity out 的槽位数
     /// @return 本次写入的草稿条数
     std::size_t take_round(RuntimeDraft* out, std::size_t capacity);
@@ -54,15 +52,8 @@ class RuntimePipeline {
     /// @note 调用方不得关闭
     int syscall_fd() const noexcept;
 
-    /// @brief 文件语义通道的唤醒 fd；未接线为 -1
-    /// @note 调用方不得关闭
-    int file_fd() const noexcept;
-
     /// @brief 系统调用语义通道未入队的元素数（队列满与通道关闭合计）
     std::uint64_t syscall_dropped() const noexcept;
-
-    /// @brief 文件语义通道未入队的元素数（队列满与通道关闭合计）
-    std::uint64_t file_dropped() const noexcept;
 
    private:
     /// syscall 语义载荷的 variant 索引，与 hng::syscall_event_type 一一对应
@@ -71,9 +62,6 @@ class RuntimePipeline {
 
     /// @brief 分派一条 syscall 语义事件并组装草稿
     void handle_syscall(hng::syscall_semantic_data src, RuntimeDraft& out);
-
-    /// @brief 分派一条文件语义事件并组装草稿
-    void handle_file(hng::file_semantic_data src, RuntimeDraft& out);
 
     /// @brief 归属角色的快照：id 与标签取自同一条归属链
     struct RoleSnapshot {
@@ -96,7 +84,6 @@ class RuntimePipeline {
     uint32_t context_id_of(const hng::Process& p) const;
 
     hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input_ = nullptr;
-    hng::EventChannelReader<hng::file_semantic_data>* file_input_       = nullptr;
     // TODO: 未来 ContextMaintainer 在栈上构造
     ContextMaintainer* ctx_maintainer_                                  = nullptr;
     ProcessJoinService* process_join_                                   = nullptr;

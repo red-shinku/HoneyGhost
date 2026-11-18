@@ -76,8 +76,7 @@ stats = json.load(sys.stdin)["runtime_stats"]
 print("cli", stats["cli"])
 print("collector", [(line["line"], line["channel_dropped"],
                     line["reserve_failures"]) for line in stats["collector"]])
-print("engine", stats["engine"]["syscall_dropped"],
-      stats["engine"]["file_dropped"])
+print("engine", stats["engine"]["syscall_dropped"])
 '
 
 if [ "$fail" -ne 0 ]; then
