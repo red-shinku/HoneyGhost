@@ -5,7 +5,7 @@ package hng;
 // ============================================================
 // 系统调用语义事件载荷
 //
-// 八个消息与 kernel/include/syscall_event_type.h 中 union 的八种事件一一对应，
+// 九个消息与 kernel/include/syscall_event_type.h 中 union 的九种事件一一对应，
 // 字段参照 eBPF 侧原始结构（syscall_event_type.h）重新定义：内容相似但不复用，
 // 不组合任何内核侧数据结构，由语义化模块填充后推向下游。
 // ============================================================
@@ -17,6 +17,16 @@ message process_semantic_data
 {
     int32 exit_code     = 2;  // 进程退出码；exit_group 时有效，可为负
     string syscall_name = 3;  // 语义名（如 "fork"、"exit_group"）
+    // 进程诞生事件的派生标志：bit0 共享地址空间、bit1 CLONE_PARENT、
+    // bit2 新命名空间集合、bit3 新用户命名空间
+    uint32 derived_flags = 4;
+    sint32 exit_signal   = 5;  // 终止信号号；正常退出为 0
+    string old_comm      = 6;  // task_rename 的旧进程名
+    string new_comm      = 7;  // task_rename 的新进程名
+    string cgroup_path   = 8;  // cgroup_attach_task 的目标 cgroup 路径
+    // 被操作任务的 pid（task_rename 的改名对象、cgroup_attach_task 的被迁移者）；
+    // 事件头的主体是发起者，两者可能不同；其余事件为 0
+    uint32 target_pid    = 9;
 }
 
 // 执行事件（execve / execveat）。
@@ -58,9 +68,13 @@ message credential_semantic_data
     reserved "setuid_uid", "setgid_gid";
 
     string syscall_name = 4;  // 系统调用名（如 "setuid"、"setgid"、"capset"）
-    uint32 kind         = 5;  // 1=UID 2=GID 3=CAPS，与内核 enum credential_kind 同值
+    // 1=UID 2=GID 3=CAPS 4=PRCTL，与内核 enum credential_kind 同值
+    uint32 kind         = 5;
     repeated uint32 requested = 6;  // 请求的目标 UID 或 GID，按 kind 解释
     capability_set capset = 7;      // kind=CAPS 时有效
+    uint32 prctl_option  = 8;       // kind=PRCTL 时的 option
+    uint64 arg2          = 9;       // prctl 的 arg2
+    uint32 securebits    = 10;      // PR_SET_SECUREBITS 的新值；其余为 0
 }
 
 // 命名空间事件（unshare / setns）。
@@ -73,6 +87,16 @@ message namespace_semantic_data
     string syscall_name = 3;
     uint32 ns_mask      = 4;  // 涉及的 CLONE_NEW* 位：unshare 为掩码，setns 为单值
     sint32 fd           = 5;  // setns 的目标 fd；unshare 为 -1
+    // mount 的源、pivot_root 的新根；绝对化，解析状态位见下
+    string source       = 6;
+    // mount 的挂载点、umount2/chroot 的路径
+    string target       = 7;
+    // 两条路径的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致
+    uint32 source_flags = 8;
+    uint32 target_flags = 9;
+    string fstype       = 10;  // mount 的文件系统类型；其余为空
+    uint64 mount_flags  = 11;  // mount 的 MS_*；umount2 的 MNT_*；其余为 0
 }
 
 // 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。
@@ -96,6 +120,13 @@ message file_syscall_semantic_data
     // 两条路径的基准目录 fd；无 *at 语义或没有第二路径时为 AT_FDCWD(-100)
     sint32 dirfd        = 9;
     sint32 dirfd2       = 10;
+    uint32 at_flags     = 11;  // *at 族的 AT_* 标志
+    uint64 resolve      = 12;  // openat2 的 open_how.resolve
+    int64 length        = 13;  // truncate 的目标长度
+    uint32 dev          = 14;  // mknod 的设备号
+    // open_by_handle_at/name_to_handle_at 的文件句柄前 16 字节
+    bytes handle        = 15;
+    sint32 fd           = 16;  // 以 fd 为参数的操作；无则为 -1
 }
 
 // 内存事件（mmap / mprotect）。
@@ -132,6 +163,10 @@ message network_syscall_semantic_data
     uint64 count           = 9;  // sendto/sendmsg 的字节数；其余为 0
     // AF_UNIX 的目标 sun_path（抽象命名空间以 '@' 开头）；非 AF_UNIX 为空
     string unix_path       = 10;
+    // recvfrom 的来源 IP，网络字节序，固定 4 个字；未采集时 4 个字全为 0
+    repeated uint32 src_ip = 11;
+    sint32 backlog         = 12;  // listen 的积压队列长度；其余为 0
+    uint32 flags           = 13;  // accept4 的 SOCK_NONBLOCK/SOCK_CLOEXEC；其余为 0
 }
 
 // 内核操作事件（ptrace / bpf）。
@@ -145,4 +180,21 @@ message kernel_semantic_data
     repeated uint32 bpf_attr = 5;
     // bpf：按 cmd 解出的类型（map_type / prog_type / attach_type）；解不出为 0
     uint32 bpf_type     = 6;
+    string module_name  = 7;   // 模块名（delete_module/module_load/module_free）
+    uint32 module_len   = 8;   // init_module 的镜像长度
+    uint64 kexec_entry  = 9;   // kexec_load 的入口地址
+    uint32 kexec_segments = 10;  // kexec_load 的段数
+    uint32 reboot_cmd   = 11;  // reboot 的命令（LINUX_REBOOT_CMD_*）
+    string hostname     = 12;  // sethostname 的新主机名
+}
+
+// 信号发送事件（kill / tkill / tgkill / rt_sigqueueinfo）。
+message signal_semantic_data
+{
+    uint32 sig          = 1;  // 信号号
+    // kill 的 pid、tgkill 的 tgid、tkill 的 tid
+    uint32 target_pid   = 2;
+    uint32 target_tid   = 3;  // tgkill 的 tid；其余为 0
+    sint32 si_code      = 4;  // rt_sigqueueinfo 的 si_code；其余为 0
+    string syscall_name = 5;  // 系统调用名
 }

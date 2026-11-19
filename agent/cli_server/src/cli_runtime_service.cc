@@ -250,9 +250,9 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
                 }
                 break;
             case hng::FilterField::SUBTYPE:
-                if (value < 1 || value > 8) {
+                if (value < 1 || value > 9) {
                     error = "invalid filter expression: subtype value " +
-                            std::to_string(value) + " is out of range 1..8";
+                            std::to_string(value) + " is out of range 1..9";
                     return std::nullopt;
                 }
                 break;
@@ -398,9 +398,9 @@ std::optional<RuntimeInfoFilter> hng::cli::ToRuntimeInfoFilter(
     std::vector<syscall_event_type> subtypes;
     subtypes.reserve(static_cast<std::size_t>(request.subtype_size()));
     for (const int value : request.subtype()) {
-        if (value < 1 || value > 8) {
+        if (value < 1 || value > 9) {
             error = "invalid event subtype " + std::to_string(value) +
-                    ": value is out of range 1..8";
+                    ": value is out of range 1..9";
             return std::nullopt;
         }
         subtypes.push_back(static_cast<syscall_event_type>(value));

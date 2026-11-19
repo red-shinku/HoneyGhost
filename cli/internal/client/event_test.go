@@ -92,6 +92,7 @@ func TestConvertEventSubtypes(t *testing.T) {
 		clisv.Subtype_SUBTYPE_MEMORY:      model.SubtypeMemory,
 		clisv.Subtype_SUBTYPE_NETWORK:     model.SubtypeNetwork,
 		clisv.Subtype_SUBTYPE_KERNEL:      model.SubtypeKernel,
+		clisv.Subtype_SUBTYPE_SIGNAL:      model.SubtypeSignal,
 		clisv.Subtype_SUBTYPE_UNSPECIFIED: "",
 		clisv.Subtype(99):                 "",
 	}
@@ -114,8 +115,13 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_ProcessData{
 				ProcessData: &hng.ProcessSemanticData{ExitCode: -9, SyscallName: "exit_group"},
 			}},
-			kind:   model.SubtypeProcess,
-			fields: map[string]any{"exit_code": int32(-9), "syscall_name": "exit_group"},
+			kind: model.SubtypeProcess,
+			fields: map[string]any{
+				"exit_code": int32(-9), "derived_flags": uint32(0),
+				"exit_signal": int32(0), "old_comm": "", "new_comm": "",
+				"cgroup_path": "", "target_pid": uint32(0),
+				"syscall_name": "exit_group",
+			},
 		},
 		{
 			name: "exec",
@@ -163,7 +169,8 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			kind: model.SubtypeCredential,
 			fields: map[string]any{
 				"kind": uint32(1), "requested": []uint32{1000},
-				"syscall_name": "setuid",
+				"prctl_option": uint32(0), "arg2": uint64(0),
+				"securebits": uint32(0), "syscall_name": "setuid",
 			},
 		},
 		{
@@ -183,7 +190,8 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				"capset": map[string]any{
 					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
 				},
-				"syscall_name": "capset",
+				"prctl_option": uint32(0), "arg2": uint64(0),
+				"securebits": uint32(0), "syscall_name": "capset",
 			},
 		},
 		{
@@ -196,7 +204,10 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			kind: model.SubtypeNamespace,
 			fields: map[string]any{
 				"flags": uint64(0x10020000), "ns_mask": uint32(0x10020000),
-				"fd": int32(-1), "syscall_name": "unshare",
+				"fd": int32(-1), "source": "", "target": "",
+				"source_flags": uint32(0), "target_flags": uint32(0),
+				"fstype": "", "mount_flags": uint64(0),
+				"syscall_name": "unshare",
 			},
 		},
 		{
@@ -209,7 +220,43 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			kind: model.SubtypeNamespace,
 			fields: map[string]any{
 				"flags": uint64(0), "ns_mask": uint32(0x40000000),
-				"fd": int32(5), "syscall_name": "setns",
+				"fd": int32(5), "source": "", "target": "",
+				"source_flags": uint32(0), "target_flags": uint32(0),
+				"fstype": "", "mount_flags": uint64(0),
+				"syscall_name": "setns",
+			},
+		},
+		{
+			name: "credential prctl",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_CredentialData{
+				CredentialData: &hng.CredentialSemanticData{
+					Kind: 4, PrctlOption: 28, Arg2: 63, Securebits: 63,
+					SyscallName: "prctl",
+				},
+			}},
+			kind: model.SubtypeCredential,
+			fields: map[string]any{
+				"kind": uint32(4), "requested": []uint32{},
+				"prctl_option": uint32(28), "arg2": uint64(63),
+				"securebits": uint32(63), "syscall_name": "prctl",
+			},
+		},
+		{
+			name: "namespace mount",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NamespaceData{
+				NamespaceData: &hng.NamespaceSemanticData{
+					Fd: -1, Source: "/dev/sda1", Target: "/mnt",
+					SourceFlags: 1, TargetFlags: 2, Fstype: "ext4",
+					MountFlags: 1, SyscallName: "mount",
+				},
+			}},
+			kind: model.SubtypeNamespace,
+			fields: map[string]any{
+				"flags": uint64(0), "ns_mask": uint32(0), "fd": int32(-1),
+				"source": "/dev/sda1", "target": "/mnt",
+				"source_flags": uint32(1), "target_flags": uint32(2),
+				"fstype": "ext4", "mount_flags": uint64(1),
+				"syscall_name": "mount",
 			},
 		},
 		{
@@ -218,14 +265,36 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				FileData: &hng.FileSyscallSemanticData{
 					Flags: 3, Mode: 420, Path1: "../x", Path2: "rel/y",
 					Path1Flags: 2, Path2Flags: 0, Dirfd: -100, Dirfd2: 7,
-					SyscallName: "openat",
+					Fd: -1, SyscallName: "openat",
 				},
 			}},
 			kind: model.SubtypeFile,
 			fields: map[string]any{
 				"flags": uint32(3), "mode": uint32(420), "path1": "../x",
 				"path2": "rel/y", "path1_flags": uint32(2), "path2_flags": uint32(0),
-				"dirfd": int32(-100), "dirfd2": int32(7), "syscall_name": "openat",
+				"dirfd": int32(-100), "dirfd2": int32(7),
+				"at_flags": uint32(0), "resolve": uint64(0), "length": int64(0),
+				"dev": uint32(0), "handle": []byte{}, "fd": int32(-1),
+				"syscall_name": "openat",
+			},
+		},
+		{
+			name: "file_syscall_handle",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_FileData{
+				FileData: &hng.FileSyscallSemanticData{
+					AtFlags: 0x100, Resolve: 3, Length: 4096, Dev: 0x1234,
+					Handle: []byte{1, 2, 3}, Fd: 3,
+					SyscallName: "name_to_handle_at",
+				},
+			}},
+			kind: model.SubtypeFile,
+			fields: map[string]any{
+				"flags": uint32(0), "mode": uint32(0), "path1": "",
+				"path2": "", "path1_flags": uint32(0), "path2_flags": uint32(0),
+				"dirfd": int32(0), "dirfd2": int32(0), "at_flags": uint32(0x100),
+				"resolve": uint64(3), "length": int64(4096), "dev": uint32(0x1234),
+				"handle": []byte{1, 2, 3}, "fd": int32(3),
+				"syscall_name": "name_to_handle_at",
 			},
 		},
 		{
@@ -260,8 +329,10 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
 				"dst_ip":   []uint32{0x0a01a8c0, 0, 0, 0},
+				"src_ip":   []uint32{},
 				"dst_port": uint32(443), "src_port": uint32(50000),
-				"sockfd": int32(3), "count": uint64(512),
+				"sockfd": int32(3), "count": uint64(512), "backlog": int32(0),
+				"flags":     uint32(0),
 				"unix_path": "/run/x.sock", "syscall_name": "connect",
 			},
 		},
@@ -276,9 +347,100 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			kind: model.SubtypeNetwork,
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
-				"dst_ip": []uint32{}, "dst_port": uint32(0), "src_port": uint32(0),
-				"sockfd": int32(-1), "count": uint64(0), "unix_path": "",
-				"syscall_name": "socket",
+				"dst_ip": []uint32{}, "src_ip": []uint32{},
+				"dst_port": uint32(0), "src_port": uint32(0),
+				"sockfd": int32(-1), "count": uint64(0), "backlog": int32(0),
+				"flags":     uint32(0),
+				"unix_path": "", "syscall_name": "socket",
+			},
+		},
+		{
+			name: "process_rename",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_ProcessData{
+				ProcessData: &hng.ProcessSemanticData{
+					DerivedFlags: 3, ExitSignal: 9, OldComm: "bash",
+					NewComm: "nginx", CgroupPath: "/system.slice/nginx.service",
+					SyscallName: "task_rename",
+				},
+			}},
+			kind: model.SubtypeProcess,
+			fields: map[string]any{
+				"exit_code": int32(0), "derived_flags": uint32(3),
+				"exit_signal": int32(9), "old_comm": "bash", "new_comm": "nginx",
+				"cgroup_path":  "/system.slice/nginx.service",
+				"target_pid":   uint32(0),
+				"syscall_name": "task_rename",
+			},
+		},
+		{
+			name: "kernel_module_load",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_KernelData{
+				KernelData: &hng.KernelSemanticData{
+					ModuleName: "nfs", ModuleLen: 4096,
+					KexecEntry: 0x1000, KexecSegments: 3, RebootCmd: 0x01234567,
+					Hostname: "evil", SyscallName: "module_load",
+				},
+			}},
+			kind: model.SubtypeKernel,
+			fields: map[string]any{
+				"command": uint32(0), "target_pid": uint32(0), "arg": uint64(0),
+				"bpf_attr": []uint32{}, "bpf_type": uint32(0),
+				"module_name": "nfs", "module_len": uint32(4096),
+				"kexec_entry": uint64(0x1000), "kexec_segments": uint32(3),
+				"reboot_cmd": uint32(0x01234567), "hostname": "evil",
+				"syscall_name": "module_load",
+			},
+		},
+		{
+			name: "network_recvfrom",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NetData{
+				NetData: &hng.NetworkSyscallSemanticData{
+					Family: 2, Count: 512, Sockfd: 3,
+					SrcIp:   []uint32{0x0a01a8c0, 0, 0, 0},
+					SrcPort: 443, Backlog: 0, SyscallName: "recvfrom",
+				},
+			}},
+			kind: model.SubtypeNetwork,
+			fields: map[string]any{
+				"family": uint32(2), "type": uint32(0), "protocol": uint32(0),
+				"dst_ip": []uint32{}, "src_ip": []uint32{0x0a01a8c0, 0, 0, 0},
+				"dst_port": uint32(0), "src_port": uint32(443),
+				"sockfd": int32(3), "count": uint64(512), "backlog": int32(0),
+				"flags":     uint32(0),
+				"unix_path": "", "syscall_name": "recvfrom",
+			},
+		},
+		{
+			name: "network_listen",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NetData{
+				NetData: &hng.NetworkSyscallSemanticData{
+					Family: 2, Type: 1, Protocol: 6, Sockfd: 5,
+					Backlog: 128, SyscallName: "listen",
+				},
+			}},
+			kind: model.SubtypeNetwork,
+			fields: map[string]any{
+				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
+				"dst_ip": []uint32{}, "src_ip": []uint32{},
+				"dst_port": uint32(0), "src_port": uint32(0),
+				"sockfd": int32(5), "count": uint64(0), "backlog": int32(128),
+				"flags":     uint32(0),
+				"unix_path": "", "syscall_name": "listen",
+			},
+		},
+		{
+			name: "signal",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_SignalData{
+				SignalData: &hng.SignalSemanticData{
+					Sig: 9, TargetPid: 1234, TargetTid: 2, SiCode: -6,
+					SyscallName: "tgkill",
+				},
+			}},
+			kind: model.SubtypeSignal,
+			fields: map[string]any{
+				"sig": uint32(9), "target_pid": uint32(1234),
+				"target_tid": uint32(2), "si_code": int32(-6),
+				"syscall_name": "tgkill",
 			},
 		},
 		{
@@ -294,6 +456,9 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			fields: map[string]any{
 				"command": uint32(7), "target_pid": uint32(4242), "arg": uint64(8),
 				"bpf_attr": []uint32{6, 4, 4, 0}, "bpf_type": uint32(6),
+				"module_name": "", "module_len": uint32(0),
+				"kexec_entry": uint64(0), "kexec_segments": uint32(0),
+				"reboot_cmd": uint32(0), "hostname": "",
 				"syscall_name": "bpf",
 			},
 		},

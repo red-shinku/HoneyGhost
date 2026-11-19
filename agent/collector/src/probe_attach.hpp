@@ -31,6 +31,8 @@ int skip_missing_tracepoints(bpf_object* obj,
  * @param links 输出：成功挂载的链接，由调用方用 bpf_link__destroy 释放
  * @return 挂载失败的程序数
  * @note 单个程序失败不中断后续程序；obj 为空时返回 0。
+ * @note 挂载完成后校验每个已挂载的 sys_enter_<x> 是否有已挂载的
+ *       sys_exit_<x>，不匹配只记 warn，不影响返回值与统计。
  */
 int attach_programs(bpf_object* obj, std::vector<bpf_link*>& links);
 

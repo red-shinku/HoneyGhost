@@ -47,6 +47,7 @@ const (
 	SubtypeMemory     Subtype = "memory"
 	SubtypeNetwork    Subtype = "network"
 	SubtypeKernel     Subtype = "kernel"
+	SubtypeSignal     Subtype = "signal"
 )
 
 // FilterAtom 是单个谓词。

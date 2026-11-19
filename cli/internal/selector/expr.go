@@ -27,6 +27,7 @@ var subtypeOrder = map[model.Subtype]int{
 	model.SubtypeMemory:     5,
 	model.SubtypeNetwork:    6,
 	model.SubtypeKernel:     7,
+	model.SubtypeSignal:     8,
 }
 
 // exprKeys 是 -e 允许的 key；key 大小写敏感。
@@ -293,7 +294,7 @@ func (p *exprParser) parseAtom() (*model.FilterExpr, int, error) {
 			if !ok {
 				return nil, 0, p.errorf(columns[i],
 					"invalid subtype %q (want process, exec, credential, namespace, "+
-						"file, memory, network, or kernel)", value)
+						"file, memory, network, kernel, or signal)", value)
 			}
 			set[subtype] = true
 		}

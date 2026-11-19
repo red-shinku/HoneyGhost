@@ -55,6 +55,10 @@ void MoveSyscallPayload(hng::syscall_semantic_data& src,
             out.set_allocated_kernel_data(
                 new hng::kernel_semantic_data(std::move(std::get<7>(src.data))));
             break;
+        case 8:
+            out.set_allocated_signal_data(
+                new hng::signal_semantic_data(std::move(std::get<8>(src.data))));
+            break;
     }
 }
 
@@ -81,6 +85,8 @@ hng::clisv::Subtype ToProtoSubtype(enum syscall_event_type subtype)
             return hng::clisv::SUBTYPE_NETWORK;
         case KERNEL_EVENT:
             return hng::clisv::SUBTYPE_KERNEL;
+        case SIGNAL_EVENT:
+            return hng::clisv::SUBTYPE_SIGNAL;
     }
     return hng::clisv::SUBTYPE_UNSPECIFIED;
 }
@@ -113,6 +119,9 @@ static_assert(static_cast<int>(NETWORK_EVENT) ==
 static_assert(static_cast<int>(KERNEL_EVENT) ==
                   static_cast<int>(hng::clisv::SUBTYPE_KERNEL),
               "KERNEL_EVENT must equal SUBTYPE_KERNEL");
+static_assert(static_cast<int>(SIGNAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_SIGNAL),
+              "SIGNAL_EVENT must equal SUBTYPE_SIGNAL");
 
 }  // namespace
 

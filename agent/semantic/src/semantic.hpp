@@ -27,7 +27,7 @@ bool has_unresolved_path(const struct syscall_event& raw);
 
 /**
  * @brief 系统调用事件语义化工具。
- * @details 按 hdr.subtype 分派到八种语义载荷；无状态、无队列。
+ * @details 按 hdr.subtype 分派到九种语义载荷；无状态、无队列。
  * @note 同一实例可被单线程重复调用。
  */
 class Semantic_syscall {

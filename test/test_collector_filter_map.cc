@@ -164,10 +164,27 @@ syscall_event sample()
     event.credential_event.cap_effective   = 0x1;
     event.credential_event.cap_permitted   = 0x2;
     event.credential_event.cap_inheritable = 0x4;
+    event.credential_event.prctl_option    = 38;  // PR_SET_NO_NEW_PRIVS
+    event.credential_event.arg2            = 0x1234;
+    event.credential_event.securebits      = 0x3f;
 
     event.namespace_event.flags            = 0x50000000;
     event.namespace_event.ns_mask          = 0x50000000;
     event.namespace_event.fd               = 7;
+    std::memset(event.namespace_event.source, 's',
+                sizeof(event.namespace_event.source));
+    std::memset(event.namespace_event.target, 't',
+                sizeof(event.namespace_event.target));
+    std::memset(event.namespace_event.fstype, 'f',
+                sizeof(event.namespace_event.fstype));
+    event.namespace_event.source_flags = PATH_TRUNCATED;
+    event.namespace_event.target_flags = PATH_UNRESOLVED;
+    event.namespace_event.mount_flags  = 0x1;
+
+    event.signal_event.sig             = 9;
+    event.signal_event.target_pid      = 1234;
+    event.signal_event.target_tid      = 2;
+    event.signal_event.si_code         = -6;
     return event;
 }
 
@@ -209,9 +226,30 @@ bool same_event(const syscall_event& left, const syscall_event& right)
                right.credential_event.cap_permitted &&
            left.credential_event.cap_inheritable ==
                right.credential_event.cap_inheritable &&
+           left.credential_event.prctl_option ==
+               right.credential_event.prctl_option &&
+           left.credential_event.arg2 == right.credential_event.arg2 &&
+           left.credential_event.securebits ==
+               right.credential_event.securebits &&
            left.namespace_event.flags == right.namespace_event.flags &&
            left.namespace_event.ns_mask == right.namespace_event.ns_mask &&
-           left.namespace_event.fd == right.namespace_event.fd;
+           left.namespace_event.fd == right.namespace_event.fd &&
+           std::memcmp(left.namespace_event.source, right.namespace_event.source,
+                       sizeof(left.namespace_event.source)) == 0 &&
+           std::memcmp(left.namespace_event.target, right.namespace_event.target,
+                       sizeof(left.namespace_event.target)) == 0 &&
+           std::memcmp(left.namespace_event.fstype, right.namespace_event.fstype,
+                       sizeof(left.namespace_event.fstype)) == 0 &&
+           left.namespace_event.source_flags ==
+               right.namespace_event.source_flags &&
+           left.namespace_event.target_flags ==
+               right.namespace_event.target_flags &&
+           left.namespace_event.mount_flags ==
+               right.namespace_event.mount_flags &&
+           left.signal_event.sig == right.signal_event.sig &&
+           left.signal_event.target_pid == right.signal_event.target_pid &&
+           left.signal_event.target_tid == right.signal_event.target_tid &&
+           left.signal_event.si_code == right.signal_event.si_code;
 }
 
 void verify(const std::filesystem::path& tracefs_root)
@@ -497,6 +535,7 @@ void verify_record_framing(const std::filesystem::path& tracefs_root)
         {MEMORY_EVENT, sizeof(struct memory_event)},
         {NETWORK_EVENT, sizeof(struct network_event)},
         {KERNEL_EVENT, sizeof(struct kernel_event)},
+        {SIGNAL_EVENT, sizeof(struct signal_event)},
     };
     const std::size_t head = sizeof(struct syscall_event_head);
     REQUIRE(head == 80);
@@ -543,18 +582,18 @@ void verify_record_framing(const std::filesystem::path& tracefs_root)
     syscall_event unknown{};
     unknown.hdr.subtype = UNKNOWN_EVENT;
     REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
-    unknown.hdr.subtype = static_cast<enum syscall_event_type>(9);
+    unknown.hdr.subtype = static_cast<enum syscall_event_type>(10);
     REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
     syscall_event head_only{};
     head_only.hdr.subtype = EXEC_EVENT;
     REQUIRE(ring->callback(ring->context, &head_only, head) == 0);
     malformed += 3;
     REQUIRE(collector.stats().malformed == malformed);
-    REQUIRE(collector.stats().consumed == 8);
+    REQUIRE(collector.stats().consumed == 9);
     REQUIRE(channel.empty());
     REQUIRE(hng::detail::SyscallRecordSize(UNKNOWN_EVENT) == 0);
     REQUIRE(hng::detail::SyscallRecordSize(
-                static_cast<enum syscall_event_type>(9)) == 0);
+                static_cast<enum syscall_event_type>(10)) == 0);
 }
 
 /// @brief tracepoint 缺失的程序不 autoload，也不参与 attach

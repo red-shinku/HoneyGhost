@@ -601,8 +601,8 @@ const std::vector<InvalidCase>& invalid_cases()
                              r.add_subtype(hng::clisv::SUBTYPE_UNSPECIFIED);
                          }});
 
-        cases.push_back({"非法：-t 子类型取值为 9", [](ReceiveEventRequest& r) {
-                             r.add_subtype(static_cast<hng::clisv::Subtype>(9));
+        cases.push_back({"非法：-t 子类型取值为 10", [](ReceiveEventRequest& r) {
+                             r.add_subtype(static_cast<hng::clisv::Subtype>(10));
                          }});
 
         cases.push_back({"非法：subtype 取值为 0", [](ReceiveEventRequest& r) {
@@ -611,10 +611,10 @@ const std::vector<InvalidCase>& invalid_cases()
                                          hng::clisv::FILTER_COMPARE_EQ, {0});
                          }});
 
-        cases.push_back({"非法：subtype 取值为 9", [](ReceiveEventRequest& r) {
+        cases.push_back({"非法：subtype 取值为 10", [](ReceiveEventRequest& r) {
                              *r.mutable_expr() =
                                  numeric(hng::clisv::FILTER_FIELD_SUBTYPE,
-                                         hng::clisv::FILTER_COMPARE_EQ, {9});
+                                         hng::clisv::FILTER_COMPARE_EQ, {10});
                          }});
 
         cases.push_back({"非法：节点数超过 128", [](ReceiveEventRequest& r) {

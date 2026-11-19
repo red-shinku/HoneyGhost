@@ -2,7 +2,7 @@
  * @file test_semantic_syscall.cc
  * @brief 系统调用语义化表驱动单元测试
  * @details
- * 按 hdr.subtype 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
+ * 按 hdr.subtype 的九类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
  * image 归一化 / 语义化、invoked 原样搬运、credential 按 kind 分派的
  * requested / capset 展开与通用事件头字段搬运。
@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/socket.h>
 
@@ -93,13 +94,29 @@ struct ProcessCase {
     enum syscall_event_name name;
     __s32 exit_code;
     const char* name_str;
+    __u8 derived_flags      = 0;
+    __s32 exit_signal       = 0;
+    const char* old_comm    = "";
+    const char* new_comm    = "";
+    const char* cgroup_path = "";
+    __u32 target_pid        = 0;
 };
 
 constexpr ProcessCase kProcessCases[] = {
     {SYSCALL_EVENT_FORK, 0, "fork"},
     {SYSCALL_EVENT_CLONE, 0, "clone"},  // 枚举保留，诞生事件统一归 "fork"
     {SYSCALL_EVENT_VFORK, 0, "vfork"},
-    {SYSCALL_EVENT_EXIT_GROUP, -1, "exit_group"},
+    {SYSCALL_EVENT_EXIT_GROUP, -1, "exit_group", 0, 9},
+    // 进程诞生派生位：共享地址空间 + CLONE_PARENT
+    {SYSCALL_EVENT_FORK, 0, "fork", 0x3},
+    // task_rename 携带改名前后进程名
+    {SYSCALL_EVENT_TASK_RENAME, 0, "task_rename", 0, 0, "bash", "nginx"},
+    // cgroup_attach_task 携带目标 cgroup 路径与被迁移的 pid
+    {SYSCALL_EVENT_CGROUP_ATTACH_TASK, 0, "cgroup_attach_task", 0, 0, "", "",
+     "/system.slice/nginx.service", 4242},
+    // task_rename 携带被改名任务的 pid
+    {SYSCALL_EVENT_TASK_RENAME, 0, "task_rename", 0, 0, "bash", "nginx", "",
+     4243},
 };
 
 void run_process()
@@ -107,7 +124,16 @@ void run_process()
     for (const ProcessCase& c : kProcessCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, PROCESS_EVENT);
-        raw.process_event.exit_code = c.exit_code;
+        raw.process_event.exit_code     = c.exit_code;
+        raw.process_event.derived_flags = c.derived_flags;
+        raw.process_event.exit_signal   = c.exit_signal;
+        std::strncpy(raw.process_event.old_comm, c.old_comm,
+                     sizeof(raw.process_event.old_comm) - 1);
+        std::strncpy(raw.process_event.new_comm, c.new_comm,
+                     sizeof(raw.process_event.new_comm) - 1);
+        std::strncpy(raw.process_event.cgroup_path, c.cgroup_path,
+                     sizeof(raw.process_event.cgroup_path) - 1);
+        raw.process_event.target_pid = c.target_pid;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -118,6 +144,12 @@ void run_process()
             continue;
         }
         CHECK(d->exit_code() == c.exit_code, "process exit_code");
+        CHECK(d->derived_flags() == c.derived_flags, "process derived_flags");
+        CHECK(d->exit_signal() == c.exit_signal, "process exit_signal");
+        CHECK(d->old_comm() == c.old_comm, "process old_comm");
+        CHECK(d->new_comm() == c.new_comm, "process new_comm");
+        CHECK(d->cgroup_path() == c.cgroup_path, "process cgroup_path");
+        CHECK(d->target_pid() == c.target_pid, "process target_pid");
         CHECK(d->syscall_name() == c.name_str, "process syscall_name");
     }
 }
@@ -216,6 +248,9 @@ struct CredentialCase {
     __u32 requested[3];
     __u64 cap_eff, cap_perm, cap_inh;
     const char* name_str;
+    __u32 prctl_option = 0;
+    __u64 arg2         = 0;
+    __u32 securebits   = 0;
 };
 
 constexpr CredentialCase kCredentialCases[] = {
@@ -223,6 +258,26 @@ constexpr CredentialCase kCredentialCases[] = {
     {SYSCALL_EVENT_SETUID, CREDENTIAL_UID, 1, {1000, 0, 0}, 0, 0, 0, "setuid"},
     {SYSCALL_EVENT_SETGID, CREDENTIAL_GID, 1, {2000, 0, 0}, 0, 0, 0, "setgid"},
     {SYSCALL_EVENT_CAPSET, CREDENTIAL_CAPS, 0, {}, 0x1, 0x2, 0x4, "capset"},
+    {SYSCALL_EVENT_SETREUID,
+     CREDENTIAL_UID,
+     2,
+     {1000, 0, 0},
+     0,
+     0,
+     0,
+     "setreuid"},
+    // prctl 只收安全相关 option：arg2 与 securebits 一并搬运
+    {SYSCALL_EVENT_PRCTL,
+     CREDENTIAL_PRCTL,
+     0,
+     {},
+     0,
+     0,
+     0,
+     "prctl",
+     PR_SET_SECUREBITS,
+     0x3f,
+     0x3f},
 };
 
 void run_credential()
@@ -238,6 +293,9 @@ void run_credential()
         raw.credential_event.cap_effective   = c.cap_eff;
         raw.credential_event.cap_permitted   = c.cap_perm;
         raw.credential_event.cap_inheritable = c.cap_inh;
+        raw.credential_event.prctl_option    = c.prctl_option;
+        raw.credential_event.arg2            = c.arg2;
+        raw.credential_event.securebits      = c.securebits;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -269,6 +327,11 @@ void run_credential()
         else {
             CHECK(!d->has_capset(), "credential non-capset has no capset");
         }
+        if (c.kind == CREDENTIAL_PRCTL) {
+            CHECK(d->prctl_option() == c.prctl_option, "credential prctl_option");
+            CHECK(d->arg2() == c.arg2, "credential prctl arg2");
+            CHECK(d->securebits() == c.securebits, "credential prctl securebits");
+        }
     }
 }
 
@@ -280,6 +343,14 @@ struct NamespaceCase {
     __u32 ns_mask;
     __s32 fd;
     const char* name_str;
+    const char* source     = "";
+    const char* target     = "";
+    __u32 source_flags     = 0;
+    __u32 target_flags     = 0;
+    const char* fstype     = "";
+    __u64 mount_flags      = 0;
+    const char* expect_src = "";
+    const char* expect_dst = "";
 };
 
 constexpr NamespaceCase kNamespaceCases[] = {
@@ -288,6 +359,12 @@ constexpr NamespaceCase kNamespaceCases[] = {
     {SYSCALL_EVENT_UNSHARE, 0x50000000, 0x50000000, -1, "unshare"},
     // setns 只涉及单个命名空间类型，目标 fd 由 args[0] 给出
     {SYSCALL_EVENT_SETNS, 0, 0x40000000, 5, "setns"},
+    // mount：两条路径都 normalize，fstype 与 MS_* 原样搬运
+    {SYSCALL_EVENT_MOUNT, 0, 0, -1, "mount", "/dev//sda1", "/mnt/./data", 0, 0,
+     "ext4", 0x1, "/dev/sda1", "/mnt/data"},
+    // chroot：路径只装入 target；解析失败时保留原始串并透传状态位
+    {SYSCALL_EVENT_CHROOT, 0, 0, -1, "chroot", "", "rel/newroot", 0,
+     PATH_UNRESOLVED, "", 0, "", "rel/newroot"},
 };
 
 void run_namespace()
@@ -295,9 +372,18 @@ void run_namespace()
     for (const NamespaceCase& c : kNamespaceCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, NAMESPACE_EVENT);
-        raw.namespace_event.flags   = c.flags;
-        raw.namespace_event.ns_mask = c.ns_mask;
-        raw.namespace_event.fd      = c.fd;
+        raw.namespace_event.flags        = c.flags;
+        raw.namespace_event.ns_mask      = c.ns_mask;
+        raw.namespace_event.fd           = c.fd;
+        raw.namespace_event.source_flags = c.source_flags;
+        raw.namespace_event.target_flags = c.target_flags;
+        raw.namespace_event.mount_flags  = c.mount_flags;
+        std::strncpy(raw.namespace_event.source, c.source,
+                     sizeof(raw.namespace_event.source) - 1);
+        std::strncpy(raw.namespace_event.target, c.target,
+                     sizeof(raw.namespace_event.target) - 1);
+        std::strncpy(raw.namespace_event.fstype, c.fstype,
+                     sizeof(raw.namespace_event.fstype) - 1);
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -310,6 +396,12 @@ void run_namespace()
         CHECK(d->ns_mask() == c.ns_mask, "namespace ns_mask");
         CHECK(d->flags() == c.flags, "namespace flags");
         CHECK(d->fd() == c.fd, "namespace fd");
+        CHECK(d->source() == c.expect_src, "namespace source");
+        CHECK(d->target() == c.expect_dst, "namespace target");
+        CHECK(d->source_flags() == c.source_flags, "namespace source_flags");
+        CHECK(d->target_flags() == c.target_flags, "namespace target_flags");
+        CHECK(d->fstype() == c.fstype, "namespace fstype");
+        CHECK(d->mount_flags() == c.mount_flags, "namespace mount_flags");
         CHECK(d->syscall_name() == c.name_str, "namespace syscall_name");
     }
 }
@@ -329,6 +421,11 @@ struct FileCase {
     const char* expect_path1;
     const char* expect_path2;
     const char* name_str;
+    __u32 at_flags = 0;
+    __u64 resolve  = 0;
+    __s64 length   = 0;
+    __u32 dev      = 0;
+    __s32 fd       = -1;
 };
 
 constexpr FileCase kFileCases[] = {
@@ -350,6 +447,18 @@ constexpr FileCase kFileCases[] = {
     // link：新名无法解析时只有 path2 带未解析位与原始串
     {SYSCALL_EVENT_LINK, "/tmp/src", "rel/new", 0, 0, 0, PATH_UNRESOLVED,
      AT_FDCWD, AT_FDCWD, "/tmp/src", "rel/new", "link"},
+    // truncate：目标长度原样搬运
+    {SYSCALL_EVENT_TRUNCATE, "/tmp/f", "", 0, 0, 0, 0, AT_FDCWD, AT_FDCWD,
+     "/tmp/f", "", "truncate", 0, 0, 4096},
+    // mknod：设备号原样搬运
+    {SYSCALL_EVENT_MKNOD, "/tmp/dev", "", 0, 0600, 0, 0, AT_FDCWD, AT_FDCWD,
+     "/tmp/dev", "", "mknod", 0, 0, 0, 0x1234},
+    // fchmod 没有路径，只有 fd 与权限位
+    {SYSCALL_EVENT_FCHMOD, "", "", 0, 0644, 0, 0, AT_FDCWD, AT_FDCWD, "", "",
+     "fchmod", 0, 0, 0, 0, 3},
+    // memfd_create：path1 带 memfd: 前缀且不置解析位（normalize 保持原样）
+    {SYSCALL_EVENT_MEMFD_CREATE, "memfd:payload", "", 0, 0, 0, 0, AT_FDCWD,
+     AT_FDCWD, "memfd:payload", "", "memfd_create"},
 };
 
 void run_file()
@@ -367,6 +476,11 @@ void run_file()
         raw.file_event.path2_flags = c.path2_flags;
         raw.file_event.dirfd       = c.dirfd;
         raw.file_event.dirfd2      = c.dirfd2;
+        raw.file_event.at_flags    = c.at_flags;
+        raw.file_event.resolve     = c.resolve;
+        raw.file_event.length      = c.length;
+        raw.file_event.dev         = c.dev;
+        raw.file_event.fd          = c.fd;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -384,11 +498,44 @@ void run_file()
         CHECK(d->path2_flags() == c.path2_flags, "file path2_flags");
         CHECK(d->dirfd() == c.dirfd, "file dirfd");
         CHECK(d->dirfd2() == c.dirfd2, "file dirfd2");
+        CHECK(d->at_flags() == c.at_flags, "file at_flags");
+        CHECK(d->resolve() == c.resolve, "file resolve");
+        CHECK(d->length() == c.length, "file length");
+        CHECK(d->dev() == c.dev, "file dev");
+        CHECK(d->fd() == c.fd, "file fd");
         CHECK(hng::has_unresolved_path(raw) ==
                   (((c.path1_flags | c.path2_flags) & PATH_UNRESOLVED) != 0),
               "file unresolved predicate");
         CHECK(d->syscall_name() == c.name_str, "file syscall_name");
     }
+}
+
+/// @brief open_by_handle_at 的文件句柄按原始 16 字节搬运（不是字符串）
+void run_file_handle()
+{
+    struct syscall_event raw = {};
+    fill_head(raw, SYSCALL_EVENT_OPEN_BY_HANDLE_AT, FILE_EVENT);
+    raw.file_event.dirfd    = 3;
+    raw.file_event.fd       = 3;
+    raw.file_event.at_flags = 0x100;
+    for (int i = 0; i < static_cast<int>(sizeof(raw.file_event.handle)); ++i) {
+        raw.file_event.handle[i] = static_cast<__u8>(i + 1);
+    }
+
+    hng::syscall_semantic_data out;
+    run_one(raw, out);
+    check_head(raw, out);
+    const auto* d = std::get_if<hng::file_syscall_semantic_data>(&out.data);
+    CHECK(d != nullptr, "file handle variant type");
+    if (!d) {
+        return;
+    }
+    CHECK(d->handle().size() == 16, "file handle length");
+    for (int i = 0; i < 16 && i < d->handle().size(); ++i) {
+        CHECK(static_cast<__u8>(d->handle()[i]) == static_cast<__u8>(i + 1),
+              "file handle bytes");
+    }
+    CHECK(d->syscall_name() == "open_by_handle_at", "file handle syscall_name");
 }
 
 /// @brief path_unresolved 的计数判据：只认文件事件，且两条路径任一未解析即算
@@ -444,6 +591,12 @@ constexpr MemoryCase kMemoryCases[] = {
     // 路径解析失败：path 为空串，未解析位透传
     {SYSCALL_EVENT_MMAP, PROT_WRITE, MAP_SHARED, 0, 4096, 0, 5, false, false, "",
      PATH_UNRESOLVED, "", "mmap"},
+    // mremap：prot 为 0、fd 为 -1，记录 old_size 与 MREMAP_* 标志
+    {SYSCALL_EVENT_MREMAP, 0, 1 /* MREMAP_MAYMOVE */, 0x7f0000000000ULL, 8192, 0,
+     -1, false, false, "", 0, "", "mremap"},
+    // munmap：只记录地址与长度
+    {SYSCALL_EVENT_MUNMAP, 0, 0, 0x401000, 4096, 0, -1, false, false, "", 0, "",
+     "munmap"},
 };
 
 void run_memory()
@@ -499,6 +652,9 @@ struct NetworkCase {
     __u64 count;
     const char* unix_path;
     const char* name_str;
+    __u32 src_ip[4] = {0, 0, 0, 0};
+    __s32 backlog   = 0;
+    __u32 flags     = 0;
 };
 
 // dst_ip 按内核记录的网络字节序存放（主机为小端）：
@@ -551,6 +707,48 @@ constexpr NetworkCase kNetworkCases[] = {
      0,
      "@/run/dbus",
      "connect"},
+    // recvfrom：来源地址填入 src_ip/src_port，count 是本次接收的字节数
+    {SYSCALL_EVENT_RECVFROM,
+     AF_INET,
+     SOCK_DGRAM,
+     IPPROTO_UDP,
+     {0, 0, 0, 0},
+     0,
+     443,
+     3,
+     512,
+     "",
+     "recvfrom",
+     {0x0a01a8c0, 0, 0, 0}},
+    // listen：backlog 原样搬运
+    {SYSCALL_EVENT_LISTEN,
+     AF_INET,
+     SOCK_STREAM,
+     IPPROTO_TCP,
+     {0, 0, 0, 0},
+     0,
+     0,
+     5,
+     0,
+     "",
+     "listen",
+     {0, 0, 0, 0},
+     128},
+    // accept4：args[3] 的 SOCK_* 标志落在专用字段，type 保持套接字类型语义
+    {SYSCALL_EVENT_ACCEPT4,
+     AF_INET,
+     0,
+     0,
+     {0, 0, 0, 0},
+     0,
+     0,
+     6,
+     0,
+     "",
+     "accept4",
+     {0, 0, 0, 0},
+     0,
+     0x800 /* SOCK_NONBLOCK */},
 };
 
 void run_network()
@@ -563,11 +761,14 @@ void run_network()
         raw.network_event.protocol = c.protocol;
         for (int i = 0; i < 4; ++i) {
             raw.network_event.dst_ip[i] = c.dst_ip[i];
+            raw.network_event.src_ip[i] = c.src_ip[i];
         }
         raw.network_event.dst_port = c.dst_port;
         raw.network_event.src_port = c.src_port;
         raw.network_event.sockfd   = c.sockfd;
         raw.network_event.count    = c.count;
+        raw.network_event.backlog  = c.backlog;
+        raw.network_event.flags    = c.flags;
         std::strncpy(raw.network_event.unix_path, c.unix_path,
                      sizeof(raw.network_event.unix_path) - 1);
 
@@ -590,9 +791,62 @@ void run_network()
         CHECK(d->dst_port() == c.dst_port, "network dst_port");
         CHECK(d->src_port() == c.src_port, "network src_port");
         CHECK(d->sockfd() == c.sockfd, "network sockfd");
+        CHECK(d->flags() == c.flags, "network flags");
         CHECK(d->count() == c.count, "network count");
+        CHECK(d->src_ip_size() == 4, "network src_ip size");
+        for (int i = 0; i < 4 && i < d->src_ip_size(); ++i) {
+            CHECK(d->src_ip(i) == c.src_ip[i], "network src_ip");
+        }
+        CHECK(d->backlog() == c.backlog, "network backlog");
         CHECK(d->unix_path() == c.unix_path, "network unix_path");
         CHECK(d->syscall_name() == c.name_str, "network syscall_name");
+    }
+}
+
+// ---- 信号发送 ----
+
+struct SignalCase {
+    enum syscall_event_name name;
+    __u32 sig;
+    __u32 target_pid;
+    __u32 target_tid;
+    __s32 si_code;
+    const char* name_str;
+};
+
+constexpr SignalCase kSignalCases[] = {
+    // kill / tkill 只有目标 pid，没有 tid 与 si_code
+    {SYSCALL_EVENT_KILL, 9, 1234, 0, 0, "kill"},
+    {SYSCALL_EVENT_TKILL, 15, 55, 0, 0, "tkill"},
+    // tgkill 的 pid 是线程组、tid 是具体线程
+    {SYSCALL_EVENT_TGKILL, 9, 1, 2, 0, "tgkill"},
+    // rt_sigqueueinfo 携带用户给出的 si_code（可为负值）
+    {SYSCALL_EVENT_RT_SIGQUEUEINFO, 10, 77, 0, -6, "rt_sigqueueinfo"},
+};
+
+void run_signal()
+{
+    for (const SignalCase& c : kSignalCases) {
+        struct syscall_event raw = {};
+        fill_head(raw, c.name, SIGNAL_EVENT);
+        raw.signal_event.sig        = c.sig;
+        raw.signal_event.target_pid = c.target_pid;
+        raw.signal_event.target_tid = c.target_tid;
+        raw.signal_event.si_code    = c.si_code;
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        check_head(raw, out);
+        const auto* d = std::get_if<hng::signal_semantic_data>(&out.data);
+        CHECK(d != nullptr, "signal variant type");
+        if (!d) {
+            continue;
+        }
+        CHECK(d->sig() == c.sig, "signal sig");
+        CHECK(d->target_pid() == c.target_pid, "signal target_pid");
+        CHECK(d->target_tid() == c.target_tid, "signal target_tid");
+        CHECK(d->si_code() == c.si_code, "signal si_code");
+        CHECK(d->syscall_name() == c.name_str, "signal syscall_name");
     }
 }
 
@@ -606,6 +860,12 @@ struct KernelCase {
     __u32 attr[4];
     __u32 bpf_type;
     const char* name_str;
+    const char* module_name = "";
+    __u32 module_len        = 0;
+    __u64 kexec_entry       = 0;
+    __u32 kexec_segments    = 0;
+    __u32 reboot_cmd        = 0;
+    const char* hostname    = "";
 };
 
 constexpr KernelCase kKernelCases[] = {
@@ -621,6 +881,64 @@ constexpr KernelCase kKernelCases[] = {
     {SYSCALL_EVENT_BPF, 0 /* BPF_MAP_CREATE */, 0, 0, {6, 4, 4, 0}, 6, "bpf"},
     // bpf BPF_PROG_ATTACH：attach_type 在 attr 的第 3 个字
     {SYSCALL_EVENT_BPF, 8 /* BPF_PROG_ATTACH */, 0, 0, {7, 9, 3, 0}, 3, "bpf"},
+    // delete_module：模块名与 flags
+    {SYSCALL_EVENT_DELETE_MODULE,
+     0,
+     0,
+     1,
+     {0, 0, 0, 0},
+     0,
+     "delete_module",
+     "rootkit"},
+    // init_module：只记录镜像长度
+    {SYSCALL_EVENT_INIT_MODULE,
+     0,
+     0,
+     0,
+     {0, 0, 0, 0},
+     0,
+     "init_module",
+     "",
+     4096},
+    // kexec_load：入口与段数
+    {SYSCALL_EVENT_KEXEC_LOAD,
+     0,
+     0,
+     0,
+     {0, 0, 0, 0},
+     0,
+     "kexec_load",
+     "",
+     0,
+     0x1000,
+     3},
+    // reboot：命令码
+    {SYSCALL_EVENT_REBOOT,
+     0,
+     0,
+     0,
+     {0, 0, 0, 0},
+     0,
+     "reboot",
+     "",
+     0,
+     0,
+     0,
+     0x01234567},
+    // sethostname：主机名
+    {SYSCALL_EVENT_SETHOSTNAME,
+     0,
+     0,
+     0,
+     {0, 0, 0, 0},
+     0,
+     "sethostname",
+     "",
+     0,
+     0,
+     0,
+     0,
+     "evil"},
 };
 
 void run_kernel()
@@ -635,6 +953,14 @@ void run_kernel()
             raw.kernel_event.bpf_attr[i] = c.attr[i];
         }
         raw.kernel_event.bpf_type = c.bpf_type;
+        std::strncpy(raw.kernel_event.module_name, c.module_name,
+                     sizeof(raw.kernel_event.module_name) - 1);
+        raw.kernel_event.module_len     = c.module_len;
+        raw.kernel_event.kexec_entry    = c.kexec_entry;
+        raw.kernel_event.kexec_segments = c.kexec_segments;
+        raw.kernel_event.reboot_cmd     = c.reboot_cmd;
+        std::strncpy(raw.kernel_event.hostname, c.hostname,
+                     sizeof(raw.kernel_event.hostname) - 1);
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -652,6 +978,12 @@ void run_kernel()
             CHECK(d->bpf_attr(i) == c.attr[i], "kernel bpf_attr");
         }
         CHECK(d->bpf_type() == c.bpf_type, "kernel bpf_type");
+        CHECK(d->module_name() == c.module_name, "kernel module_name");
+        CHECK(d->module_len() == c.module_len, "kernel module_len");
+        CHECK(d->kexec_entry() == c.kexec_entry, "kernel kexec_entry");
+        CHECK(d->kexec_segments() == c.kexec_segments, "kernel kexec_segments");
+        CHECK(d->reboot_cmd() == c.reboot_cmd, "kernel reboot_cmd");
+        CHECK(d->hostname() == c.hostname, "kernel hostname");
         CHECK(d->syscall_name() == c.name_str, "kernel syscall_name");
     }
 }
@@ -707,9 +1039,11 @@ int main()
     run_credential();
     run_namespace();
     run_file();
+    run_file_handle();
     run_unresolved_predicate();
     run_memory();
     run_network();
+    run_signal();
     run_kernel();
     run_head_fields();
 
@@ -719,7 +1053,7 @@ int main()
     }
     std::printf(
         "ALL PASS (process=%zu exec=%zu credential=%zu namespace=%zu file=%zu "
-        "memory=%zu network=%zu kernel=%zu)\n",
+        "memory=%zu network=%zu signal=%zu kernel=%zu)\n",
         sizeof(kProcessCases) / sizeof(ProcessCase),
         sizeof(kExecCases) / sizeof(ExecCase),
         sizeof(kCredentialCases) / sizeof(CredentialCase),
@@ -727,6 +1061,7 @@ int main()
         sizeof(kFileCases) / sizeof(FileCase),
         sizeof(kMemoryCases) / sizeof(MemoryCase),
         sizeof(kNetworkCases) / sizeof(NetworkCase),
+        sizeof(kSignalCases) / sizeof(SignalCase),
         sizeof(kKernelCases) / sizeof(KernelCase));
     return 0;
 }

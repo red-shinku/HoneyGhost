@@ -133,6 +133,8 @@ func subtypeFromProto(subtype clisv.Subtype) model.Subtype {
 		return model.SubtypeNetwork
 	case clisv.Subtype_SUBTYPE_KERNEL:
 		return model.SubtypeKernel
+	case clisv.Subtype_SUBTYPE_SIGNAL:
+		return model.SubtypeSignal
 	default:
 		return ""
 	}
@@ -203,8 +205,14 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 	case *clisv.SyscallEventData_ProcessData:
 		value := data.ProcessData
 		return payload(model.SubtypeProcess, map[string]any{
-			"exit_code":    value.GetExitCode(),
-			"syscall_name": value.GetSyscallName(),
+			"exit_code":     value.GetExitCode(),
+			"derived_flags": value.GetDerivedFlags(),
+			"exit_signal":   value.GetExitSignal(),
+			"old_comm":      value.GetOldComm(),
+			"new_comm":      value.GetNewComm(),
+			"cgroup_path":   value.GetCgroupPath(),
+			"target_pid":    value.GetTargetPid(),
+			"syscall_name":  value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_ExecData:
@@ -233,11 +241,21 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"flags":        value.GetFlags(),
 			"ns_mask":      value.GetNsMask(),
 			"fd":           value.GetFd(),
+			"source":       value.GetSource(),
+			"target":       value.GetTarget(),
+			"source_flags": value.GetSourceFlags(),
+			"target_flags": value.GetTargetFlags(),
+			"fstype":       value.GetFstype(),
+			"mount_flags":  value.GetMountFlags(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_FileData:
 		value := data.FileData
+		handle := value.GetHandle()
+		if handle == nil {
+			handle = []byte{}
+		}
 		return payload(model.SubtypeFile, map[string]any{
 			"flags":        value.GetFlags(),
 			"mode":         value.GetMode(),
@@ -247,6 +265,12 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"path2_flags":  value.GetPath2Flags(),
 			"dirfd":        value.GetDirfd(),
 			"dirfd2":       value.GetDirfd2(),
+			"at_flags":     value.GetAtFlags(),
+			"resolve":      value.GetResolve(),
+			"length":       value.GetLength(),
+			"dev":          value.GetDev(),
+			"handle":       handle,
+			"fd":           value.GetFd(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
@@ -272,16 +296,33 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 		if dstIP == nil {
 			dstIP = []uint32{}
 		}
+		srcIP := value.GetSrcIp()
+		if srcIP == nil {
+			srcIP = []uint32{}
+		}
 		return payload(model.SubtypeNetwork, map[string]any{
 			"family":       value.GetFamily(),
 			"type":         value.GetType(),
 			"protocol":     value.GetProtocol(),
 			"dst_ip":       dstIP,
+			"src_ip":       srcIP,
 			"dst_port":     value.GetDstPort(),
 			"src_port":     value.GetSrcPort(),
 			"sockfd":       value.GetSockfd(),
 			"count":        value.GetCount(),
+			"backlog":      value.GetBacklog(),
+			"flags":        value.GetFlags(),
 			"unix_path":    value.GetUnixPath(),
+			"syscall_name": value.GetSyscallName(),
+		}), nil
+
+	case *clisv.SyscallEventData_SignalData:
+		value := data.SignalData
+		return payload(model.SubtypeSignal, map[string]any{
+			"sig":          value.GetSig(),
+			"target_pid":   value.GetTargetPid(),
+			"target_tid":   value.GetTargetTid(),
+			"si_code":      value.GetSiCode(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
@@ -292,12 +333,18 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			bpfAttr = []uint32{}
 		}
 		return payload(model.SubtypeKernel, map[string]any{
-			"command":      value.GetCommand(),
-			"target_pid":   value.GetTargetPid(),
-			"arg":          value.GetArg(),
-			"bpf_attr":     bpfAttr,
-			"bpf_type":     value.GetBpfType(),
-			"syscall_name": value.GetSyscallName(),
+			"command":        value.GetCommand(),
+			"target_pid":     value.GetTargetPid(),
+			"arg":            value.GetArg(),
+			"bpf_attr":       bpfAttr,
+			"bpf_type":       value.GetBpfType(),
+			"module_name":    value.GetModuleName(),
+			"module_len":     value.GetModuleLen(),
+			"kexec_entry":    value.GetKexecEntry(),
+			"kexec_segments": value.GetKexecSegments(),
+			"reboot_cmd":     value.GetRebootCmd(),
+			"hostname":       value.GetHostname(),
+			"syscall_name":   value.GetSyscallName(),
 		}), nil
 
 	default:
@@ -314,6 +361,9 @@ func convertCredentialPayload(in *hng.CredentialSemanticData) model.Payload {
 		"syscall_name": in.GetSyscallName(),
 		"kind":         in.GetKind(),
 		"requested":    requested,
+		"prctl_option": in.GetPrctlOption(),
+		"arg2":         in.GetArg2(),
+		"securebits":   in.GetSecurebits(),
 	}
 	// capset 只在 kind=CAPS 时由内核侧填充；其余 kind 不呈现该字段
 	if capset := in.GetCapset(); capset != nil {

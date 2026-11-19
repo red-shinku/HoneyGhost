@@ -7,9 +7,12 @@
 #include "agent/util/include/log.hpp"
 #include "agent/util/include/tracefs.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace hng::detail {
 
@@ -93,6 +96,41 @@ int skip_missing_tracepoints(bpf_object* obj,
     return skipped;
 }
 
+namespace {
+
+/// @brief 系统调用 enter/exit 程序 section 的固定片段
+constexpr std::string_view kSysEnterMarker = "tracepoint/syscalls/sys_enter_";
+constexpr std::string_view kSysEnterName   = "sys_enter_";
+constexpr std::string_view kSysExitName    = "sys_exit_";
+
+/**
+ * @brief 检查已挂载的 enter 探针都有同名已挂载的 exit 探针
+ * @param attached 已成功挂载的 section 名
+ * @note 只告警，不改变挂载结果与统计；缺失 exit 会让暂存条目滞留，故显式提示。
+ */
+void warn_unpaired_enter_probes(const std::vector<std::string_view>& attached)
+{
+    for (const std::string_view section : attached) {
+        if (section.size() <= kSysEnterMarker.size() ||
+            section.substr(0, kSysEnterMarker.size()) != kSysEnterMarker) {
+            continue;
+        }
+        std::string exit_section(section);
+        const std::size_t marker = exit_section.find(kSysEnterName);
+        if (marker == std::string::npos) {
+            continue;
+        }
+        exit_section.replace(marker, kSysEnterName.size(), kSysExitName);
+        if (std::find(attached.begin(), attached.end(),
+                      std::string_view(exit_section)) == attached.end()) {
+            HNG_LOG_WARN("probe {} is attached without paired {}", section,
+                         exit_section);
+        }
+    }
+}
+
+}  // namespace
+
 int attach_programs(bpf_object* obj, std::vector<bpf_link*>& links)
 {
     if (!obj) {
@@ -101,6 +139,7 @@ int attach_programs(bpf_object* obj, std::vector<bpf_link*>& links)
 
     int failures         = 0;
     bpf_program* program = nullptr;
+    std::vector<std::string_view> attached;
     bpf_object__for_each_program(program, obj)
     {
         if (!::bpf_program__autoload(program)) {
@@ -116,7 +155,11 @@ int attach_programs(bpf_object* obj, std::vector<bpf_link*>& links)
             continue;
         }
         links.push_back(link);
+        if (section) {
+            attached.emplace_back(section);
+        }
     }
+    warn_unpaired_enter_probes(attached);
     if (failures > 0) {
         HNG_LOG_WARN("attached {} probe(s), {} failed", links.size(), failures);
     }

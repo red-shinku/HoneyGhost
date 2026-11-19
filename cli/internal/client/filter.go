@@ -171,6 +171,8 @@ func toProtoSubtype(subtype model.Subtype) (clisv.Subtype, error) {
 		return clisv.Subtype_SUBTYPE_NETWORK, nil
 	case model.SubtypeKernel:
 		return clisv.Subtype_SUBTYPE_KERNEL, nil
+	case model.SubtypeSignal:
+		return clisv.Subtype_SUBTYPE_SIGNAL, nil
 	default:
 		return 0, fmt.Errorf("unknown event subtype %q", subtype)
 	}

@@ -269,6 +269,7 @@ enum Subtype {
     SUBTYPE_MEMORY      = 6;
     SUBTYPE_NETWORK     = 7;
     SUBTYPE_KERNEL      = 8;
+    SUBTYPE_SIGNAL      = 9;
 }
 
 // 原子谓词作用的字段，取值与 hng::FilterField 一一对应
@@ -329,7 +330,7 @@ message ReceiveEventRequest
     uint32 batch_size = 3;
     // 布尔过滤表达式；与 etype/subtype/info 取交
     optional filter_expr expr = 4;
-    // 命令行选项 -t：语义子类型过滤，取值 1..8，空表示不限
+    // 命令行选项 -t：语义子类型过滤，取值 1..9，空表示不限
     repeated Subtype subtype = 5;
 }
 
@@ -345,6 +346,7 @@ message syscall_event_data
         memory_semantic_data memory_data         = 6;
         network_syscall_semantic_data net_data   = 7;
         kernel_semantic_data kernel_data         = 8;
+        signal_semantic_data signal_data         = 9;
     }
 }
 

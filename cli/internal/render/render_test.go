@@ -462,6 +462,26 @@ func testEvents() []model.Event {
 				"unix_path": "@/run/dbus", "syscall_name": "connect",
 			}},
 		},
+		{
+			Head: model.Head{
+				RoleID:  7,
+				PID:     2008,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeSignal,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     0,
+				Comm:    "kill",
+				MntNS:   initMntNSInum,
+			},
+			// tgkill：目标线程组与 tid 分别呈现
+			Payload: model.Payload{Kind: model.SubtypeSignal, Fields: map[string]any{
+				"sig": uint32(9), "target_pid": uint32(1),
+				"target_tid": uint32(2), "si_code": int32(0),
+				"syscall_name": "tgkill",
+			}},
+		},
 	}
 }
 
@@ -489,6 +509,41 @@ func TestEventDetail(t *testing.T) {
 				"exit_code": int32(-9), "syscall_name": "exit_group",
 			}},
 			want: "exit_group exit=-9",
+		},
+		{
+			name: "process_fork",
+			payload: model.Payload{Kind: model.SubtypeProcess, Fields: map[string]any{
+				"exit_code": int32(0), "derived_flags": uint32(3),
+				"syscall_name": "fork",
+			}},
+			// 非退出事件的 exit_code 恒为 0，不呈现
+			want: "fork flags=SHARED_MM,PARENT",
+		},
+		{
+			name: "process_rename",
+			payload: model.Payload{Kind: model.SubtypeProcess, Fields: map[string]any{
+				"exit_code": int32(0), "derived_flags": uint32(0),
+				"exit_signal": int32(0), "old_comm": "bash",
+				"new_comm": "nginx", "cgroup_path": "/system.slice/nginx.service",
+				"syscall_name": "task_rename",
+			}},
+			want: "task_rename old=bash new=nginx cgroup=/system.slice/nginx.service",
+		},
+		{
+			name: "process_rename_with_target",
+			payload: model.Payload{Kind: model.SubtypeProcess, Fields: map[string]any{
+				"exit_code": int32(0), "old_comm": "bash", "new_comm": "nginx",
+				"target_pid": uint32(4242), "syscall_name": "task_rename",
+			}},
+			want: "task_rename target=4242 old=bash new=nginx",
+		},
+		{
+			name: "process_exit_signal",
+			payload: model.Payload{Kind: model.SubtypeProcess, Fields: map[string]any{
+				"exit_code": int32(-9), "exit_signal": int32(9),
+				"syscall_name": "exit_group",
+			}},
+			want: "exit_group exit=-9 signal=9",
 		},
 		{
 			name: "exec",
@@ -598,6 +653,59 @@ func TestEventDetail(t *testing.T) {
 			want: "unshare flags=0x2",
 		},
 		{
+			name: "prctl",
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
+				"syscall_name": "prctl", "kind": uint32(4),
+				"requested": []uint32{}, "prctl_option": uint32(28),
+				"arg2": uint64(63), "securebits": uint32(63),
+			}},
+			want: "prctl option=28 arg=63",
+		},
+		{
+			name: "namespace_mount",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "mount", "source": "/dev/sda1",
+				"target": "/mnt", "source_flags": uint32(0),
+				"target_flags": uint32(0), "fstype": "ext4",
+				"mount_flags": uint64(1),
+			}},
+			want: "mount [/dev/sda1 -> /mnt type ext4]",
+		},
+		{
+			name: "namespace_mount_unresolved",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "mount", "source": "dev/sda1",
+				"target": "/mnt", "source_flags": uint32(2),
+				"target_flags": uint32(0), "fstype": "ext4",
+			}},
+			want: "mount [?dev/sda1 -> /mnt type ext4]",
+		},
+		{
+			name: "namespace_umount",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "umount2", "target": "/mnt",
+				"target_flags": uint32(0), "mount_flags": uint64(2),
+			}},
+			want: "umount /mnt",
+		},
+		{
+			name: "namespace_pivot_root",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "pivot_root", "source": "/a",
+				"target": "/b", "source_flags": uint32(0),
+				"target_flags": uint32(0),
+			}},
+			want: "pivot_root /a => /b",
+		},
+		{
+			name: "namespace_chroot_unresolved",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "chroot", "target": "/newroot",
+				"target_flags": uint32(2),
+			}},
+			want: "chroot ?/newroot",
+		},
+		{
 			name: "file_syscall",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
@@ -645,6 +753,42 @@ func TestEventDetail(t *testing.T) {
 				"path2": "rel/new", "path2_flags": uint32(2),
 			}},
 			want: "link path=/tmp/a path2=?rel/new flags=0x0 mode=00",
+		},
+		{
+			name: "file_truncate",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "truncate", "flags": uint32(0),
+				"mode": uint32(0), "path1": "/tmp/f", "path2": "",
+				"length": int64(4096),
+			}},
+			want: "truncate path=/tmp/f flags=0x0 mode=00 length=4096",
+		},
+		{
+			name: "file_mknod_at_flags",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "fchmodat", "flags": uint32(0),
+				"mode": uint32(420), "path1": "/tmp/f", "path2": "",
+				"at_flags": uint32(0x100), "dev": uint32(0x1234),
+			}},
+			want: "fchmodat path=/tmp/f flags=0x0 mode=0644 at_flags=0x100 dev=4660",
+		},
+		{
+			name: "file_handle_fd",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "open_by_handle_at", "flags": uint32(0),
+				"mode": uint32(0), "path1": "", "path2": "",
+				"handle": []byte{0xde, 0xad, 0xbe, 0xef}, "fd": int32(3),
+			}},
+			want: "open_by_handle_at flags=0x0 mode=00 handle=deadbeef fd=3",
+		},
+		{
+			name: "file_memfd_keeps_prefix",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "memfd_create", "flags": uint32(3),
+				"mode": uint32(0), "path1": "memfd:payload", "path2": "",
+				"path1_flags": uint32(0),
+			}},
+			want: "memfd_create path=memfd:payload flags=0x3 mode=00",
 		},
 		{
 			name: "memory_anon",
@@ -723,6 +867,115 @@ func TestEventDetail(t *testing.T) {
 				"sockfd": int32(4), "count": uint64(512), "unix_path": "",
 			}},
 			want: "sendto family=2 type=2 protocol=17 dst=192.168.1.10:53 src_port=40000 sockfd=4 count=512",
+		},
+		{
+			name: "kernel_module_load",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "module_load", "module_name": "nfs",
+			}},
+			want: "module_load module=nfs",
+		},
+		{
+			name: "kernel_init_module",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "init_module", "module_len": uint32(4096),
+			}},
+			want: "init_module length=4096",
+		},
+		{
+			name: "kernel_kexec_load",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "kexec_load", "kexec_entry": uint64(0x1000),
+				"kexec_segments": uint32(3),
+			}},
+			want: "kexec_load entry=0x1000 segments=3",
+		},
+		{
+			name: "kernel_reboot",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "reboot", "reboot_cmd": uint32(0x01234567),
+			}},
+			want: "reboot cmd=19088743",
+		},
+		{
+			name: "kernel_sethostname",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "sethostname", "hostname": "evil",
+			}},
+			want: "sethostname evil",
+		},
+		{
+			name: "signal_kill",
+			payload: model.Payload{Kind: model.SubtypeSignal, Fields: map[string]any{
+				"syscall_name": "kill", "sig": uint32(9),
+				"target_pid": uint32(1234), "target_tid": uint32(0),
+				"si_code": int32(0),
+			}},
+			want: "kill sig=9 pid=1234",
+		},
+		{
+			name: "signal_tgkill",
+			payload: model.Payload{Kind: model.SubtypeSignal, Fields: map[string]any{
+				"syscall_name": "tgkill", "sig": uint32(9),
+				"target_pid": uint32(1), "target_tid": uint32(2),
+				"si_code": int32(0),
+			}},
+			want: "tgkill sig=9 pid=1 tid=2",
+		},
+		{
+			name: "signal_rt_sigqueueinfo",
+			payload: model.Payload{Kind: model.SubtypeSignal, Fields: map[string]any{
+				"syscall_name": "rt_sigqueueinfo", "sig": uint32(10),
+				"target_pid": uint32(77), "target_tid": uint32(0),
+				"si_code": int32(-6),
+			}},
+			want: "rt_sigqueueinfo sig=10 pid=77 si_code=-6",
+		},
+		{
+			name: "memory_mremap",
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"syscall_name": "mremap", "prot": uint64(0), "flags": uint64(1),
+				"addr": uint64(0x7f0000000000), "length": uint64(8192),
+				"offset": uint64(0), "fd": int32(-1), "anonymous": false,
+				"wx": false, "path": "", "path_flags": uint32(0),
+			}},
+			want: "mremap addr=0x7f0000000000 len=8192 prot=0x0 flags=0x1",
+		},
+		{
+			name: "memory_munmap",
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"syscall_name": "munmap", "prot": uint64(0), "flags": uint64(0),
+				"addr": uint64(0x401000), "length": uint64(4096),
+				"offset": uint64(0), "fd": int32(-1), "anonymous": false,
+				"wx": false, "path": "", "path_flags": uint32(0),
+			}},
+			want: "munmap addr=0x401000 len=4096 prot=0x0 flags=0x0",
+		},
+		{
+			name: "network_listen",
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"syscall_name": "listen", "family": uint32(2),
+				"type": uint32(1), "protocol": uint32(6),
+				"sockfd": int32(5), "backlog": int32(128),
+			}},
+			want: "listen sockfd=5 backlog=128",
+		},
+		{
+			name: "network_recvfrom",
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"syscall_name": "recvfrom", "family": uint32(2),
+				"src_ip": []uint32{0x0a01a8c0, 0, 0, 0}, "src_port": uint32(443),
+				"count": uint64(512), "sockfd": int32(3),
+			}},
+			want: "recvfrom count=512 src=192.168.1.10:443 sockfd=3",
+		},
+		{
+			name: "network_accept4",
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"syscall_name": "accept4", "family": uint32(2),
+				"type": uint32(0x800), "sockfd": int32(6),
+			}},
+			want: "accept4 sockfd=6",
 		},
 		{
 			name: "kernel_ptrace",

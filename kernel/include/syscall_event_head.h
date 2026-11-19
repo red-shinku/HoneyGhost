@@ -22,13 +22,29 @@ enum syscall_event_name {
     SYSCALL_EVENT_SETUID,
     SYSCALL_EVENT_SETGID,
     SYSCALL_EVENT_CAPSET,
+    SYSCALL_EVENT_SETREUID,
+    SYSCALL_EVENT_SETRESUID,
+    SYSCALL_EVENT_SETFSUID,
+    SYSCALL_EVENT_SETRESGID,
+    SYSCALL_EVENT_SETGROUPS,
+    SYSCALL_EVENT_PRCTL,
 
     SYSCALL_EVENT_UNSHARE,
     SYSCALL_EVENT_SETNS,
+    SYSCALL_EVENT_MOUNT,
+    SYSCALL_EVENT_UMOUNT2,
+    SYSCALL_EVENT_PIVOT_ROOT,
+    SYSCALL_EVENT_CHROOT,
 
     SYSCALL_EVENT_PTRACE,
 
     SYSCALL_EVENT_BPF,
+    SYSCALL_EVENT_INIT_MODULE,
+    SYSCALL_EVENT_FINIT_MODULE,
+    SYSCALL_EVENT_DELETE_MODULE,
+    SYSCALL_EVENT_KEXEC_LOAD,
+    SYSCALL_EVENT_REBOOT,
+    SYSCALL_EVENT_SETHOSTNAME,
 
     SYSCALL_EVENT_OPEN,
     SYSCALL_EVENT_OPENAT,
@@ -39,17 +55,49 @@ enum syscall_event_name {
     SYSCALL_EVENT_RENAME,
     SYSCALL_EVENT_RENAMEAT,
     SYSCALL_EVENT_RENAMEAT2,
+    SYSCALL_EVENT_UNLINKAT,
+    SYSCALL_EVENT_LINKAT,
+    SYSCALL_EVENT_SYMLINK,
+    SYSCALL_EVENT_SYMLINKAT,
+    SYSCALL_EVENT_CHMOD,
+    SYSCALL_EVENT_FCHMOD,
+    SYSCALL_EVENT_FCHMODAT,
+    SYSCALL_EVENT_TRUNCATE,
+    SYSCALL_EVENT_FTRUNCATE,
+    SYSCALL_EVENT_MKNOD,
+    SYSCALL_EVENT_MKNODAT,
+    SYSCALL_EVENT_MEMFD_CREATE,
+    SYSCALL_EVENT_OPEN_BY_HANDLE_AT,
+    SYSCALL_EVENT_NAME_TO_HANDLE_AT,
+    SYSCALL_EVENT_CHDIR,
+    SYSCALL_EVENT_FCHDIR,
 
     SYSCALL_EVENT_MMAP,
     SYSCALL_EVENT_MPROTECT,
+    SYSCALL_EVENT_MREMAP,
+    SYSCALL_EVENT_MUNMAP,
 
     SYSCALL_EVENT_CONNECT,
     SYSCALL_EVENT_SOCKET,
     SYSCALL_EVENT_BIND,
     SYSCALL_EVENT_SENDTO,
     SYSCALL_EVENT_SENDMSG,
+    SYSCALL_EVENT_RECVFROM,
+    SYSCALL_EVENT_ACCEPT4,
+    SYSCALL_EVENT_LISTEN,
 
-    SYSCALL_EVENT_EXIT_GROUP
+    SYSCALL_EVENT_KILL,
+    SYSCALL_EVENT_TKILL,
+    SYSCALL_EVENT_TGKILL,
+    SYSCALL_EVENT_RT_SIGQUEUEINFO,
+
+    SYSCALL_EVENT_EXIT_GROUP,
+
+    // 非系统调用来源的事件名（tracepoint）
+    SYSCALL_EVENT_TASK_RENAME,
+    SYSCALL_EVENT_CGROUP_ATTACH_TASK,
+    SYSCALL_EVENT_MODULE_LOAD,
+    SYSCALL_EVENT_MODULE_FREE
 };
 
 /**
@@ -68,7 +116,8 @@ enum syscall_event_type {
     FILE_EVENT       = 5,  ///< 文件操作
     MEMORY_EVENT     = 6,  ///< 内存操作
     NETWORK_EVENT    = 7,  ///< 网络连接
-    KERNEL_EVENT     = 8   ///< 内核操作
+    KERNEL_EVENT     = 8,  ///< 内核操作
+    SIGNAL_EVENT     = 9   ///< 信号发送
 };
 
 struct syscall_event_head {
@@ -93,6 +142,8 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_CLONE:
         case SYSCALL_EVENT_VFORK:
         case SYSCALL_EVENT_EXIT_GROUP:
+        case SYSCALL_EVENT_TASK_RENAME:
+        case SYSCALL_EVENT_CGROUP_ATTACH_TASK:
             s_head->subtype = PROCESS_EVENT;
             break;
         case SYSCALL_EVENT_EXECVE:
@@ -102,10 +153,20 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_SETUID:
         case SYSCALL_EVENT_SETGID:
         case SYSCALL_EVENT_CAPSET:
+        case SYSCALL_EVENT_SETREUID:
+        case SYSCALL_EVENT_SETRESUID:
+        case SYSCALL_EVENT_SETFSUID:
+        case SYSCALL_EVENT_SETRESGID:
+        case SYSCALL_EVENT_SETGROUPS:
+        case SYSCALL_EVENT_PRCTL:
             s_head->subtype = CREDENTIAL_EVENT;
             break;
         case SYSCALL_EVENT_UNSHARE:
         case SYSCALL_EVENT_SETNS:
+        case SYSCALL_EVENT_MOUNT:
+        case SYSCALL_EVENT_UMOUNT2:
+        case SYSCALL_EVENT_PIVOT_ROOT:
+        case SYSCALL_EVENT_CHROOT:
             s_head->subtype = NAMESPACE_EVENT;
             break;
         case SYSCALL_EVENT_OPEN:
@@ -117,10 +178,28 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_RENAME:
         case SYSCALL_EVENT_RENAMEAT:
         case SYSCALL_EVENT_RENAMEAT2:
+        case SYSCALL_EVENT_UNLINKAT:
+        case SYSCALL_EVENT_LINKAT:
+        case SYSCALL_EVENT_SYMLINK:
+        case SYSCALL_EVENT_SYMLINKAT:
+        case SYSCALL_EVENT_CHMOD:
+        case SYSCALL_EVENT_FCHMOD:
+        case SYSCALL_EVENT_FCHMODAT:
+        case SYSCALL_EVENT_TRUNCATE:
+        case SYSCALL_EVENT_FTRUNCATE:
+        case SYSCALL_EVENT_MKNOD:
+        case SYSCALL_EVENT_MKNODAT:
+        case SYSCALL_EVENT_MEMFD_CREATE:
+        case SYSCALL_EVENT_OPEN_BY_HANDLE_AT:
+        case SYSCALL_EVENT_NAME_TO_HANDLE_AT:
+        case SYSCALL_EVENT_CHDIR:
+        case SYSCALL_EVENT_FCHDIR:
             s_head->subtype = FILE_EVENT;
             break;
         case SYSCALL_EVENT_MMAP:
         case SYSCALL_EVENT_MPROTECT:
+        case SYSCALL_EVENT_MREMAP:
+        case SYSCALL_EVENT_MUNMAP:
             s_head->subtype = MEMORY_EVENT;
             break;
         case SYSCALL_EVENT_CONNECT:
@@ -128,11 +207,28 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_BIND:
         case SYSCALL_EVENT_SENDTO:
         case SYSCALL_EVENT_SENDMSG:
+        case SYSCALL_EVENT_RECVFROM:
+        case SYSCALL_EVENT_ACCEPT4:
+        case SYSCALL_EVENT_LISTEN:
             s_head->subtype = NETWORK_EVENT;
             break;
         case SYSCALL_EVENT_PTRACE:
         case SYSCALL_EVENT_BPF:
+        case SYSCALL_EVENT_INIT_MODULE:
+        case SYSCALL_EVENT_FINIT_MODULE:
+        case SYSCALL_EVENT_DELETE_MODULE:
+        case SYSCALL_EVENT_KEXEC_LOAD:
+        case SYSCALL_EVENT_REBOOT:
+        case SYSCALL_EVENT_SETHOSTNAME:
+        case SYSCALL_EVENT_MODULE_LOAD:
+        case SYSCALL_EVENT_MODULE_FREE:
             s_head->subtype = KERNEL_EVENT;
+            break;
+        case SYSCALL_EVENT_KILL:
+        case SYSCALL_EVENT_TKILL:
+        case SYSCALL_EVENT_TGKILL:
+        case SYSCALL_EVENT_RT_SIGQUEUEINFO:
+            s_head->subtype = SIGNAL_EVENT;
             break;
         default:
             // 新增 name 尚未归类时落到 0，避免沿用上一条事件的取值

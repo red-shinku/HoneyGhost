@@ -126,7 +126,7 @@ func newEventsCommand(app *App) *cobra.Command {
 
 	cmd.Flags().StringSliceVarP(&opts.Subtypes, "type", "t", nil,
 		"event subtypes: process, exec, credential, namespace, file, memory, "+
-			"network, kernel (repeatable or comma-separated; default all)")
+			"network, kernel, signal (repeatable or comma-separated; default all)")
 	cmd.Flags().StringArrayVarP(&opts.Info, "info", "i", nil,
 		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid; "+
 			"roleID/contextID accept 0 for unsettled, pid must be positive)")

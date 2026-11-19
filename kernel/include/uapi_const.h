@@ -68,6 +68,37 @@
 #define BPF_PROG_DETACH 9
 #endif
 
+// 进程诞生事件的派生标志（wake_up_new_task 的字段比较结果）
+#ifndef HNG_PROCESS_DERIVED_SHARED_MM
+#define HNG_PROCESS_DERIVED_SHARED_MM (1U << 0)
+#endif
+#ifndef HNG_PROCESS_DERIVED_PARENT
+#define HNG_PROCESS_DERIVED_PARENT (1U << 1)
+#endif
+#ifndef HNG_PROCESS_DERIVED_NEW_NS
+#define HNG_PROCESS_DERIVED_NEW_NS (1U << 2)
+#endif
+#ifndef HNG_PROCESS_DERIVED_NEW_USER_NS
+#define HNG_PROCESS_DERIVED_NEW_USER_NS (1U << 3)
+#endif
+
+// prctl 与安全相关的 option（include/uapi/linux/prctl.h）
+#ifndef PR_SET_DUMPABLE
+#define PR_SET_DUMPABLE 4
+#endif
+#ifndef PR_SET_KEEPCAPS
+#define PR_SET_KEEPCAPS 8
+#endif
+#ifndef PR_CAPBSET_DROP
+#define PR_CAPBSET_DROP 24
+#endif
+#ifndef PR_SET_SECUREBITS
+#define PR_SET_SECUREBITS 28
+#endif
+#ifndef PR_SET_NO_NEW_PRIVS
+#define PR_SET_NO_NEW_PRIVS 38
+#endif
+
 // 命名空间克隆标志（include/uapi/linux/sched.h）
 #ifndef CLONE_NEWNS
 #define CLONE_NEWNS 0x00020000

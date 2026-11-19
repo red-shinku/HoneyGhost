@@ -3,7 +3,7 @@
  * @brief 运行时事件 → RuntimeService 响应报文的单测
  * @details
  * 纯转换，无 IO / 无协程。覆盖：
- *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
+ *  - syscall 载荷的九个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
  *  - eventhead 的字段来源：pid、归属（含 roleLabel）与 exe 取自
  *    RuntimeInformation，其余取自事件头（含 uid/euid/ret/comm/mnt_ns）；
  *  - 归属未落定时 roleLabel 留空；
@@ -102,6 +102,9 @@ static_assert(static_cast<int>(NETWORK_EVENT) ==
 static_assert(static_cast<int>(KERNEL_EVENT) ==
                   static_cast<int>(hng::clisv::SUBTYPE_KERNEL),
               "KERNEL_EVENT must equal SUBTYPE_KERNEL");
+static_assert(static_cast<int>(SIGNAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_SIGNAL),
+              "SIGNAL_EVENT must equal SUBTYPE_SIGNAL");
 
 using SDataCase = hng::clisv::syscall_event_data::SDataCase;
 
@@ -181,6 +184,14 @@ void run_syscall_payload_mapping()
          [](const hng::clisv::syscall_event_data& d) {
              return d.kernel_data().syscall_name();
          }},
+        {"signal",
+         [](hng::syscall_semantic_data& s) {
+             s.data.emplace<8>().set_syscall_name("signal");
+         },
+         hng::clisv::syscall_event_data::kSignalData,
+         [](const hng::clisv::syscall_event_data& d) {
+             return d.signal_data().syscall_name();
+         }},
     };
 
     for (const PayloadCase& c : table) {
@@ -242,6 +253,7 @@ void run_subtype_mapping()
         {MEMORY_EVENT, hng::clisv::SUBTYPE_MEMORY},
         {NETWORK_EVENT, hng::clisv::SUBTYPE_NETWORK},
         {KERNEL_EVENT, hng::clisv::SUBTYPE_KERNEL},
+        {SIGNAL_EVENT, hng::clisv::SUBTYPE_SIGNAL},
     };
     for (const Case& c : cases) {
         hng::RuntimeEvent event = make_syscall();

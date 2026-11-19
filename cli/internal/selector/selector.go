@@ -31,7 +31,7 @@ func ParseSubtypes(values []string) ([]model.Subtype, error) {
 			if _, ok := subtypeOrder[subtype]; !ok {
 				return nil, fmt.Errorf(
 					"invalid event subtype %q (want process, exec, credential, namespace, "+
-						"file, memory, network, or kernel)", token)
+						"file, memory, network, kernel, or signal)", token)
 			}
 			seen[subtype] = true
 		}

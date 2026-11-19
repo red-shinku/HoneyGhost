@@ -6,7 +6,7 @@
  * @brief 系统调用语义事件的输出结构定义
  * @details
  * 头部（hng::event_head）为手写通用 POD 结构，记录进程身份与事件来源
- * （hng::EventType）；载荷（hng::process_semantic_data 等八个消息）由 proto
+ * （hng::EventType）；载荷（hng::process_semantic_data 等九个消息）由 proto
  * 生成，两者组合为
  * syscall_semantic_data，即语义化模块推向下游（控制平面 / 检测）队列的元素类型。
  *
@@ -24,7 +24,7 @@
 namespace hng {
 
 // 系统调用语义事件：手写头部 + proto 生成的载荷
-// 八种事件互斥，variant 的索引即事件类别（对应 syscall_event_type 枚举）
+// 九种事件互斥，variant 的索引即事件类别（对应 syscall_event_type 枚举）
 // 说明：process 事件为「进程诞生(fork) / 进程退出(exit_group
 // 或信号终止)」两种生命周期 语义，事件头即主体进程自身（诞生事件 head
 // 为新进程、ppid 为父），故无需额外 字段区分是否新进程——线程（clone 共享
@@ -35,7 +35,8 @@ struct syscall_semantic_data {
     std::variant<hng::process_semantic_data, hng::exec_semantic_data,
                  hng::credential_semantic_data, hng::namespace_semantic_data,
                  hng::file_syscall_semantic_data, hng::memory_semantic_data,
-                 hng::network_syscall_semantic_data, hng::kernel_semantic_data>
+                 hng::network_syscall_semantic_data, hng::kernel_semantic_data,
+                 hng::signal_semantic_data>
         data;
 };
 

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -354,7 +355,31 @@ func payloadDetail(p model.Payload) string {
 	name := stringField(fields, "syscall_name")
 	switch p.Kind {
 	case model.SubtypeProcess:
-		return fmt.Sprintf("%s exit=%v", name, fields["exit_code"])
+		// exit_code 只对退出事件有意义：进程诞生、改名、cgroup 迁移的载荷里恒为 0，
+		// 一并呈现只会让 DETAIL 充满 exit=0
+		detail := name
+		if code, ok := signedField(fields, "exit_code"); ok && (code != 0 || name == "exit_group") {
+			detail += fmt.Sprintf(" exit=%d", code)
+		}
+		if target := uintField(fields, "target_pid"); target != 0 {
+			detail += fmt.Sprintf(" target=%d", target)
+		}
+		if flags := uint32(uintField(fields, "derived_flags")); flags != 0 {
+			detail += " flags=" + processDerivedNameList(flags)
+		}
+		if signal, ok := signedField(fields, "exit_signal"); ok && signal != 0 {
+			detail += fmt.Sprintf(" signal=%d", signal)
+		}
+		if old := stringField(fields, "old_comm"); old != "" {
+			detail += " old=" + old
+		}
+		if newName := stringField(fields, "new_comm"); newName != "" {
+			detail += " new=" + newName
+		}
+		if cgroup := stringField(fields, "cgroup_path"); cgroup != "" {
+			detail += " cgroup=" + cgroup
+		}
+		return detail
 	case model.SubtypeExec:
 		image := stringField(fields, "image")
 		if image == "" {
@@ -383,8 +408,24 @@ func payloadDetail(p model.Payload) string {
 		if path := stringField(fields, "path2"); path != "" {
 			detail += " path2=" + unresolvedPathPrefix(uintField(fields, "path2_flags")) + path
 		}
-		return fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
+		detail = fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
 			uintField(fields, "flags"), uintField(fields, "mode"))
+		if atFlags := uintField(fields, "at_flags"); atFlags != 0 {
+			detail += fmt.Sprintf(" at_flags=0x%x", atFlags)
+		}
+		if length, ok := signedField(fields, "length"); ok && length != 0 {
+			detail += fmt.Sprintf(" length=%d", length)
+		}
+		if dev := uintField(fields, "dev"); dev != 0 {
+			detail += fmt.Sprintf(" dev=%d", dev)
+		}
+		if handle, ok := fields["handle"].([]byte); ok && len(handle) != 0 {
+			detail += " handle=" + hex.EncodeToString(handle)
+		}
+		if fd, ok := signedField(fields, "fd"); ok && fd >= 0 {
+			detail += fmt.Sprintf(" fd=%d", fd)
+		}
+		return detail
 	case model.SubtypeMemory:
 		detail := fmt.Sprintf("%s addr=0x%x len=%d prot=0x%x flags=0x%x", name,
 			uintField(fields, "addr"), uintField(fields, "length"),
@@ -401,6 +442,30 @@ func payloadDetail(p model.Payload) string {
 		}
 		return detail
 	case model.SubtypeNetwork:
+		switch name {
+		case "listen":
+			return fmt.Sprintf("listen sockfd=%d backlog=%d",
+				uintField(fields, "sockfd"), uintField(fields, "backlog"))
+		case "recvfrom":
+			detail := fmt.Sprintf("recvfrom count=%d",
+				uintField(fields, "count"))
+			if src := networkSrc(fields); src != "" {
+				detail += " src=" + src
+			}
+			if fd, ok := signedField(fields, "sockfd"); ok && fd >= 0 {
+				detail += fmt.Sprintf(" sockfd=%d", fd)
+			}
+			return detail
+		case "accept4":
+			detail := "accept4"
+			if fd, ok := signedField(fields, "sockfd"); ok && fd >= 0 {
+				detail += fmt.Sprintf(" sockfd=%d", fd)
+			}
+			if flags := uintField(fields, "flags"); flags != 0 {
+				detail += fmt.Sprintf(" flags=0x%x", flags)
+			}
+			return detail
+		}
 		detail := fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
 			fields["family"], fields["type"], fields["protocol"])
 		unixPath := stringField(fields, "unix_path")
@@ -420,7 +485,30 @@ func payloadDetail(p model.Payload) string {
 			detail += fmt.Sprintf(" count=%d", count)
 		}
 		return detail
+	case model.SubtypeSignal:
+		return signalDetail(name, fields)
 	case model.SubtypeKernel:
+		switch name {
+		case "module_load", "module_free", "delete_module":
+			detail := name
+			if module := stringField(fields, "module_name"); module != "" {
+				detail += " module=" + module
+			}
+			return detail
+		case "init_module":
+			return fmt.Sprintf("init_module length=%d",
+				uintField(fields, "module_len"))
+		case "finit_module":
+			return "finit_module"
+		case "kexec_load":
+			return fmt.Sprintf("kexec_load entry=0x%x segments=%d",
+				uintField(fields, "kexec_entry"),
+				uintField(fields, "kexec_segments"))
+		case "reboot":
+			return fmt.Sprintf("reboot cmd=%d", uintField(fields, "reboot_cmd"))
+		case "sethostname":
+			return "sethostname " + stringField(fields, "hostname")
+		}
 		// ptrace 呈现目标 pid；bpf 呈现按命令解出的类型（解不出时省略）
 		detail := fmt.Sprintf("%s command=%v", name, fields["command"])
 		if pid := uintField(fields, "target_pid"); pid != 0 {
@@ -435,12 +523,50 @@ func payloadDetail(p model.Payload) string {
 	}
 }
 
+// 进程诞生派生位与呈现名，位值与 kernel/include/uapi_const.h 的
+// HNG_PROCESS_DERIVED_* 一致。
+var processDerivedNames = []struct {
+	bit  uint32
+	name string
+}{
+	{1 << 0, "SHARED_MM"},
+	{1 << 1, "PARENT"},
+	{1 << 2, "NEW_NS"},
+	{1 << 3, "NEW_USER_NS"},
+}
+
+// processDerivedNames 把派生位展开为逗号分隔的名字；无已知位时返回空串。
+func processDerivedNameList(flags uint32) string {
+	names := make([]string, 0, len(processDerivedNames))
+	for _, item := range processDerivedNames {
+		if flags&item.bit != 0 {
+			names = append(names, item.name)
+		}
+	}
+	return strings.Join(names, ",")
+}
+
+// signalDetail 生成信号发送摘要：信号号与目标 pid，tgkill 追加 tid；
+// rt_sigqueueinfo 追加 si_code（该字段对其他系统调用无意义）。
+func signalDetail(name string, fields map[string]any) string {
+	detail := fmt.Sprintf("%s sig=%d pid=%d", name,
+		uintField(fields, "sig"), uintField(fields, "target_pid"))
+	if tid := uintField(fields, "target_tid"); tid != 0 {
+		detail += fmt.Sprintf(" tid=%d", tid)
+	}
+	if code, ok := signedField(fields, "si_code"); ok && name == "rt_sigqueueinfo" {
+		detail += fmt.Sprintf(" si_code=%d", code)
+	}
+	return detail
+}
+
 // 凭据类别，与 kernel/include/syscall_event_type.h 的 enum credential_kind 以及
 // proto credential_semantic_data.kind 同值。
 const (
-	credentialKindUID  uint32 = 1
-	credentialKindGID  uint32 = 2
-	credentialKindCAPS uint32 = 3
+	credentialKindUID   uint32 = 1
+	credentialKindGID   uint32 = 2
+	credentialKindCAPS  uint32 = 3
+	credentialKindPRCTL uint32 = 4
 )
 
 // 命名空间掩码位与呈现名，顺序固定为 MNT、UTS、IPC、USER、PID、NET、CGROUP；
@@ -469,6 +595,9 @@ func credentialDetail(name string, fields map[string]any) string {
 		return fmt.Sprintf("%s capset eff=0x%x perm=0x%x inh=0x%x", name,
 			uintField(capset, "effective"), uintField(capset, "permitted"),
 			uintField(capset, "inheritable"))
+	case credentialKindPRCTL:
+		return fmt.Sprintf("%s option=%d arg=%d", name,
+			uintField(fields, "prctl_option"), uintField(fields, "arg2"))
 	case credentialKindUID, credentialKindGID:
 		if len(requested) == 0 {
 			return name
@@ -493,6 +622,32 @@ func credentialDetail(name string, fields map[string]any) string {
 // namespaceDetail 生成命名空间摘要：ns_mask 按固定顺序展开为名字，flags 为 0 时
 // 省略，setns 的目标 fd 非负时追加。
 func namespaceDetail(name string, fields map[string]any) string {
+	switch name {
+	case "mount":
+		detail := fmt.Sprintf("mount [%s -> %s",
+			unresolvedPathPrefix(uintField(fields, "source_flags"))+
+				stringField(fields, "source"),
+			unresolvedPathPrefix(uintField(fields, "target_flags"))+
+				stringField(fields, "target"))
+		if fstype := stringField(fields, "fstype"); fstype != "" {
+			detail += " type " + fstype
+		}
+		return detail + "]"
+	case "umount2":
+		return "umount " +
+			unresolvedPathPrefix(uintField(fields, "target_flags")) +
+			stringField(fields, "target")
+	case "pivot_root":
+		return "pivot_root " +
+			unresolvedPathPrefix(uintField(fields, "source_flags")) +
+			stringField(fields, "source") + " => " +
+			unresolvedPathPrefix(uintField(fields, "target_flags")) +
+			stringField(fields, "target")
+	case "chroot":
+		return "chroot " +
+			unresolvedPathPrefix(uintField(fields, "target_flags")) +
+			stringField(fields, "target")
+	}
 	detail := name
 	if names := namespaceNames(uint32(uintField(fields, "ns_mask"))); names != "" {
 		detail += " ns=" + names
@@ -523,6 +678,22 @@ const (
 	afINET  = 2
 	afINET6 = 10
 )
+
+// networkSrc 把 recvfrom 的来源地址与端口拼成 host:port；未采集时返回空串。
+func networkSrc(fields map[string]any) string {
+	words, _ := fields["src_ip"].([]uint32)
+	family := uint32(uintField(fields, "family"))
+	port := uintField(fields, "src_port")
+
+	ip := formatIP(family, words)
+	if ip == "" || (port == 0 && allZeroWords(words)) {
+		return ""
+	}
+	if family == afINET6 {
+		return "[" + ip + "]:" + strconv.FormatUint(port, 10)
+	}
+	return ip + ":" + strconv.FormatUint(port, 10)
+}
 
 // networkDst 把网络事件的目标地址与端口拼成 host:port；目标地址未采集时返回
 // 空串，此时调用方不呈现 dst（socket/bind 等没有目标的事件）。

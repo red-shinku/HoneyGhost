@@ -44,6 +44,12 @@
 /// @brief union bpf_attr 中 attach_type 的偏移（BPF_PROG_ATTACH/DETACH）
 #define HNG_BPF_ATTR_ATTACH_TYPE_OFF 8
 
+/// @brief 用户态 siginfo_t 中 si_code 的偏移（x86_64 UAPI 布局）
+#define HNG_SIGINFO_SI_CODE_OFF 8
+
+/// @brief memfd_create 的路径前缀：匿名文件没有可解析的路径
+#define HNG_MEMFD_PREFIX "memfd:"
+
 /// @brief 七个 CLONE_NEW* 命名空间标志之并（include/uapi/linux/sched.h）
 #define HNG_CLONE_NEW_ALL                                                       \
     (CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | \
@@ -162,7 +168,8 @@ static __always_inline struct syscall_event *init_process_event(
         return NULL;
     }
     init_syscall_event_head(&event->hdr, name);
-    event->process_event.exit_code = 0;
+    //! @note 载荷整体清零：生命周期与 tracepoint 事件只填自己的字段
+    __builtin_memset(&event->process_event, 0, sizeof(event->process_event));
     return event;
 }
 
@@ -228,10 +235,10 @@ static __always_inline struct syscall_event *init_namespace_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->namespace_event.flags   = 0;
-    event->namespace_event.ns_mask = 0;
+    //! @note 载荷整体清零：各系统调用只填自己的字段，其余保持初值
+    __builtin_memset(&event->namespace_event, 0, sizeof(event->namespace_event));
     //! @note 无目标 fd 时保持哨兵值，避免与合法的 fd 0 混淆
-    event->namespace_event.fd      = -1;
+    event->namespace_event.fd = -1;
     return event;
 }
 
@@ -249,14 +256,12 @@ static __always_inline struct syscall_event *init_file_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    __builtin_memset(event->file_event.path1, 0, sizeof(event->file_event.path1));
-    __builtin_memset(event->file_event.path2, 0, sizeof(event->file_event.path2));
-    event->file_event.path1_flags = 0;
-    event->file_event.path2_flags = 0;
-    event->file_event.dirfd       = AT_FDCWD;
-    event->file_event.dirfd2      = AT_FDCWD;
-    event->file_event.flags       = 0;
-    event->file_event.mode        = 0;
+    //! @note 载荷整体清零：各系统调用只填自己的字段，其余保持初值
+    __builtin_memset(&event->file_event, 0, sizeof(event->file_event));
+    event->file_event.dirfd  = AT_FDCWD;
+    event->file_event.dirfd2 = AT_FDCWD;
+    //! @note 无 fd 参数时保持哨兵值，与合法的 fd 0 区分
+    event->file_event.fd     = -1;
     return event;
 }
 
@@ -303,18 +308,10 @@ static __always_inline struct syscall_event *init_network_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->network_event.family   = 0;
-    event->network_event.type     = 0;
-    event->network_event.protocol = 0;
-    __builtin_memset(event->network_event.dst_ip, 0,
-                     sizeof(event->network_event.dst_ip));
-    event->network_event.dst_port = 0;
-    event->network_event.src_port = 0;
+    //! @note 载荷整体清零：各系统调用只填自己的字段，其余保持初值
+    __builtin_memset(&event->network_event, 0, sizeof(event->network_event));
     //! @note socket 的新 fd 在返回值里，enter 阶段的 sockfd 保持哨兵 -1
-    event->network_event.sockfd   = -1;
-    event->network_event.count    = 0;
-    __builtin_memset(event->network_event.unix_path, 0,
-                     sizeof(event->network_event.unix_path));
+    event->network_event.sockfd = -1;
     return event;
 }
 
@@ -332,12 +329,47 @@ static __always_inline struct syscall_event *init_kernel_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->kernel_event.command    = 0;
-    event->kernel_event.target_pid = 0;
-    event->kernel_event.arg        = 0;
-    __builtin_memset(event->kernel_event.bpf_attr, 0,
-                     sizeof(event->kernel_event.bpf_attr));
-    event->kernel_event.bpf_type = 0;
+    //! @note 载荷整体清零：各系统调用只填自己的字段，其余保持初值
+    __builtin_memset(&event->kernel_event, 0, sizeof(event->kernel_event));
+    return event;
+}
+
+/**
+ * @brief 初始化 signal_event，并取本 CPU 的事件暂存槽。
+ * @param[in] name 系统调用事件名。
+ * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
+ * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
+ * @note 先检查角色白名单，通过后才占用事件槽。
+ */
+static __always_inline struct syscall_event *init_signal_event(
+    enum syscall_event_name name)
+{
+    if (!hng_should_collect()) return NULL;
+    struct syscall_event *event = hng_scratch_event();
+    if (!event) return NULL;
+    init_syscall_event_head(&event->hdr, name);
+    __builtin_memset(&event->signal_event, 0, sizeof(event->signal_event));
+    return event;
+}
+
+/**
+ * @brief 初始化 kernel 类 tracepoint 事件，并直接预留 ringbuf 空间。
+ * @param[in] name 事件名。
+ * @return 成功时返回可直接填写的记录指针；空间不足时返回 NULL。
+ * @note 这类事件不经 enter/exit 配对，调用者填完即提交。
+ */
+static __always_inline struct syscall_event *init_kernel_trace_event(
+    enum syscall_event_name name)
+{
+    struct syscall_event *event = bpf_ringbuf_reserve(
+        &syscall_events,
+        sizeof(struct syscall_event_head) + sizeof(struct kernel_event), 0);
+    if (!event) {
+        count_reserve_failure();
+        return NULL;
+    }
+    init_syscall_event_head(&event->hdr, name);
+    __builtin_memset(&event->kernel_event, 0, sizeof(event->kernel_event));
     return event;
 }
 
@@ -396,6 +428,25 @@ static __always_inline void hng_prepare_none(struct syscall_event *pending)
     (void)pending;
 }
 
+/**
+ * @brief FILE 事件提交前的补填钩子。
+ * @param pending 即将提交的暂存事件。
+ * @note name_to_handle_at 的句柄缓冲是输出参数：enter 只把用户指针暂存在
+ *       length 字段，exit 时再读句柄内容并把该字段清回 0。
+ */
+static __always_inline void hng_prepare_file(struct syscall_event *pending)
+{
+    if (!pending || pending->hdr.name != SYSCALL_EVENT_NAME_TO_HANDLE_AT) {
+        return;
+    }
+    const void *handle = (const void *)(unsigned long)pending->file_event.length;
+    if (handle) {
+        bpf_probe_read_user(pending->file_event.handle,
+                            sizeof(pending->file_event.handle), handle);
+    }
+    pending->file_event.length = 0;
+}
+
 /// @brief 复制 credential_event 载荷。
 static __always_inline void hng_copy_credential_event(
     struct credential_event *dst, const struct credential_event *src)
@@ -410,6 +461,12 @@ static __always_inline void hng_copy_namespace_event(
     dst->flags   = src->flags;
     dst->ns_mask = src->ns_mask;
     dst->fd      = src->fd;
+    __builtin_memcpy(dst->source, src->source, sizeof(dst->source));
+    __builtin_memcpy(dst->target, src->target, sizeof(dst->target));
+    __builtin_memcpy(dst->fstype, src->fstype, sizeof(dst->fstype));
+    dst->source_flags = src->source_flags;
+    dst->target_flags = src->target_flags;
+    dst->mount_flags  = src->mount_flags;
 }
 
 /// @brief 复制 file_event 载荷。
@@ -424,6 +481,12 @@ static __always_inline void hng_copy_file_event(struct file_event *dst,
     dst->dirfd2      = src->dirfd2;
     dst->flags       = src->flags;
     dst->mode        = src->mode;
+    dst->at_flags    = src->at_flags;
+    dst->resolve     = src->resolve;
+    dst->length      = src->length;
+    dst->dev         = src->dev;
+    __builtin_memcpy(dst->handle, src->handle, sizeof(dst->handle));
+    dst->fd = src->fd;
 }
 
 /// @brief 复制 memory_event 载荷。
@@ -450,11 +513,14 @@ static __always_inline void hng_copy_network_event(
     dst->type     = src->type;
     dst->protocol = src->protocol;
     __builtin_memcpy(dst->dst_ip, src->dst_ip, sizeof(dst->dst_ip));
+    __builtin_memcpy(dst->src_ip, src->src_ip, sizeof(dst->src_ip));
     __builtin_memcpy(dst->unix_path, src->unix_path, sizeof(dst->unix_path));
     dst->dst_port = src->dst_port;
     dst->src_port = src->src_port;
     dst->sockfd   = src->sockfd;
     dst->count    = src->count;
+    dst->backlog  = src->backlog;
+    dst->flags    = src->flags;
 }
 
 /// @brief 复制 kernel_event 载荷。
@@ -466,6 +532,23 @@ static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
     dst->arg        = src->arg;
     __builtin_memcpy(dst->bpf_attr, src->bpf_attr, sizeof(dst->bpf_attr));
     dst->bpf_type = src->bpf_type;
+    __builtin_memcpy(dst->module_name, src->module_name,
+                     sizeof(dst->module_name));
+    dst->module_len     = src->module_len;
+    dst->kexec_entry    = src->kexec_entry;
+    dst->kexec_segments = src->kexec_segments;
+    dst->reboot_cmd     = src->reboot_cmd;
+    __builtin_memcpy(dst->hostname, src->hostname, sizeof(dst->hostname));
+}
+
+/// @brief 复制 signal_event 载荷。
+static __always_inline void hng_copy_signal_event(struct signal_event *dst,
+                                                  const struct signal_event *src)
+{
+    dst->sig        = src->sig;
+    dst->target_pid = src->target_pid;
+    dst->target_tid = src->target_tid;
+    dst->si_code    = src->si_code;
 }
 
 /**
@@ -527,10 +610,11 @@ static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
 HNG_DEFINE_COMMIT(EXEC_EVENT, exec_event, hng_fill_exec_image)
 HNG_DEFINE_COMMIT(CREDENTIAL_EVENT, credential_event, hng_prepare_none)
 HNG_DEFINE_COMMIT(NAMESPACE_EVENT, namespace_event, hng_prepare_none)
-HNG_DEFINE_COMMIT(FILE_EVENT, file_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(FILE_EVENT, file_event, hng_prepare_file)
 HNG_DEFINE_COMMIT(MEMORY_EVENT, memory_event, hng_fill_mmap_path)
 HNG_DEFINE_COMMIT(NETWORK_EVENT, network_event, hng_prepare_none)
 HNG_DEFINE_COMMIT(KERNEL_EVENT, kernel_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(SIGNAL_EVENT, signal_event, hng_prepare_none)
 
 /** @} */
 
@@ -730,6 +814,42 @@ static __always_inline void fill_local_info(struct sock *sk,
     data->protocol = BPF_CORE_READ(sk, sk_protocol);
 }
 
+/**
+ * @brief 读取 tracepoint raw entry 里的字符串字段。
+ * @param[out] dst 目标缓冲
+ * @param[in] sz 容量
+ * @param[in] ctx tracepoint 上下文（raw entry 起始）
+ * @param[in] field_off 该字段在 entry 中的字节偏移
+ * @note 字段既可能是 __data_loc char[]，也可能是定长数组：先按 4 字节描述符
+ *       读取，描述符落在 entry 内且长度非零时按其中偏移取串，否则直接把该
+ *       偏移处当字符数组读。
+ * @note 偏移一律相对 entry 起点，取自 tracepoint 的 format 布局。
+ */
+static __always_inline void hng_read_trace_string(char *dst, __u32 sz,
+                                                  const void *ctx,
+                                                  __u32 field_off)
+{
+    if (!dst || sz == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!ctx) {
+        return;
+    }
+    __u32 loc = 0;
+    if (bpf_probe_read_kernel(&loc, sizeof(loc), (const char *)ctx + field_off)) {
+        return;
+    }
+    __u32 data_off = loc & 0xffff;
+    __u32 data_len = loc >> 16;
+    //! @note __data_loc 的数据区在 entry 内，且不覆盖描述符自身
+    if (data_len != 0 && data_off >= field_off + 4 && data_off < 4096) {
+        bpf_probe_read_kernel_str(dst, sz, (const char *)ctx + data_off);
+        return;
+    }
+    bpf_probe_read_kernel_str(dst, sz, (const char *)ctx + field_off);
+}
+
 /** @} */
 
 /**
@@ -785,6 +905,33 @@ int trace_process_birth(struct pt_regs *ctx)
     init_event_head_self(&event->hdr.head, child);
     init_event_head_parent(&event->hdr.head, parent);
 
+    /**
+     * @note 派生位：与发起创建的 current 比较。CLONE_PARENT 时子进程的
+     *       real_parent 不是 current，据此置位；线程已被上方过滤。
+     */
+    __u8 derived                = 0;
+    struct task_struct *creator = (struct task_struct *)bpf_get_current_task();
+    if (creator) {
+        struct mm_struct *child_mm = BPF_CORE_READ(child, mm);
+        if (child_mm && child_mm == BPF_CORE_READ(creator, mm)) {
+            derived |= HNG_PROCESS_DERIVED_SHARED_MM;
+        }
+        if (BPF_CORE_READ(child, real_parent) != creator) {
+            derived |= HNG_PROCESS_DERIVED_PARENT;
+        }
+        if (BPF_CORE_READ(child, nsproxy) != BPF_CORE_READ(creator, nsproxy)) {
+            derived |= HNG_PROCESS_DERIVED_NEW_NS;
+        }
+        const struct cred *child_cred   = BPF_CORE_READ(child, cred);
+        const struct cred *creator_cred = BPF_CORE_READ(creator, cred);
+        if (child_cred && creator_cred &&
+            BPF_CORE_READ(child_cred, user_ns) !=
+                BPF_CORE_READ(creator_cred, user_ns)) {
+            derived |= HNG_PROCESS_DERIVED_NEW_USER_NS;
+        }
+    }
+    event->process_event.derived_flags = derived;
+
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
@@ -820,13 +967,69 @@ int trace_process_exit(void *ctx)
                            BPF_CORE_READ(task, group_leader, real_parent));
 
     //! @note 低 7 位非零表示被信号终止，否则高位是退出状态码
-    s32 code = BPF_CORE_READ(task, exit_code);
+    s32 code                         = BPF_CORE_READ(task, exit_code);
+    //! @note 终止信号号独立保存，避免下游从 exit_code 的负数反推
+    event->process_event.exit_signal = code & 0x7f;
     if (code & 0x7f) {
         event->process_event.exit_code = -(code & 0x7f);
     }
     else {
         event->process_event.exit_code = code >> 8;
     }
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/**
+ * @brief 处理 task_rename tracepoint：记录改名前后进程名。
+ * @param[in] ctx raw entry 上下文。
+ * @return 始终返回 0；事件空间不足时跳过提交。
+ * @note entry 布局：trace_entry(8) + pid(4) + oldcomm(16) + newcomm(16)；
+ *       comm 在 vmlinux BTF 里是定长数组，读取函数同时兼容 __data_loc。
+ * @note 事件头的主体取 current（发起改名的任务），tracepoint 的 pid 是被改名的
+ *       任务，落在 target_pid：两者多数时候相同，但主体与身份必须自洽，不能把
+ *       别的任务的 pid 填进当前任务的启动时间旁边。
+ */
+SEC("tracepoint/task/task_rename")
+int trace_task_rename(void *ctx)
+{
+    struct syscall_event *event = init_process_event(SYSCALL_EVENT_TASK_RENAME);
+    if (!event) return 0;
+
+    bpf_probe_read_kernel(&event->process_event.target_pid,
+                          sizeof(event->process_event.target_pid),
+                          (const char *)ctx + 8);
+    hng_read_trace_string(event->process_event.old_comm,
+                          sizeof(event->process_event.old_comm), ctx, 12);
+    hng_read_trace_string(event->process_event.new_comm,
+                          sizeof(event->process_event.new_comm), ctx, 28);
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/**
+ * @brief 处理 cgroup_attach_task tracepoint：记录目标 cgroup 路径。
+ * @param[in] ctx raw entry 上下文。
+ * @return 始终返回 0；事件空间不足时跳过提交。
+ * @note entry 布局：trace_entry(8) + dst_root(4) + dst_id(4) +
+ *       __data_loc path(4) + pid(4)，字符串数据在 entry 尾部。
+ * @note 事件主体按约定取 current（发起迁移的进程），被迁移的任务落在
+ *       target_pid（entry 偏移 20 的 pid）。
+ */
+SEC("tracepoint/cgroup/cgroup_attach_task")
+int trace_cgroup_attach_task(void *ctx)
+{
+    struct syscall_event *event =
+        init_process_event(SYSCALL_EVENT_CGROUP_ATTACH_TASK);
+    if (!event) return 0;
+
+    bpf_probe_read_kernel(&event->process_event.target_pid,
+                          sizeof(event->process_event.target_pid),
+                          (const char *)ctx + 20);
+    hng_read_trace_string(event->process_event.cgroup_path,
+                          sizeof(event->process_event.cgroup_path), ctx, 16);
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -1001,6 +1204,30 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
 /** @} */
 
 /**
+ * @brief 解析一条路径并记录解析状态位。
+ * @param[out] dst 目标缓冲，接收绝对路径；解析失败时是用户原始串
+ * @param[in] sz dst 容量
+ * @param[out] path_flags 解析状态位，失败时按结果或上 PATH_*
+ * @param[in] user_path 用户态路径串
+ * @param[in] dirfd 基准目录 fd；AT_FDCWD 表示当前工作目录
+ * @note 返回 -1 置 PATH_UNRESOLVED、返回 -2 置 PATH_TRUNCATED，成功不置位。
+ * @note path_flags 由调用者的 init 函数预先清零。
+ * @see hng_resolve_user_path
+ */
+static __always_inline void hng_fill_file_path(char *dst, __u32 sz,
+                                               __u32 *path_flags,
+                                               const void *user_path, int dirfd)
+{
+    long written = hng_resolve_user_path(dst, sz, user_path, dirfd);
+    if (written == -1) {
+        *path_flags |= PATH_UNRESOLVED;
+    }
+    else if (written == -2) {
+        *path_flags |= PATH_TRUNCATED;
+    }
+}
+
+/**
  * @name CREDENTIAL_EVENT 类别的 syscall 拦截
  * @{
  */
@@ -1083,6 +1310,166 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
 /** @} */
 
 /**
+ * @brief 处理 sys_enter_setreuid 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_setreuid")
+int trace_setreuid(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_SETREUID);
+    if (!event) return 0;
+
+    //! @note args[0]: uid_t ruid, args[1]: uid_t euid
+    event->credential_event.kind            = CREDENTIAL_UID;
+    event->credential_event.requested_count = 2;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
+    event->credential_event.requested[1]    = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_setresuid 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_setresuid")
+int trace_setresuid(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_SETRESUID);
+    if (!event) return 0;
+
+    //! @note args[0..2]: uid_t ruid, euid, suid
+    event->credential_event.kind            = CREDENTIAL_UID;
+    event->credential_event.requested_count = 3;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
+    event->credential_event.requested[1]    = (u32)ctx->args[1];
+    event->credential_event.requested[2]    = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_setfsuid 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_setfsuid")
+int trace_setfsuid(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_SETFSUID);
+    if (!event) return 0;
+
+    //! @note args[0]: uid_t fsuid
+    event->credential_event.kind            = CREDENTIAL_UID;
+    event->credential_event.requested_count = 1;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_setresgid 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_setresgid")
+int trace_setresgid(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_SETRESGID);
+    if (!event) return 0;
+
+    //! @note args[0..2]: gid_t rgid, egid, sgid
+    event->credential_event.kind            = CREDENTIAL_GID;
+    event->credential_event.requested_count = 3;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
+    event->credential_event.requested[1]    = (u32)ctx->args[1];
+    event->credential_event.requested[2]    = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_setgroups 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 最多记录前三个补充组；size 超过 3 时只截取前三项，不表示完整集合。
+ */
+SEC("tracepoint/syscalls/sys_enter_setgroups")
+int trace_setgroups(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_SETGROUPS);
+    if (!event) return 0;
+
+    //! @note args[0]: int gidsetsize, args[1]: const gid_t *grouplist
+    __u32 count = (__u32)ctx->args[0];
+    if (count > 3) {
+        count = 3;
+    }
+    event->credential_event.kind            = CREDENTIAL_GID;
+    event->credential_event.requested_count = count;
+    const __u32 *list                       = (const __u32 *)ctx->args[1];
+    if (count >= 1) {
+        bpf_probe_read_user(&event->credential_event.requested[0], sizeof(__u32),
+                            &list[0]);
+    }
+    if (count >= 2) {
+        bpf_probe_read_user(&event->credential_event.requested[1], sizeof(__u32),
+                            &list[1]);
+    }
+    if (count >= 3) {
+        bpf_probe_read_user(&event->credential_event.requested[2], sizeof(__u32),
+                            &list[2]);
+    }
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_prctl 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；option 与安全无关或无法构造事件时跳过暂存。
+ * @note 只收安全相关的 option，其余不暂存以避免噪声；对应的 exit 探针
+ *       因此按「可能合法跳过」处理，不计 pending_lost。
+ */
+SEC("tracepoint/syscalls/sys_enter_prctl")
+int trace_prctl(struct trace_event_raw_sys_enter *ctx)
+{
+    //! @note args[0]: int option, args[1]: unsigned long arg2
+    __u32 option = (u32)ctx->args[0];
+    switch (option) {
+        case PR_SET_NO_NEW_PRIVS:
+        case PR_SET_SECUREBITS:
+        case PR_SET_KEEPCAPS:
+        case PR_CAPBSET_DROP:
+        case PR_SET_DUMPABLE:
+            break;
+        default:
+            return 0;
+    }
+
+    struct syscall_event *event = init_credential_event(SYSCALL_EVENT_PRCTL);
+    if (!event) return 0;
+
+    event->credential_event.kind         = CREDENTIAL_PRCTL;
+    event->credential_event.prctl_option = option;
+    event->credential_event.arg2         = ctx->args[1];
+    //! @note securebits 只在 PR_SET_SECUREBITS 时由 arg2 给出
+    if (option == PR_SET_SECUREBITS) {
+        event->credential_event.securebits = (u32)ctx->args[1];
+    }
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
  * @name NAMESPACE_EVENT 类别的 syscall 拦截
  * @{
  */
@@ -1128,36 +1515,117 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_mount 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note target 经路径解析器绝对化；fstype 原样读取用户串。
+ * @note source 原样保存、不解析：它要么是设备路径（通常已是绝对路径），要么是
+ *       "proc"/"tmpfs"/"none" 这类伪文件系统名——把后者按 CWD 拼成绝对路径会
+ *       造出一个并不存在的路径。
+ */
+SEC("tracepoint/syscalls/sys_enter_mount")
+int trace_mount(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_MOUNT);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *source, args[1]: const char *target,
+    //!       args[2]: const char *filesystemtype, args[3]: MS_* flags
+    if (ctx->args[0]) {
+        bpf_probe_read_user_str(event->namespace_event.source,
+                                sizeof(event->namespace_event.source),
+                                (void *)ctx->args[0]);
+    }
+    hng_fill_file_path(event->namespace_event.target,
+                       sizeof(event->namespace_event.target),
+                       &event->namespace_event.target_flags,
+                       (const void *)ctx->args[1], AT_FDCWD);
+    if (ctx->args[2]) {
+        bpf_probe_read_user_str(event->namespace_event.fstype,
+                                sizeof(event->namespace_event.fstype),
+                                (void *)ctx->args[2]);
+    }
+    event->namespace_event.mount_flags = ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_umount2 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_umount2")
+int trace_umount2(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_UMOUNT2);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *target, args[1]: int flags (MNT_*)
+    hng_fill_file_path(event->namespace_event.target,
+                       sizeof(event->namespace_event.target),
+                       &event->namespace_event.target_flags,
+                       (const void *)ctx->args[0], AT_FDCWD);
+    event->namespace_event.mount_flags = ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_pivot_root 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_pivot_root")
+int trace_pivot_root(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_PIVOT_ROOT);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *new_root, args[1]: const char *put_old
+    hng_fill_file_path(event->namespace_event.source,
+                       sizeof(event->namespace_event.source),
+                       &event->namespace_event.source_flags,
+                       (const void *)ctx->args[0], AT_FDCWD);
+    hng_fill_file_path(event->namespace_event.target,
+                       sizeof(event->namespace_event.target),
+                       &event->namespace_event.target_flags,
+                       (const void *)ctx->args[1], AT_FDCWD);
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_chroot 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_chroot")
+int trace_chroot(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_CHROOT);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *filename — 新根，装入 target
+    hng_fill_file_path(event->namespace_event.target,
+                       sizeof(event->namespace_event.target),
+                       &event->namespace_event.target_flags,
+                       (const void *)ctx->args[0], AT_FDCWD);
+
+    hng_stash_pending(event);
+    return 0;
+}
+
 /** @} */
 
 /**
  * @name FILE_EVENT 类别的 syscall 拦截
  * @{
  */
-
-/**
- * @brief 解析一条路径并记录解析状态位。
- * @param[out] dst 目标缓冲，接收绝对路径；解析失败时是用户原始串
- * @param[in] sz dst 容量
- * @param[out] path_flags 解析状态位，失败时按结果或上 PATH_*
- * @param[in] user_path 用户态路径串
- * @param[in] dirfd 基准目录 fd；AT_FDCWD 表示当前工作目录
- * @note 返回 -1 置 PATH_UNRESOLVED、返回 -2 置 PATH_TRUNCATED，成功不置位。
- * @note path_flags 由 init_file_event 预先清零。
- * @see hng_resolve_user_path
- */
-static __always_inline void hng_fill_file_path(char *dst, __u32 sz,
-                                               __u32 *path_flags,
-                                               const void *user_path, int dirfd)
-{
-    long written = hng_resolve_user_path(dst, sz, user_path, dirfd);
-    if (written == -1) {
-        *path_flags |= PATH_UNRESOLVED;
-    }
-    else if (written == -2) {
-        *path_flags |= PATH_TRUNCATED;
-    }
-}
 
 /**
  * @brief 依次解析文件事件的两条路径。
@@ -1248,8 +1716,9 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
     //! @note args[2]: struct open_how *
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
-        event->file_event.flags = (u32)how.flags;
-        event->file_event.mode  = (u32)how.mode;
+        event->file_event.flags   = (u32)how.flags;
+        event->file_event.mode    = (u32)how.mode;
+        event->file_event.resolve = how.resolve;
     }
 
     hng_stash_pending(event);
@@ -1388,6 +1857,361 @@ int trace_syscall_renameat2(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_unlinkat 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_unlinkat")
+int trace_unlinkat(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_UNLINKAT);
+    if (!event) return 0;
+
+    //! @note args[0]: int dirfd, args[1]: const char *pathname,
+    //!       args[2]: int flags (AT_REMOVEDIR)
+    event->file_event.dirfd = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
+    event->file_event.at_flags = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_linkat 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_linkat")
+int trace_linkat(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_LINKAT);
+    if (!event) return 0;
+
+    //! @note args[0]: int olddirfd, args[1]: const char *oldpath,
+    //!       args[2]: int newdirfd, args[3]: const char *newpath,
+    //!       args[4]: int flags (AT_SYMLINK_FOLLOW / AT_EMPTY_PATH)
+    event->file_event.dirfd  = (s32)ctx->args[0];
+    event->file_event.dirfd2 = (s32)ctx->args[2];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], (const void *)ctx->args[3],
+                        (int)ctx->args[2]);
+    event->file_event.at_flags = (u32)ctx->args[4];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_symlink 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note path1 是被链接的目标串，path2 是新建的链接名（第二个路径）。
+ */
+SEC("tracepoint/syscalls/sys_enter_symlink")
+int trace_symlink(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_SYMLINK);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *target, args[1]: const char *linkpath
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        (const void *)ctx->args[1], AT_FDCWD);
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_symlinkat 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note args[1] 的 dirfd 只作用于 linkpath，故 path2 的基准是它，path1 为 CWD。
+ */
+SEC("tracepoint/syscalls/sys_enter_symlinkat")
+int trace_symlinkat(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_SYMLINKAT);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *target, args[1]: int newdirfd,
+    //!       args[2]: const char *linkpath
+    event->file_event.dirfd2 = (s32)ctx->args[1];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        (const void *)ctx->args[2], (int)ctx->args[1]);
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_chmod 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_chmod")
+int trace_chmod(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_CHMOD);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *filename, args[1]: umode_t mode
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
+    event->file_event.mode = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_fchmod 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_fchmod")
+int trace_fchmod(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_FCHMOD);
+    if (!event) return 0;
+
+    //! @note args[0]: unsigned int fd, args[1]: umode_t mode — 没有路径
+    event->file_event.fd   = (s32)ctx->args[0];
+    event->file_event.mode = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_fchmodat 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_fchmodat")
+int trace_fchmodat(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_FCHMODAT);
+    if (!event) return 0;
+
+    //! @note args[0]: int dirfd, args[1]: const char *filename,
+    //!       args[2]: umode_t mode, args[3]: int flags (AT_SYMLINK_NOFOLLOW)
+    event->file_event.dirfd = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
+    event->file_event.mode     = (u32)ctx->args[2];
+    event->file_event.at_flags = (u32)ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_truncate 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_truncate")
+int trace_truncate(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_TRUNCATE);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *path, args[1]: off_t length
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
+    event->file_event.length = (s64)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_ftruncate 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_ftruncate")
+int trace_ftruncate(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_FTRUNCATE);
+    if (!event) return 0;
+
+    //! @note args[0]: unsigned int fd, args[1]: off_t length — 没有路径
+    event->file_event.fd     = (s32)ctx->args[0];
+    event->file_event.length = (s64)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_mknod 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_mknod")
+int trace_mknod(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_MKNOD);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *filename, args[1]: umode_t mode,
+    //!       args[2]: unsigned dev
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
+    event->file_event.mode = (u32)ctx->args[1];
+    event->file_event.dev  = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_mknodat 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_mknodat")
+int trace_mknodat(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_MKNODAT);
+    if (!event) return 0;
+
+    //! @note args[0]: int dirfd, args[1]: const char *filename,
+    //!       args[2]: umode_t mode, args[3]: unsigned dev
+    event->file_event.dirfd = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
+    event->file_event.mode = (u32)ctx->args[2];
+    event->file_event.dev  = (u32)ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_memfd_create 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 匿名文件没有可解析路径：path1 写成 "memfd:NAME" 且不置解析位。
+ */
+SEC("tracepoint/syscalls/sys_enter_memfd_create")
+int trace_memfd_create(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_MEMFD_CREATE);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *name, args[1]: unsigned int flags (MFD_*)
+    __builtin_memcpy(event->file_event.path1, HNG_MEMFD_PREFIX,
+                     sizeof(HNG_MEMFD_PREFIX) - 1);
+    if (ctx->args[0]) {
+        bpf_probe_read_user_str(
+            event->file_event.path1 + sizeof(HNG_MEMFD_PREFIX) - 1,
+            sizeof(event->file_event.path1) - (sizeof(HNG_MEMFD_PREFIX) - 1),
+            (void *)ctx->args[0]);
+    }
+    event->file_event.flags = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_open_by_handle_at 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note args[0] 在系统调用里是 mount fd，没有路径；句柄只记录前 16 字节。
+ */
+SEC("tracepoint/syscalls/sys_enter_open_by_handle_at")
+int trace_open_by_handle_at(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event =
+        init_file_event(SYSCALL_EVENT_OPEN_BY_HANDLE_AT);
+    if (!event) return 0;
+
+    //! @note args[0]: int mount_fd, args[1]: struct file_handle *handle,
+    //!       args[2]: int flags
+    event->file_event.dirfd = (s32)ctx->args[0];
+    event->file_event.fd    = (s32)ctx->args[0];
+    if (ctx->args[1]) {
+        bpf_probe_read_user(event->file_event.handle,
+                            sizeof(event->file_event.handle),
+                            (void *)ctx->args[1]);
+    }
+    event->file_event.at_flags = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_name_to_handle_at 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 句柄缓冲是输出参数：enter 只暂存用户指针，exit 提交前再读实际内容。
+ */
+SEC("tracepoint/syscalls/sys_enter_name_to_handle_at")
+int trace_name_to_handle_at(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event =
+        init_file_event(SYSCALL_EVENT_NAME_TO_HANDLE_AT);
+    if (!event) return 0;
+
+    //! @note args[0]: int dirfd, args[1]: const char *pathname,
+    //!       args[2]: struct file_handle *handle, args[3]: int *mount_id,
+    //!       args[4]: int flags
+    event->file_event.dirfd = (s32)ctx->args[0];
+    event->file_event.fd    = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
+    //! @note 指针暂存到 length，由 FILE 的 exit 钩子读取句柄内容
+    event->file_event.length   = (s64)ctx->args[2];
+    event->file_event.at_flags = (u32)ctx->args[4];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_chdir 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_chdir")
+int trace_chdir(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_CHDIR);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *filename；chdir 没有 dirfd 参数
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_fchdir 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_fchdir")
+int trace_fchdir(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_file_event(SYSCALL_EVENT_FCHDIR);
+    if (!event) return 0;
+
+    //! @note args[0]: unsigned int fd — 没有路径
+    event->file_event.fd = (s32)ctx->args[0];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
 /** @} */
 
 /**
@@ -1450,6 +2274,47 @@ int trace_mprotect(struct trace_event_raw_sys_enter *ctx)
                 (PROT_WRITE | PROT_EXEC)
             ? 1
             : 0;
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_mremap 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 现有载荷只有一个长度字段，记录 old_size；new_size 暂不表达。
+ */
+SEC("tracepoint/syscalls/sys_enter_mremap")
+int trace_mremap(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_memory_event(SYSCALL_EVENT_MREMAP);
+    if (!event) return 0;
+
+    //! @note args[0]: void *old_address, args[1]: size_t old_size,
+    //!       args[2]: size_t new_size, args[3]: int flags (MREMAP_*)
+    event->memory_event.addr   = ctx->args[0];
+    event->memory_event.length = ctx->args[1];
+    event->memory_event.flags  = ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_munmap 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_munmap")
+int trace_munmap(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_memory_event(SYSCALL_EVENT_MUNMAP);
+    if (!event) return 0;
+
+    //! @note args[0]: void *addr, args[1]: size_t length
+    event->memory_event.addr   = ctx->args[0];
+    event->memory_event.length = ctx->args[1];
 
     hng_stash_pending(event);
     return 0;
@@ -1627,6 +2492,72 @@ int trace_bind(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_recvfrom 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 源地址仅用于记录本次接收的对端；已 connect 的套接字可传空地址，
+ *       此时 src_ip/src_port 保持 0，事件照常暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_recvfrom")
+int trace_recvfrom(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_network_event(SYSCALL_EVENT_RECVFROM);
+    if (!event) return 0;
+
+    //! @note args[0]: sockfd, args[1]: void *buf, args[2]: size_t len,
+    //!       args[3]: int flags, args[4]: 源 sockaddr, args[5]: addrlen
+    event->network_event.sockfd = (s32)ctx->args[0];
+    event->network_event.count  = ctx->args[2];
+    parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5],
+                   event->network_event.src_ip, &event->network_event.src_port,
+                   &event->network_event.family, event->network_event.unix_path,
+                   sizeof(event->network_event.unix_path));
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_accept4 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 新 fd 在返回值里；args[3] 的 SOCK_* 标志复用 type 字段承载。
+ */
+SEC("tracepoint/syscalls/sys_enter_accept4")
+int trace_accept4(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_network_event(SYSCALL_EVENT_ACCEPT4);
+    if (!event) return 0;
+
+    //! @note args[0]: sockfd, args[3]: int flags (SOCK_NONBLOCK/SOCK_CLOEXEC)
+    //! @note flags 用专用字段承载：type 表示套接字类型，两者语义不同
+    event->network_event.sockfd = (s32)ctx->args[0];
+    event->network_event.flags  = (u32)ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_listen 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_listen")
+int trace_listen(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_network_event(SYSCALL_EVENT_LISTEN);
+    if (!event) return 0;
+
+    //! @note args[0]: sockfd, args[1]: int backlog
+    event->network_event.sockfd  = (s32)ctx->args[0];
+    event->network_event.backlog = (s32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
 /** @} */
 
 /**
@@ -1723,6 +2654,265 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+/**
+ * @brief 处理 sys_enter_init_module 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 模块镜像在用户态内存里，只记录长度；uargs 指针存入 arg。
+ */
+SEC("tracepoint/syscalls/sys_enter_init_module")
+int trace_init_module(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_INIT_MODULE);
+    if (!event) return 0;
+
+    //! @note args[0]: void *image, args[1]: unsigned long len,
+    //!       args[2]: const char *uargs
+    event->kernel_event.module_len = (u32)ctx->args[1];
+    event->kernel_event.arg        = ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_finit_module 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_finit_module")
+int trace_finit_module(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_FINIT_MODULE);
+    if (!event) return 0;
+
+    //! @note args[0]: int fd, args[1]: const char *uargs,
+    //!       args[2]: int flags — params 指针存入 arg
+    event->kernel_event.arg = ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_delete_module 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_delete_module")
+int trace_delete_module(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_DELETE_MODULE);
+    if (!event) return 0;
+
+    //! @note args[0]: const char *name_user, args[1]: unsigned int flags
+    if (ctx->args[0]) {
+        bpf_probe_read_user_str(event->kernel_event.module_name,
+                                sizeof(event->kernel_event.module_name),
+                                (void *)ctx->args[0]);
+    }
+    event->kernel_event.arg = ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_kexec_load 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note 段数组内容不读（用户内存，且大），只记录入口与段数。
+ */
+SEC("tracepoint/syscalls/sys_enter_kexec_load")
+int trace_kexec_load(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_KEXEC_LOAD);
+    if (!event) return 0;
+
+    //! @note args[0]: unsigned long entry, args[1]: unsigned long nr_segments,
+    //!       args[2]: struct kexec_segment *segments, args[3]: flags
+    event->kernel_event.kexec_entry    = ctx->args[0];
+    event->kernel_event.kexec_segments = (u32)ctx->args[1];
+    event->kernel_event.arg            = ctx->args[3];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_reboot 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_reboot")
+int trace_reboot(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_REBOOT);
+    if (!event) return 0;
+
+    //! @note args[0]: int magic1, args[1]: int magic2,
+    //!       args[2]: unsigned int cmd (LINUX_REBOOT_CMD_*)
+    event->kernel_event.reboot_cmd = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_sethostname 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_sethostname")
+int trace_sethostname(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_SETHOSTNAME);
+    if (!event) return 0;
+
+    //! @note args[0]: char *name, args[1]: int len
+    if (ctx->args[0]) {
+        bpf_probe_read_user_str(event->kernel_event.hostname,
+                                sizeof(event->kernel_event.hostname),
+                                (void *)ctx->args[0]);
+    }
+    event->kernel_event.arg = ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 module_load tracepoint：记录被加载的模块名。
+ * @param[in] ctx raw entry 上下文。
+ * @return 始终返回 0；事件空间不足时跳过提交。
+ * @note entry 布局：trace_entry(8) + taints(4) + __data_loc name(4)。
+ */
+SEC("tracepoint/module/module_load")
+int trace_module_load(void *ctx)
+{
+    struct syscall_event *event =
+        init_kernel_trace_event(SYSCALL_EVENT_MODULE_LOAD);
+    if (!event) return 0;
+
+    hng_read_trace_string(event->kernel_event.module_name,
+                          sizeof(event->kernel_event.module_name), ctx, 12);
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/**
+ * @brief 处理 module_free tracepoint：记录被卸载的模块名。
+ * @param[in] ctx raw entry 上下文。
+ * @return 始终返回 0；事件空间不足时跳过提交。
+ * @note entry 布局：trace_entry(8) + __data_loc name(4)。
+ */
+SEC("tracepoint/module/module_free")
+int trace_module_free(void *ctx)
+{
+    struct syscall_event *event =
+        init_kernel_trace_event(SYSCALL_EVENT_MODULE_FREE);
+    if (!event) return 0;
+
+    hng_read_trace_string(event->kernel_event.module_name,
+                          sizeof(event->kernel_event.module_name), ctx, 8);
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+/** @} */
+
+/**
+ * @name SIGNAL_EVENT 类别的 syscall 拦截
+ * @{
+ */
+
+/**
+ * @brief 处理 sys_enter_kill 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_kill")
+int trace_kill(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_signal_event(SYSCALL_EVENT_KILL);
+    if (!event) return 0;
+
+    //! @note args[0]: pid_t pid, args[1]: int sig
+    event->signal_event.target_pid = (u32)ctx->args[0];
+    event->signal_event.sig        = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_tkill 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_tkill")
+int trace_tkill(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_signal_event(SYSCALL_EVENT_TKILL);
+    if (!event) return 0;
+
+    //! @note args[0]: pid_t tid, args[1]: int sig
+    event->signal_event.target_pid = (u32)ctx->args[0];
+    event->signal_event.sig        = (u32)ctx->args[1];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_tgkill 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ */
+SEC("tracepoint/syscalls/sys_enter_tgkill")
+int trace_tgkill(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event = init_signal_event(SYSCALL_EVENT_TGKILL);
+    if (!event) return 0;
+
+    //! @note args[0]: pid_t tgid, args[1]: pid_t tid, args[2]: int sig
+    event->signal_event.target_pid = (u32)ctx->args[0];
+    event->signal_event.target_tid = (u32)ctx->args[1];
+    event->signal_event.sig        = (u32)ctx->args[2];
+
+    hng_stash_pending(event);
+    return 0;
+}
+
+/**
+ * @brief 处理 sys_enter_rt_sigqueueinfo 事件并暂存采集结果。
+ * @param[in] ctx 系统调用入口的 tracepoint 上下文。
+ * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
+ * @note si_code 位于用户态 siginfo_t 的固定偏移；读取失败时保持 0。
+ */
+SEC("tracepoint/syscalls/sys_enter_rt_sigqueueinfo")
+int trace_rt_sigqueueinfo(struct trace_event_raw_sys_enter *ctx)
+{
+    struct syscall_event *event =
+        init_signal_event(SYSCALL_EVENT_RT_SIGQUEUEINFO);
+    if (!event) return 0;
+
+    //! @note args[0]: pid_t pid, args[1]: int sig, args[2]: siginfo_t __user *
+    event->signal_event.target_pid = (u32)ctx->args[0];
+    event->signal_event.sig        = (u32)ctx->args[1];
+    __s32 si_code                  = 0;
+    if (bpf_probe_read_user(
+            &si_code, sizeof(si_code),
+            (const char *)ctx->args[2] + HNG_SIGINFO_SI_CODE_OFF) == 0) {
+        event->signal_event.si_code = si_code;
+    }
+
+    hng_stash_pending(event);
+    return 0;
+}
+
 /** @} */
 
 /**
@@ -1766,10 +2956,20 @@ HNG_DEFINE_EXIT_PROBE(execveat, SYSCALL_EVENT_EXECVEAT, EXEC_EVENT)
 HNG_DEFINE_EXIT_PROBE(setuid, SYSCALL_EVENT_SETUID, CREDENTIAL_EVENT)
 HNG_DEFINE_EXIT_PROBE(setgid, SYSCALL_EVENT_SETGID, CREDENTIAL_EVENT)
 HNG_DEFINE_EXIT_PROBE(capset, SYSCALL_EVENT_CAPSET, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(setreuid, SYSCALL_EVENT_SETREUID, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(setresuid, SYSCALL_EVENT_SETRESUID, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(setfsuid, SYSCALL_EVENT_SETFSUID, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(setresgid, SYSCALL_EVENT_SETRESGID, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(setgroups, SYSCALL_EVENT_SETGROUPS, CREDENTIAL_EVENT)
+HNG_DEFINE_EXIT_PROBE_OPTIONAL(prctl, SYSCALL_EVENT_PRCTL, CREDENTIAL_EVENT)
 
 // NAMESPACE
 HNG_DEFINE_EXIT_PROBE(unshare, SYSCALL_EVENT_UNSHARE, NAMESPACE_EVENT)
 HNG_DEFINE_EXIT_PROBE(setns, SYSCALL_EVENT_SETNS, NAMESPACE_EVENT)
+HNG_DEFINE_EXIT_PROBE(mount, SYSCALL_EVENT_MOUNT, NAMESPACE_EVENT)
+HNG_DEFINE_EXIT_PROBE(umount2, SYSCALL_EVENT_UMOUNT2, NAMESPACE_EVENT)
+HNG_DEFINE_EXIT_PROBE(pivot_root, SYSCALL_EVENT_PIVOT_ROOT, NAMESPACE_EVENT)
+HNG_DEFINE_EXIT_PROBE(chroot, SYSCALL_EVENT_CHROOT, NAMESPACE_EVENT)
 
 // FILE
 HNG_DEFINE_EXIT_PROBE(open, SYSCALL_EVENT_OPEN, FILE_EVENT)
@@ -1781,10 +2981,30 @@ HNG_DEFINE_EXIT_PROBE(link, SYSCALL_EVENT_LINK, FILE_EVENT)
 HNG_DEFINE_EXIT_PROBE(rename, SYSCALL_EVENT_RENAME, FILE_EVENT)
 HNG_DEFINE_EXIT_PROBE(renameat, SYSCALL_EVENT_RENAMEAT, FILE_EVENT)
 HNG_DEFINE_EXIT_PROBE(renameat2, SYSCALL_EVENT_RENAMEAT2, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(unlinkat, SYSCALL_EVENT_UNLINKAT, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(linkat, SYSCALL_EVENT_LINKAT, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(symlink, SYSCALL_EVENT_SYMLINK, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(symlinkat, SYSCALL_EVENT_SYMLINKAT, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(chmod, SYSCALL_EVENT_CHMOD, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(fchmod, SYSCALL_EVENT_FCHMOD, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(fchmodat, SYSCALL_EVENT_FCHMODAT, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(truncate, SYSCALL_EVENT_TRUNCATE, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(ftruncate, SYSCALL_EVENT_FTRUNCATE, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(mknod, SYSCALL_EVENT_MKNOD, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(mknodat, SYSCALL_EVENT_MKNODAT, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(memfd_create, SYSCALL_EVENT_MEMFD_CREATE, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(open_by_handle_at, SYSCALL_EVENT_OPEN_BY_HANDLE_AT,
+                      FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(name_to_handle_at, SYSCALL_EVENT_NAME_TO_HANDLE_AT,
+                      FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(chdir, SYSCALL_EVENT_CHDIR, FILE_EVENT)
+HNG_DEFINE_EXIT_PROBE(fchdir, SYSCALL_EVENT_FCHDIR, FILE_EVENT)
 
 // MEMORY
 HNG_DEFINE_EXIT_PROBE(mmap, SYSCALL_EVENT_MMAP, MEMORY_EVENT)
 HNG_DEFINE_EXIT_PROBE(mprotect, SYSCALL_EVENT_MPROTECT, MEMORY_EVENT)
+HNG_DEFINE_EXIT_PROBE(mremap, SYSCALL_EVENT_MREMAP, MEMORY_EVENT)
+HNG_DEFINE_EXIT_PROBE(munmap, SYSCALL_EVENT_MUNMAP, MEMORY_EVENT)
 
 // NETWORK
 HNG_DEFINE_EXIT_PROBE(connect, SYSCALL_EVENT_CONNECT, NETWORK_EVENT)
@@ -1792,10 +3012,26 @@ HNG_DEFINE_EXIT_PROBE_OPTIONAL(sendto, SYSCALL_EVENT_SENDTO, NETWORK_EVENT)
 HNG_DEFINE_EXIT_PROBE_OPTIONAL(sendmsg, SYSCALL_EVENT_SENDMSG, NETWORK_EVENT)
 HNG_DEFINE_EXIT_PROBE(socket, SYSCALL_EVENT_SOCKET, NETWORK_EVENT)
 HNG_DEFINE_EXIT_PROBE(bind, SYSCALL_EVENT_BIND, NETWORK_EVENT)
+HNG_DEFINE_EXIT_PROBE(recvfrom, SYSCALL_EVENT_RECVFROM, NETWORK_EVENT)
+HNG_DEFINE_EXIT_PROBE(accept4, SYSCALL_EVENT_ACCEPT4, NETWORK_EVENT)
+HNG_DEFINE_EXIT_PROBE(listen, SYSCALL_EVENT_LISTEN, NETWORK_EVENT)
 
 // KERNEL
 HNG_DEFINE_EXIT_PROBE(ptrace, SYSCALL_EVENT_PTRACE, KERNEL_EVENT)
 HNG_DEFINE_EXIT_PROBE(bpf, SYSCALL_EVENT_BPF, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(init_module, SYSCALL_EVENT_INIT_MODULE, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(finit_module, SYSCALL_EVENT_FINIT_MODULE, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(delete_module, SYSCALL_EVENT_DELETE_MODULE, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(kexec_load, SYSCALL_EVENT_KEXEC_LOAD, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(reboot, SYSCALL_EVENT_REBOOT, KERNEL_EVENT)
+HNG_DEFINE_EXIT_PROBE(sethostname, SYSCALL_EVENT_SETHOSTNAME, KERNEL_EVENT)
+
+// SIGNAL
+HNG_DEFINE_EXIT_PROBE(kill, SYSCALL_EVENT_KILL, SIGNAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(tkill, SYSCALL_EVENT_TKILL, SIGNAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(tgkill, SYSCALL_EVENT_TGKILL, SIGNAL_EVENT)
+HNG_DEFINE_EXIT_PROBE(rt_sigqueueinfo, SYSCALL_EVENT_RT_SIGQUEUEINFO,
+                      SIGNAL_EVENT)
 
 /** @} */
 

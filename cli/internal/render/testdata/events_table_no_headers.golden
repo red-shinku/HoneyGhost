@@ -5,3 +5,4 @@ syscall file      1000       1000       2003       1          #7                
 syscall file      1000       1000       2005       1          #7                       -          renameat2 path=/tmp/a path2=/tmp/b flags=0x1 mode=00 RET=0 COMM=mv
 syscall memory    1000       1000       2006       1          #7                       -          mmap addr=0x0 len=8192 prot=0x5 flags=0x1 path=/usr/lib/libc.so.6 offset=4096 wx RET=139637976727552 COMM=nginx EXE=/usr/sbin/nginx
 syscall network   1000       1000       2007       1          #7                       -          connect family=1 type=1 protocol=0 dst=@/run/dbus RET=0 COMM=dbus-daemon MNTNS=4026532222
+syscall signal    1000       1000       2008       1          #7                       -          tgkill sig=9 pid=1 tid=2 RET=0 COMM=kill

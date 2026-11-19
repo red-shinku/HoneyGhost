@@ -56,6 +56,9 @@ constexpr std::size_t SyscallRecordSize(enum syscall_event_type subtype) noexcep
         case KERNEL_EVENT:
             return sizeof(struct syscall_event_head) +
                    sizeof(struct kernel_event);
+        case SIGNAL_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct signal_event);
         case UNKNOWN_EVENT:
             break;
     }
@@ -65,20 +68,24 @@ constexpr std::size_t SyscallRecordSize(enum syscall_event_type subtype) noexcep
 // ringbuf 记录格式与通道元素尺寸是跨内核/用户态的 ABI，锁定在编译期。
 static_assert(sizeof(struct syscall_event_head) == 80,
               "ringbuf 记录头尺寸变化会破坏按 subtype 解析的载荷偏移");
+static_assert(sizeof(struct process_event) == 304,
+              "PROCESS 载荷变化会改变 ringbuf 的 PROCESS 记录长度");
 static_assert(sizeof(struct exec_event) == 904,
               "EXEC 载荷变化会改变 ringbuf 的 EXEC 记录长度");
-static_assert(sizeof(struct credential_event) == 48,
+static_assert(sizeof(struct credential_event) == 72,
               "CREDENTIAL 载荷变化会改变 ringbuf 的 CREDENTIAL 记录长度");
-static_assert(sizeof(struct namespace_event) == 16,
+static_assert(sizeof(struct namespace_event) == 576,
               "NAMESPACE 载荷变化会改变 ringbuf 的 NAMESPACE 记录长度");
-static_assert(sizeof(struct file_event) == 536,
+static_assert(sizeof(struct file_event) == 584,
               "FILE 载荷变化会改变 ringbuf 的 FILE 记录长度");
 static_assert(sizeof(struct memory_event) == 312,
               "MEMORY 载荷变化会改变 ringbuf 的 MEMORY 记录长度");
-static_assert(sizeof(struct network_event) == 160,
+static_assert(sizeof(struct network_event) == 184,
               "NETWORK 载荷变化会改变 ringbuf 的 NETWORK 记录长度");
-static_assert(sizeof(struct kernel_event) == 40,
+static_assert(sizeof(struct kernel_event) == 184,
               "KERNEL 载荷变化会改变 ringbuf 的 KERNEL 记录长度");
+static_assert(sizeof(struct signal_event) == 16,
+              "SIGNAL 载荷变化会改变 ringbuf 的 SIGNAL 记录长度");
 static_assert(sizeof(syscall_event) == 984,
               "用户态通道元素保持为 union 最大者的定长");
 static_assert(offsetof(syscall_event, process_event) ==
@@ -96,6 +103,8 @@ static_assert(offsetof(syscall_event, memory_event) ==
 static_assert(offsetof(syscall_event, network_event) ==
               sizeof(struct syscall_event_head));
 static_assert(offsetof(syscall_event, kernel_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, signal_event) ==
               sizeof(struct syscall_event_head));
 }  // namespace hng::detail
 

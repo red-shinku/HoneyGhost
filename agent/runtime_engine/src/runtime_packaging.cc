@@ -13,7 +13,7 @@
 
 namespace {
 
-/// @brief 语义载荷 variant，备选顺序即 syscall_event_type 的 1..8
+/// @brief 语义载荷 variant，备选顺序即 syscall_event_type 的 1..9
 using SemanticPayload = std::decay_t<decltype(hng::syscall_semantic_data::data)>;
 
 static_assert(std::is_same_v<std::variant_alternative_t<0, SemanticPayload>,
@@ -40,6 +40,9 @@ static_assert(std::is_same_v<std::variant_alternative_t<6, SemanticPayload>,
 static_assert(std::is_same_v<std::variant_alternative_t<7, SemanticPayload>,
                              hng::kernel_semantic_data>,
               "variant #8 must be kernel (KERNEL_EVENT = 8)");
+static_assert(std::is_same_v<std::variant_alternative_t<8, SemanticPayload>,
+                             hng::signal_semantic_data>,
+              "variant #9 must be signal (SIGNAL_EVENT = 9)");
 
 }  // namespace
 
@@ -60,10 +63,10 @@ hng::RuntimeEvent RuntimePackaging::pack(hng::syscall_semantic_data src,
     event.runtimeInfo.exe       = std::move(exe);
 
     static_assert(
-        std::variant_size_v<std::decay_t<decltype(src.data)>> == 8,
+        std::variant_size_v<std::decay_t<decltype(src.data)>> == 9,
         "The payload quantity of syscall semantic events must correspond to "
-        "1..8 of enum syscall_event_type");
-    // 载荷 variant 的备选顺序与 syscall_event_type 的 1..8 一一对应；
+        "1..9 of enum syscall_event_type");
+    // 载荷 variant 的备选顺序与 syscall_event_type 的 1..9 一一对应；
     // subtype 由内核事件头给出，不在此处由变体下标推导。
     event.runtimeInfo.subtype = src.head.subtype;
     event.data                = std::move(src);
