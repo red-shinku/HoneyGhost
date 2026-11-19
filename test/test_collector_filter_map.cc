@@ -147,6 +147,12 @@ syscall_event sample()
     std::memset(event.exec_event.image, 'y', sizeof(event.exec_event.image));
     std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
     std::memset(event.exec_event.argv1, 'b', sizeof(event.exec_event.argv1));
+    std::memset(event.exec_event.argv2, 'c', sizeof(event.exec_event.argv2));
+    std::memset(event.exec_event.argv3, 'd', sizeof(event.exec_event.argv3));
+    std::memset(event.exec_event.ld_preload, 'e',
+                sizeof(event.exec_event.ld_preload));
+    std::memset(event.exec_event.ld_library_path, 'f',
+                sizeof(event.exec_event.ld_library_path));
     event.exec_event.flags                 = 7;
     event.exec_event.image_flags           = PATH_TRUNCATED;
 
@@ -182,6 +188,15 @@ bool same_event(const syscall_event& left, const syscall_event& right)
                        sizeof(left.exec_event.argv0)) == 0 &&
            std::memcmp(left.exec_event.argv1, right.exec_event.argv1,
                        sizeof(left.exec_event.argv1)) == 0 &&
+           std::memcmp(left.exec_event.argv2, right.exec_event.argv2,
+                       sizeof(left.exec_event.argv2)) == 0 &&
+           std::memcmp(left.exec_event.argv3, right.exec_event.argv3,
+                       sizeof(left.exec_event.argv3)) == 0 &&
+           std::memcmp(left.exec_event.ld_preload, right.exec_event.ld_preload,
+                       sizeof(left.exec_event.ld_preload)) == 0 &&
+           std::memcmp(left.exec_event.ld_library_path,
+                       right.exec_event.ld_library_path,
+                       sizeof(left.exec_event.ld_library_path)) == 0 &&
            left.credential_event.kind == right.credential_event.kind &&
            left.credential_event.requested_count ==
                right.credential_event.requested_count &&

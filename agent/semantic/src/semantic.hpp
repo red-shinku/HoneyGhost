@@ -17,7 +17,7 @@ namespace hng {
 /**
  * @brief 原始事件是否承载未解析路径。
  * @param raw 系统调用原始事件
- * @return 文件事件且 path_flags 含 PATH_UNRESOLVED 时为 true。
+ * @return 文件事件且 path1_flags 或 path2_flags 含 PATH_UNRESOLVED 时为 true。
  * @note 语义层据此按事件累计 path_unresolved，每条事件至多计一次。
  * @see Semantic_syscall::transform_one, hng::SemanticStats
  */

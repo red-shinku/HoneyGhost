@@ -36,7 +36,7 @@ func sinkTestEvents() []model.Event {
 				Subtype: model.SubtypeFile,
 			},
 			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
-				"path": "/etc/nginx/nginx.conf", "syscall_name": "openat",
+				"path1": "/etc/nginx/nginx.conf", "syscall_name": "openat",
 			}},
 		},
 	}

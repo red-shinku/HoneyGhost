@@ -213,6 +213,10 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"semantic_filename": value.GetSemanticFilename(),
 			"argv0":             value.GetArgv0(),
 			"argv1":             value.GetArgv1(),
+			"argv2":             value.GetArgv2(),
+			"argv3":             value.GetArgv3(),
+			"ld_preload":        value.GetLdPreload(),
+			"ld_library_path":   value.GetLdLibraryPath(),
 			"flags":             value.GetFlags(),
 			"invoked":           value.GetInvoked(),
 			"image":             value.GetImage(),
@@ -237,8 +241,12 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 		return payload(model.SubtypeFile, map[string]any{
 			"flags":        value.GetFlags(),
 			"mode":         value.GetMode(),
-			"path":         value.GetPath(),
-			"path_flags":   value.GetPathFlags(),
+			"path1":        value.GetPath1(),
+			"path2":        value.GetPath2(),
+			"path1_flags":  value.GetPath1Flags(),
+			"path2_flags":  value.GetPath2Flags(),
+			"dirfd":        value.GetDirfd(),
+			"dirfd2":       value.GetDirfd2(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
@@ -247,6 +255,14 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 		return payload(model.SubtypeMemory, map[string]any{
 			"prot":         value.GetProt(),
 			"flags":        value.GetFlags(),
+			"addr":         value.GetAddr(),
+			"length":       value.GetLength(),
+			"offset":       value.GetOffset(),
+			"fd":           value.GetFd(),
+			"anonymous":    value.GetAnonymous(),
+			"wx":           value.GetWx(),
+			"path":         value.GetPath(),
+			"path_flags":   value.GetPathFlags(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
@@ -263,14 +279,24 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"dst_ip":       dstIP,
 			"dst_port":     value.GetDstPort(),
 			"src_port":     value.GetSrcPort(),
+			"sockfd":       value.GetSockfd(),
+			"count":        value.GetCount(),
+			"unix_path":    value.GetUnixPath(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_KernelData:
 		value := data.KernelData
+		bpfAttr := value.GetBpfAttr()
+		if bpfAttr == nil {
+			bpfAttr = []uint32{}
+		}
 		return payload(model.SubtypeKernel, map[string]any{
 			"command":      value.GetCommand(),
+			"target_pid":   value.GetTargetPid(),
 			"arg":          value.GetArg(),
+			"bpf_attr":     bpfAttr,
+			"bpf_type":     value.GetBpfType(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 

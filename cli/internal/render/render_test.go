@@ -310,6 +310,10 @@ func testEvents() []model.Event {
 				"semantic_filename": "/tmp/test",
 				"argv0":             "test",
 				"argv1":             "",
+				"argv2":             "",
+				"argv3":             "",
+				"ld_preload":        "/tmp/inject.so",
+				"ld_library_path":   "",
 				"flags":             uint32(0),
 				"invoked":           "./test",
 				"image":             "/tmp/test",
@@ -352,7 +356,12 @@ func testEvents() []model.Event {
 				Exe:     "/usr/sbin/nginx",
 			},
 			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
-				"path":         "/etc/nginx/nginx.conf",
+				"path1":        "/etc/nginx/nginx.conf",
+				"path2":        "",
+				"path1_flags":  uint32(0),
+				"path2_flags":  uint32(0),
+				"dirfd":        int32(-100),
+				"dirfd2":       int32(-100),
 				"flags":        uint32(0),
 				"mode":         uint32(0),
 				"syscall_name": "openat",
@@ -371,13 +380,86 @@ func testEvents() []model.Event {
 				Comm:    "bash",
 				MntNS:   initMntNSInum,
 			},
-			// 内核未能解析为绝对路径：path 是原始串，渲染时加 ? 前缀
+			// 内核未能解析为绝对路径：path1 是原始串，渲染时加 ? 前缀
 			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
-				"path":         "deploy.sh",
-				"path_flags":   uint32(2),
+				"path1":        "deploy.sh",
+				"path2":        "",
+				"path1_flags":  uint32(2),
+				"path2_flags":  uint32(0),
+				"dirfd":        int32(-100),
+				"dirfd2":       int32(-100),
 				"flags":        uint32(0),
 				"mode":         uint32(0),
 				"syscall_name": "openat",
+			}},
+		},
+		{
+			Head: model.Head{
+				RoleID:  7,
+				PID:     2005,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeFile,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     0,
+				Comm:    "mv",
+				MntNS:   initMntNSInum,
+			},
+			// rename 的第二路径：path2 非空时按 path2= 追加，两个 dirfd 各自呈现
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"path1":        "/tmp/a",
+				"path2":        "/tmp/b",
+				"path1_flags":  uint32(0),
+				"path2_flags":  uint32(0),
+				"dirfd":        int32(3),
+				"dirfd2":       int32(4),
+				"flags":        uint32(1),
+				"mode":         uint32(0),
+				"syscall_name": "renameat2",
+			}},
+		},
+		{
+			Head: model.Head{
+				RoleID:  7,
+				PID:     2006,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeMemory,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     0x7f0000000000,
+				Comm:    "nginx",
+				MntNS:   initMntNSInum,
+				Exe:     "/usr/sbin/nginx",
+			},
+			// 文件映射：源路径与区段起点一并呈现，W|X 追加 wx
+			Payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"prot": uint64(5), "flags": uint64(1), "addr": uint64(0),
+				"length": uint64(8192), "offset": uint64(4096), "fd": int32(3),
+				"anonymous": false, "wx": true, "path": "/usr/lib/libc.so.6",
+				"path_flags": uint32(0), "syscall_name": "mmap",
+			}},
+		},
+		{
+			Head: model.Head{
+				RoleID:  7,
+				PID:     2007,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeNetwork,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     0,
+				Comm:    "dbus-daemon",
+				MntNS:   4026532222,
+			},
+			// AF_UNIX：目标按 sun_path 呈现，抽象命名空间以 @ 开头
+			Payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"family": uint32(1), "type": uint32(1), "protocol": uint32(0),
+				"dst_ip": []uint32{0, 0, 0, 0}, "dst_port": uint32(0),
+				"src_port": uint32(0), "sockfd": int32(5), "count": uint64(0),
+				"unix_path": "@/run/dbus", "syscall_name": "connect",
 			}},
 		},
 	}
@@ -430,6 +512,14 @@ func TestEventDetail(t *testing.T) {
 				"invoked": "/bin/sh",
 			}},
 			want: "execve image=/bin/sh",
+		},
+		{
+			name: "exec_preload",
+			payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
+				"syscall_name": "execve", "image": "/bin/sh",
+				"invoked": "/bin/sh", "ld_preload": "/tmp/inject.so",
+			}},
+			want: "execve image=/bin/sh preload=/tmp/inject.so",
 		},
 		{
 			name: "setuid",
@@ -511,7 +601,7 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
-				"path": "/tmp/x",
+				"path1": "/tmp/x", "path2": "",
 			}},
 			want: "openat path=/tmp/x flags=0x3 mode=0644",
 		},
@@ -519,7 +609,7 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall_no_path",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "unlink", "flags": uint32(0), "mode": uint32(0),
-				"path": "",
+				"path1": "", "path2": "",
 			}},
 			want: "unlink flags=0x0 mode=00",
 		},
@@ -527,7 +617,7 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall_unresolved",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
-				"path": "deploy.sh", "path_flags": uint32(2),
+				"path1": "deploy.sh", "path1_flags": uint32(2), "path2": "",
 			}},
 			want: "openat path=?deploy.sh flags=0x3 mode=0644",
 		},
@@ -535,16 +625,56 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall_truncated_only",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
-				"path": "/tmp/x", "path_flags": uint32(1),
+				"path1": "/tmp/x", "path1_flags": uint32(1), "path2": "",
 			}},
 			want: "openat path=/tmp/x flags=0x3 mode=0644",
 		},
 		{
-			name: "memory",
-			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
-				"syscall_name": "mmap", "prot": uint64(4), "flags": uint64(5),
+			name: "file_syscall_second_path",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "rename", "flags": uint32(0), "mode": uint32(0),
+				"path1": "/tmp/a", "path2": "/tmp/b",
 			}},
-			want: "mmap prot=0x4 flags=0x5",
+			want: "rename path=/tmp/a path2=/tmp/b flags=0x0 mode=00",
+		},
+		{
+			name: "file_syscall_second_path_unresolved",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "link", "flags": uint32(0), "mode": uint32(0),
+				"path1": "/tmp/a", "path1_flags": uint32(0),
+				"path2": "rel/new", "path2_flags": uint32(2),
+			}},
+			want: "link path=/tmp/a path2=?rel/new flags=0x0 mode=00",
+		},
+		{
+			name: "memory_anon",
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"syscall_name": "mmap", "prot": uint64(3), "flags": uint64(0x22),
+				"addr": uint64(0), "length": uint64(4096), "offset": uint64(0),
+				"fd": int32(-1), "anonymous": true, "wx": false,
+				"path": "", "path_flags": uint32(0),
+			}},
+			want: "mmap addr=0x0 len=4096 prot=0x3 flags=0x22 anon",
+		},
+		{
+			name: "memory_file",
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"syscall_name": "mmap", "prot": uint64(5), "flags": uint64(1),
+				"addr": uint64(0), "length": uint64(8192), "offset": uint64(4096),
+				"fd": int32(3), "anonymous": false, "wx": true,
+				"path": "/usr/lib/libc.so.6", "path_flags": uint32(0),
+			}},
+			want: "mmap addr=0x0 len=8192 prot=0x5 flags=0x1 path=/usr/lib/libc.so.6 offset=4096 wx",
+		},
+		{
+			name: "memory_mprotect",
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
+				"syscall_name": "mprotect", "prot": uint64(7), "flags": uint64(0),
+				"addr": uint64(0x401000), "length": uint64(2048), "offset": uint64(0),
+				"fd": int32(-1), "anonymous": false, "wx": true,
+				"path": "", "path_flags": uint32(0),
+			}},
+			want: "mprotect addr=0x401000 len=2048 prot=0x7 flags=0x0 wx",
 		},
 		{
 			name: "network",
@@ -575,11 +705,41 @@ func TestEventDetail(t *testing.T) {
 			want: "sendto family=10 type=2 protocol=17 dst=[2001:db8:0:0:0:0:0:1]:53 src_port=40000",
 		},
 		{
-			name: "kernel",
-			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
-				"syscall_name": "ptrace", "command": uint32(7), "arg": uint64(8),
+			name: "network_unix",
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"syscall_name": "connect", "family": uint32(1), "type": uint32(1),
+				"protocol": uint32(0), "dst_ip": []uint32{0, 0, 0, 0},
+				"dst_port": uint32(0), "src_port": uint32(0),
+				"sockfd": int32(5), "count": uint64(0), "unix_path": "@/run/dbus",
 			}},
-			want: "ptrace command=7 arg=8",
+			want: "connect family=1 type=1 protocol=0 dst=@/run/dbus",
+		},
+		{
+			name: "network_sockfd_count",
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
+				"syscall_name": "sendto", "family": uint32(2), "type": uint32(2),
+				"protocol": uint32(17), "dst_ip": []uint32{0x0a01a8c0, 0, 0, 0},
+				"dst_port": uint32(53), "src_port": uint32(40000),
+				"sockfd": int32(4), "count": uint64(512), "unix_path": "",
+			}},
+			want: "sendto family=2 type=2 protocol=17 dst=192.168.1.10:53 src_port=40000 sockfd=4 count=512",
+		},
+		{
+			name: "kernel_ptrace",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "ptrace", "command": uint32(7),
+				"target_pid": uint32(4242), "arg": uint64(8), "bpf_type": uint32(0),
+			}},
+			want: "ptrace command=7 pid=4242",
+		},
+		{
+			name: "kernel_bpf",
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
+				"syscall_name": "bpf", "command": uint32(8),
+				"target_pid": uint32(0), "arg": uint64(0),
+				"bpf_attr": []uint32{7, 9, 3, 0}, "bpf_type": uint32(3),
+			}},
+			want: "bpf command=8 type=3",
 		},
 	}
 
@@ -596,7 +756,7 @@ func TestEventDetail(t *testing.T) {
 
 func TestEventDetailHeadFields(t *testing.T) {
 	payload := model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
-		"syscall_name": "openat", "path": "/tmp/x", "flags": uint32(3),
+		"syscall_name": "openat", "path1": "/tmp/x", "flags": uint32(3),
 		"mode": uint32(420),
 	}}
 	const detail = "openat path=/tmp/x flags=0x3 mode=0644"

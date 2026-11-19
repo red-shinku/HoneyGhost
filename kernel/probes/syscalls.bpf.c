@@ -28,6 +28,22 @@
 //! @note PF_KTHREAD（内核线程标志，include/linux/sched.h），非 UAPI，此处显式取值
 #define PF_KTHREAD 0x00200000
 
+/// @brief sendmsg 累加分散缓冲区长度的项数上限；超出部分不计入
+#define HNG_MAX_IOV 8
+
+/// @brief execve 扫描 envp 的项数上限
+#define HNG_MAX_ENVP 16
+
+/// @brief 判前缀用的环境变量头部字节数，须覆盖最长的 "LD_LIBRARY_PATH=" 及其 NUL
+#define HNG_ENV_HEAD_LEN 18
+
+/// @brief "LD_PRELOAD=" 与 "LD_LIBRARY_PATH=" 的长度（含 '='）
+#define HNG_LD_PRELOAD_LEN 11
+#define HNG_LD_LIBRARY_PATH_LEN 16
+
+/// @brief union bpf_attr 中 attach_type 的偏移（BPF_PROG_ATTACH/DETACH）
+#define HNG_BPF_ATTR_ATTACH_TYPE_OFF 8
+
 /// @brief 七个 CLONE_NEW* 命名空间标志之并（include/uapi/linux/sched.h）
 #define HNG_CLONE_NEW_ALL                                                       \
     (CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | \
@@ -167,6 +183,12 @@ static __always_inline struct syscall_event *init_exec_event(
     __builtin_memset(event->exec_event.image, 0, sizeof(event->exec_event.image));
     __builtin_memset(event->exec_event.argv0, 0, sizeof(event->exec_event.argv0));
     __builtin_memset(event->exec_event.argv1, 0, sizeof(event->exec_event.argv1));
+    __builtin_memset(event->exec_event.argv2, 0, sizeof(event->exec_event.argv2));
+    __builtin_memset(event->exec_event.argv3, 0, sizeof(event->exec_event.argv3));
+    __builtin_memset(event->exec_event.ld_preload, 0,
+                     sizeof(event->exec_event.ld_preload));
+    __builtin_memset(event->exec_event.ld_library_path, 0,
+                     sizeof(event->exec_event.ld_library_path));
     event->exec_event.flags       = 0;
     event->exec_event.image_flags = 0;
     return event;
@@ -227,10 +249,14 @@ static __always_inline struct syscall_event *init_file_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    __builtin_memset(event->file_event.path, 0, sizeof(event->file_event.path));
-    event->file_event.flags      = 0;
-    event->file_event.mode       = 0;
-    event->file_event.path_flags = 0;
+    __builtin_memset(event->file_event.path1, 0, sizeof(event->file_event.path1));
+    __builtin_memset(event->file_event.path2, 0, sizeof(event->file_event.path2));
+    event->file_event.path1_flags = 0;
+    event->file_event.path2_flags = 0;
+    event->file_event.dirfd       = AT_FDCWD;
+    event->file_event.dirfd2      = AT_FDCWD;
+    event->file_event.flags       = 0;
+    event->file_event.mode        = 0;
     return event;
 }
 
@@ -248,8 +274,18 @@ static __always_inline struct syscall_event *init_memory_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->memory_event.prot  = 0;
-    event->memory_event.flags = 0;
+    __builtin_memset(event->memory_event.path, 0,
+                     sizeof(event->memory_event.path));
+    event->memory_event.prot       = 0;
+    event->memory_event.flags      = 0;
+    event->memory_event.addr       = 0;
+    event->memory_event.length     = 0;
+    event->memory_event.offset     = 0;
+    //! @note 无源 fd（匿名映射、mprotect）保持哨兵 -1，与合法的 fd 0 区分
+    event->memory_event.fd         = -1;
+    event->memory_event.anonymous  = 0;
+    event->memory_event.wx         = 0;
+    event->memory_event.path_flags = 0;
     return event;
 }
 
@@ -274,6 +310,11 @@ static __always_inline struct syscall_event *init_network_event(
                      sizeof(event->network_event.dst_ip));
     event->network_event.dst_port = 0;
     event->network_event.src_port = 0;
+    //! @note socket 的新 fd 在返回值里，enter 阶段的 sockfd 保持哨兵 -1
+    event->network_event.sockfd   = -1;
+    event->network_event.count    = 0;
+    __builtin_memset(event->network_event.unix_path, 0,
+                     sizeof(event->network_event.unix_path));
     return event;
 }
 
@@ -291,8 +332,12 @@ static __always_inline struct syscall_event *init_kernel_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->kernel_event.command = 0;
-    event->kernel_event.arg     = 0;
+    event->kernel_event.command    = 0;
+    event->kernel_event.target_pid = 0;
+    event->kernel_event.arg        = 0;
+    __builtin_memset(event->kernel_event.bpf_attr, 0,
+                     sizeof(event->kernel_event.bpf_attr));
+    event->kernel_event.bpf_type = 0;
     return event;
 }
 
@@ -333,6 +378,11 @@ static __always_inline void hng_copy_exec_event(struct exec_event *dst,
     __builtin_memcpy(dst->image, src->image, sizeof(dst->image));
     __builtin_memcpy(dst->argv0, src->argv0, sizeof(dst->argv0));
     __builtin_memcpy(dst->argv1, src->argv1, sizeof(dst->argv1));
+    __builtin_memcpy(dst->argv2, src->argv2, sizeof(dst->argv2));
+    __builtin_memcpy(dst->argv3, src->argv3, sizeof(dst->argv3));
+    __builtin_memcpy(dst->ld_preload, src->ld_preload, sizeof(dst->ld_preload));
+    __builtin_memcpy(dst->ld_library_path, src->ld_library_path,
+                     sizeof(dst->ld_library_path));
     dst->flags       = src->flags;
     dst->image_flags = src->image_flags;
 }
@@ -366,18 +416,30 @@ static __always_inline void hng_copy_namespace_event(
 static __always_inline void hng_copy_file_event(struct file_event *dst,
                                                 const struct file_event *src)
 {
-    __builtin_memcpy(dst->path, src->path, sizeof(dst->path));
-    dst->flags      = src->flags;
-    dst->mode       = src->mode;
-    dst->path_flags = src->path_flags;
+    __builtin_memcpy(dst->path1, src->path1, sizeof(dst->path1));
+    __builtin_memcpy(dst->path2, src->path2, sizeof(dst->path2));
+    dst->path1_flags = src->path1_flags;
+    dst->path2_flags = src->path2_flags;
+    dst->dirfd       = src->dirfd;
+    dst->dirfd2      = src->dirfd2;
+    dst->flags       = src->flags;
+    dst->mode        = src->mode;
 }
 
 /// @brief 复制 memory_event 载荷。
 static __always_inline void hng_copy_memory_event(struct memory_event *dst,
                                                   const struct memory_event *src)
 {
-    dst->prot  = src->prot;
-    dst->flags = src->flags;
+    __builtin_memcpy(dst->path, src->path, sizeof(dst->path));
+    dst->prot       = src->prot;
+    dst->flags      = src->flags;
+    dst->addr       = src->addr;
+    dst->length     = src->length;
+    dst->offset     = src->offset;
+    dst->fd         = src->fd;
+    dst->anonymous  = src->anonymous;
+    dst->wx         = src->wx;
+    dst->path_flags = src->path_flags;
 }
 
 /// @brief 复制 network_event 载荷。
@@ -388,16 +450,22 @@ static __always_inline void hng_copy_network_event(
     dst->type     = src->type;
     dst->protocol = src->protocol;
     __builtin_memcpy(dst->dst_ip, src->dst_ip, sizeof(dst->dst_ip));
+    __builtin_memcpy(dst->unix_path, src->unix_path, sizeof(dst->unix_path));
     dst->dst_port = src->dst_port;
     dst->src_port = src->src_port;
+    dst->sockfd   = src->sockfd;
+    dst->count    = src->count;
 }
 
 /// @brief 复制 kernel_event 载荷。
 static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
                                                   const struct kernel_event *src)
 {
-    dst->command = src->command;
-    dst->arg     = src->arg;
+    dst->command    = src->command;
+    dst->target_pid = src->target_pid;
+    dst->arg        = src->arg;
+    __builtin_memcpy(dst->bpf_attr, src->bpf_attr, sizeof(dst->bpf_attr));
+    dst->bpf_type = src->bpf_type;
 }
 
 /**
@@ -460,11 +528,60 @@ HNG_DEFINE_COMMIT(EXEC_EVENT, exec_event, hng_fill_exec_image)
 HNG_DEFINE_COMMIT(CREDENTIAL_EVENT, credential_event, hng_prepare_none)
 HNG_DEFINE_COMMIT(NAMESPACE_EVENT, namespace_event, hng_prepare_none)
 HNG_DEFINE_COMMIT(FILE_EVENT, file_event, hng_prepare_none)
-HNG_DEFINE_COMMIT(MEMORY_EVENT, memory_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(MEMORY_EVENT, memory_event, hng_fill_mmap_path)
 HNG_DEFINE_COMMIT(NETWORK_EVENT, network_event, hng_prepare_none)
 HNG_DEFINE_COMMIT(KERNEL_EVENT, kernel_event, hng_prepare_none)
 
 /** @} */
+
+/**
+ * @brief 把 AF_UNIX 的 sun_path 写入 unix_path
+ * @param[out] dst 目标缓冲
+ * @param[in] sz 容量
+ * @param[in] addr 用户态 sockaddr
+ * @param[in] addrlen sockaddr 长度；不足 sa_family 加一个字节时跳过
+ * @note 抽象命名空间（sun_path[0] 为 NUL）以 '@' 前缀呈现其余字节，其余情形
+ *       原样拷贝到首个 NUL；读不到时留空串。
+ * @note sun_path 在 struct sockaddr 内偏移 2（sa_family_t 之后）。
+ */
+static __always_inline void copy_unix_path(char *dst, __u32 sz, const void *addr,
+                                           u32 addrlen)
+{
+    //! @note 至少要能放下 '@' 与 NUL，否则下面按 sz 计算的边界会下溢
+    if (!dst || sz < 3) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!addr || addrlen < 3) {
+        return;
+    }
+
+    char first = 0;
+    if (bpf_probe_read_user(&first, 1, (const char *)addr + 2)) {
+        return;
+    }
+    if (first == '\0') {
+        /**
+         * @note 抽象命名空间的名字从 sun_path[1] 起、由 addrlen 定长给出且不以
+         *       NUL 结尾：按字节数拷贝，避免把名字之后的残留字节读进事件。
+         */
+        dst[0]         = '@';
+        __u32 name_len = addrlen - 3;
+        if (name_len > sz - 2) {
+            name_len = sz - 2;
+        }
+        if (name_len == 0 ||
+            bpf_probe_read_user(dst + 1, name_len, (const char *)addr + 3)) {
+            dst[1] = '\0';
+            return;
+        }
+        dst[name_len + 1] = '\0';
+        return;
+    }
+    if (bpf_probe_read_user_str(dst, sz, (const char *)addr + 2) < 0) {
+        dst[0] = '\0';
+    }
+}
 
 /**
  * @brief 解析用户态 sockaddr 地址，提取地址族、IP 与端口
@@ -473,13 +590,18 @@ HNG_DEFINE_COMMIT(KERNEL_EVENT, kernel_event, hng_prepare_none)
  * @param[out] ip_out 目标 IP（网络字节序）：IPv4 用 [0]，IPv6 用 [0..3]
  * @param[out] port_out 目标端口（主机字节序）
  * @param[out] family_out 地址族
+ * @param[out] unix_out AF_UNIX 的 sun_path，见 @ref copy_unix_path
+ * @param[in] unix_sz unix_out 的容量
  * @return 解析成功且地址族为 IPv4 / IPv6 时返回 true，否则返回 false。
- * @note 仅在返回 true 时使用输出参数；地址族非 INET/INET6、长度不足或读取失败
- *       均返回 false。
+ * @note 仅在返回 true 时使用 ip_out/port_out/family_out；地址族非 INET/INET6、
+ *       长度不足或读取失败均返回 false。
+ * @note unix_out 与返回值无关：AF_UNIX 时即使返回 false 也已经写出，供呈现层
+ *       按 sun_path 呈现目标；其余地址族保持空串。
  */
 static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
                                            u32 ip_out[4], u16 *port_out,
-                                           u32 *family_out)
+                                           u32 *family_out, char *unix_out,
+                                           __u32 unix_sz)
 {
     if (!addr) {
         return false;
@@ -489,8 +611,15 @@ static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
     if (bpf_probe_read_user(&sa, sizeof(sa), addr)) {
         return false;
     }
+    //! @note 地址族先写出：AF_UNIX 不解析 IP，但调用方仍要知道目标是 UNIX 域
+    *family_out = sa.sa_family;
 
-    if (sa.sa_family == AF_INET) {
+    if (sa.sa_family == AF_UNIX) {
+        //! @note 目标的不是 IP 地址：只记录 sun_path，由调用方按地址族处理
+        copy_unix_path(unix_out, unix_sz, addr, addrlen);
+        return false;
+    }
+    else if (sa.sa_family == AF_INET) {
         if (addrlen < sizeof(struct sockaddr_in)) {
             return false;
         }
@@ -521,6 +650,45 @@ static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
     }
 
     return false;
+}
+
+/**
+ * @brief 用户态 struct msghdr 的头部（UAPI 布局）
+ * @note vmlinux.h 的 struct msghdr 是内核布局（msg_iov 由 msg_iter 取代），不能
+ *       用来读用户态入参；此处只列到 msg_iovlen，x86_64 下 msg_iov 在偏移 16。
+ */
+struct hng_user_msghdr {
+    void *msg_name;         ///< 目标地址；可为 NULL
+    __u32 msg_namelen;      ///< 目标地址长度
+    __u32 __pad;            ///< 对齐填充，与 UAPI 结构一致
+    struct iovec *msg_iov;  ///< 分散缓冲区数组
+    __u64 msg_iovlen;       ///< 数组元素个数（用户给出，不可信）
+};
+
+/**
+ * @brief 累加分散缓冲区的长度，得到 sendmsg 的字节数
+ * @param[in] iov 用户态 iovec 数组
+ * @param[in] count 元素个数；超出 HNG_MAX_IOV 的部分不计入
+ * @return 前 HNG_MAX_IOV 项 iov_len 之和；读取失败处停止累加
+ * @note 只读每个 iovec 的 iov_len，不读它指向的数据。
+ */
+static __always_inline __u64 sum_iov_len(const struct iovec *iov, __u64 count)
+{
+    __u64 total = 0;
+#ifdef __clang__
+#pragma clang loop unroll(full)
+#endif
+    for (int i = 0; i < HNG_MAX_IOV; ++i) {
+        if (!iov || (__u64)i >= count) {
+            break;
+        }
+        struct iovec entry = {};
+        if (bpf_probe_read_user(&entry, sizeof(entry), &iov[i])) {
+            break;
+        }
+        total += entry.iov_len;
+    }
+    return total;
 }
 
 /**
@@ -672,6 +840,112 @@ int trace_process_exit(void *ctx)
  */
 
 /**
+ * @brief 读取 argv 数组下标 index 处的字符串
+ * @param[out] dst 目标缓冲，接收以 NUL 结尾的参数
+ * @param[in] sz 容量
+ * @param[in] argv_ptr 用户态 argv 数组
+ * @param[in] index 数组下标
+ * @return 该下标存在且非 NULL 时返回 true；数组提前结束或读取失败返回 false
+ * @note 返回值只表示「数组还有这一项」；空串参数同样返回 true。
+ */
+static __always_inline bool read_argv_entry(char *dst, __u32 sz, __u64 argv_ptr,
+                                            __u32 index)
+{
+    if (!argv_ptr) {
+        return false;
+    }
+    const char *entry = NULL;
+    if (bpf_probe_read_user(&entry, sizeof(entry),
+                            (void *)(argv_ptr + (__u64)index * sizeof(char *))) ||
+        !entry) {
+        return false;
+    }
+    if (bpf_probe_read_user_str(dst, sz, entry) < 0) {
+        dst[0] = '\0';
+    }
+    return true;
+}
+
+/**
+ * @brief 依次填充 argv0..argv3
+ * @param[out] e 目标 exec 事件载荷
+ * @param[in] argv_ptr 用户态 argv 数组
+ * @note 用户的 argv 数组可以提前以 NULL 结尾：某一项不存在即停止，其余保持
+ *       init 的清零空串；不越界读取，故不会把 envp 的首项当成参数。
+ */
+static __always_inline void fill_exec_argv(struct exec_event *e, __u64 argv_ptr)
+{
+    if (!read_argv_entry(e->argv0, sizeof(e->argv0), argv_ptr, 0)) return;
+    if (!read_argv_entry(e->argv1, sizeof(e->argv1), argv_ptr, 1)) return;
+    if (!read_argv_entry(e->argv2, sizeof(e->argv2), argv_ptr, 2)) return;
+    read_argv_entry(e->argv3, sizeof(e->argv3), argv_ptr, 3);
+}
+
+/**
+ * @brief 变量串是否以 "LD_PRELOAD=" 开头
+ * @param head 环境变量串的头部，至少 HNG_LD_PRELOAD_LEN 字节
+ */
+static __always_inline bool is_ld_preload(const char *head)
+{
+    return head[0] == 'L' && head[1] == 'D' && head[2] == '_' && head[3] == 'P' &&
+           head[4] == 'R' && head[5] == 'E' && head[6] == 'L' && head[7] == 'O' &&
+           head[8] == 'A' && head[9] == 'D' && head[10] == '=';
+}
+
+/**
+ * @brief 变量串是否以 "LD_LIBRARY_PATH=" 开头
+ * @param head 环境变量串的头部，至少 HNG_LD_LIBRARY_PATH_LEN 字节
+ */
+static __always_inline bool is_ld_library_path(const char *head)
+{
+    return head[0] == 'L' && head[1] == 'D' && head[2] == '_' && head[3] == 'L' &&
+           head[4] == 'I' && head[5] == 'B' && head[6] == 'R' && head[7] == 'A' &&
+           head[8] == 'R' && head[9] == 'Y' && head[10] == '_' &&
+           head[11] == 'P' && head[12] == 'A' && head[13] == 'T' &&
+           head[14] == 'H' && head[15] == '=';
+}
+
+/**
+ * @brief 扫描 envp 前 HNG_MAX_ENVP 项，取出 LD_PRELOAD/LD_LIBRARY_PATH 的值
+ * @param[out] e 目标 exec 事件载荷；ld_preload 与 ld_library_path 由本函数填写
+ * @param[in] envp_ptr 用户态 envp 数组
+ * @note 先读变量头部判前缀，命中后再从值的起点重读整串，故不命中的变量不会
+ *       写进目标字段；字符串直接读进 map value 的字段，栈上只有头部缓冲。
+ * @note 数组提前以 NULL 结尾时停止；两项都未出现时字段保持 init 的清零空串。
+ */
+static __always_inline void fill_exec_env(struct exec_event *e, __u64 envp_ptr)
+{
+    if (!envp_ptr) {
+        return;
+    }
+#ifdef __clang__
+#pragma clang loop unroll(full)
+#endif
+    for (int i = 0; i < HNG_MAX_ENVP; ++i) {
+        const char *entry = NULL;
+        if (bpf_probe_read_user(&entry, sizeof(entry),
+                                (void *)(envp_ptr + (__u64)i * sizeof(char *))) ||
+            !entry) {
+            break;
+        }
+        //! @note 逐项清零：短串只写到自己的 NUL，残留字节会让前缀比较误命中
+        char head[HNG_ENV_HEAD_LEN] = {};
+        if (bpf_probe_read_user_str(head, sizeof(head), entry) < 0) {
+            continue;
+        }
+        if (is_ld_library_path(head)) {
+            bpf_probe_read_user_str(e->ld_library_path,
+                                    sizeof(e->ld_library_path),
+                                    entry + HNG_LD_LIBRARY_PATH_LEN);
+        }
+        else if (is_ld_preload(head)) {
+            bpf_probe_read_user_str(e->ld_preload, sizeof(e->ld_preload),
+                                    entry + HNG_LD_PRELOAD_LEN);
+        }
+    }
+}
+
+/**
  * @brief 处理 sys_enter_execve 事件并暂存采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
@@ -687,22 +961,10 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
                             sizeof(event->exec_event.invoked),
                             (void *)ctx->args[0]);
 
-    //! @note args[1]: char *const argv[] — 读取 argv[0]/argv[1]
-    const char *arg0_ptr = NULL;
-    const char *arg1_ptr = NULL;
-    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[1]) ==
-            0 &&
-        arg0_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv0,
-                                sizeof(event->exec_event.argv0), arg0_ptr);
-    }
-    //! @note argv[1] = argv 数组第二个元素（用户可空终止，读取失败留空）
-    if (bpf_probe_read_user(&arg1_ptr, sizeof(arg1_ptr),
-                            (void *)(ctx->args[1] + sizeof(char *))) == 0 &&
-        arg1_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv1,
-                                sizeof(event->exec_event.argv1), arg1_ptr);
-    }
+    //! @note args[1]: char *const argv[], args[2]: char *const envp[] —
+    //!       argv 取前四项，envp 只取两个 LD_* 变量的值
+    fill_exec_argv(&event->exec_event, ctx->args[1]);
+    fill_exec_env(&event->exec_event, ctx->args[2]);
 
     hng_stash_pending(event);
     return 0;
@@ -724,22 +986,10 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
                             sizeof(event->exec_event.invoked),
                             (void *)ctx->args[1]);
 
-    //! @note args[2]: char *const argv[] — 读取 argv[0]/argv[1]
-    const char *arg0_ptr = NULL;
-    const char *arg1_ptr = NULL;
-    if (bpf_probe_read_user(&arg0_ptr, sizeof(arg0_ptr), (void *)ctx->args[2]) ==
-            0 &&
-        arg0_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv0,
-                                sizeof(event->exec_event.argv0), arg0_ptr);
-    }
-    //! @note argv[1] = argv 数组第二个元素
-    if (bpf_probe_read_user(&arg1_ptr, sizeof(arg1_ptr),
-                            (void *)(ctx->args[2] + sizeof(char *))) == 0 &&
-        arg1_ptr) {
-        bpf_probe_read_user_str(&event->exec_event.argv1,
-                                sizeof(event->exec_event.argv1), arg1_ptr);
-    }
+    //! @note args[2]: char *const argv[], args[3]: char *const envp[] —
+    //!       argv 取前四项，envp 只取两个 LD_* 变量的值
+    fill_exec_argv(&event->exec_event, ctx->args[2]);
+    fill_exec_env(&event->exec_event, ctx->args[3]);
 
     //! @note args[4]: int flags
     event->exec_event.flags = (u32)ctx->args[4];
@@ -886,24 +1136,51 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
  */
 
 /**
- * @brief 解析文件事件的路径并记录解析状态位。
- * @param[out] file 目标文件事件载荷，path 与 path_flags 由本函数填写
+ * @brief 解析一条路径并记录解析状态位。
+ * @param[out] dst 目标缓冲，接收绝对路径；解析失败时是用户原始串
+ * @param[in] sz dst 容量
+ * @param[out] path_flags 解析状态位，失败时按结果或上 PATH_*
  * @param[in] user_path 用户态路径串
  * @param[in] dirfd 基准目录 fd；AT_FDCWD 表示当前工作目录
  * @note 返回 -1 置 PATH_UNRESOLVED、返回 -2 置 PATH_TRUNCATED，成功不置位。
  * @note path_flags 由 init_file_event 预先清零。
  * @see hng_resolve_user_path
  */
-static __always_inline void hng_fill_file_path(struct file_event *file,
+static __always_inline void hng_fill_file_path(char *dst, __u32 sz,
+                                               __u32 *path_flags,
                                                const void *user_path, int dirfd)
 {
-    long written =
-        hng_resolve_user_path(file->path, sizeof(file->path), user_path, dirfd);
+    long written = hng_resolve_user_path(dst, sz, user_path, dirfd);
     if (written == -1) {
-        file->path_flags |= PATH_UNRESOLVED;
+        *path_flags |= PATH_UNRESOLVED;
     }
     else if (written == -2) {
-        file->path_flags |= PATH_TRUNCATED;
+        *path_flags |= PATH_TRUNCATED;
+    }
+}
+
+/**
+ * @brief 依次解析文件事件的两条路径。
+ * @param[in,out] file 目标文件事件载荷；path1/path2 及其状态位由本函数填写
+ * @param[in] path1 用户态主路径串
+ * @param[in] dirfd path1 的基准目录 fd
+ * @param[in] path2 用户态第二路径串；无第二路径时传 NULL
+ * @param[in] dirfd2 path2 的基准目录 fd
+ * @note 两条路径串行解析，解析器（约 256B 栈）同一时刻只有一份在用；路径串为
+ *       NULL 时对应字段留空串、状态位保持 init 的清零值。
+ * @see hng_fill_file_path
+ */
+static __always_inline void hng_fill_file_paths(struct file_event *file,
+                                                const void *path1, int dirfd,
+                                                const void *path2, int dirfd2)
+{
+    if (path1) {
+        hng_fill_file_path(file->path1, sizeof(file->path1), &file->path1_flags,
+                           path1, dirfd);
+    }
+    if (path2) {
+        hng_fill_file_path(file->path2, sizeof(file->path2), &file->path2_flags,
+                           path2, dirfd2);
     }
 }
 
@@ -918,8 +1195,10 @@ int trace_syscall_open(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPEN);
     if (!event) return 0;
 
-    //! @note args[0]: const char *filename；open 没有 dirfd，基准为当前工作目录
-    hng_fill_file_path(&event->file_event, (const void *)ctx->args[0], AT_FDCWD);
+    //! @note args[0]: const char *filename；open 没有 dirfd 参数，基准为当前
+    //!       工作目录，dirfd 保持 init 的 AT_FDCWD
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
     //! @note args[1]: int flags, args[2]: umode_t mode
     event->file_event.flags = (u32)ctx->args[1];
     event->file_event.mode  = (u32)ctx->args[2];
@@ -940,8 +1219,9 @@ int trace_syscall_openat(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     //! @note args[0]: int dirfd, args[1]: const char *filename
-    hng_fill_file_path(&event->file_event, (const void *)ctx->args[1],
-                       (int)ctx->args[0]);
+    event->file_event.dirfd = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
     //! @note args[2]: int flags, args[3]: umode_t mode
     event->file_event.flags = (u32)ctx->args[2];
     event->file_event.mode  = (u32)ctx->args[3];
@@ -962,8 +1242,9 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     //! @note args[0]: int dirfd, args[1]: const char *filename
-    hng_fill_file_path(&event->file_event, (const void *)ctx->args[1],
-                       (int)ctx->args[0]);
+    event->file_event.dirfd = (s32)ctx->args[0];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], NULL, AT_FDCWD);
     //! @note args[2]: struct open_how *
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
@@ -986,8 +1267,10 @@ int trace_syscall_creat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_CREAT);
     if (!event) return 0;
 
-    //! @note args[0]: const char *filename；creat 没有 dirfd，基准为当前工作目录
-    hng_fill_file_path(&event->file_event, (const void *)ctx->args[0], AT_FDCWD);
+    //! @note args[0]: const char *filename；creat 没有 dirfd 参数，基准为当前
+    //!       工作目录，dirfd 保持 init 的 AT_FDCWD
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
     //! @note creat() 隐含了 O_CREAT | O_WRONLY | O_TRUNC
     event->file_event.flags = O_CREAT | O_WRONLY | O_TRUNC;
     //! @note args[1]: umode_t mode
@@ -1008,6 +1291,11 @@ int trace_syscall_unlink(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_UNLINK);
     if (!event) return 0;
 
+    //! @note args[0]: const char *pathname；unlink 没有 dirfd 参数，基准为当前
+    //!       工作目录，dirfd 保持 init 的 AT_FDCWD
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        NULL, AT_FDCWD);
+
     hng_stash_pending(event);
     return 0;
 }
@@ -1022,6 +1310,11 @@ int trace_syscall_link(struct trace_event_raw_sys_enter *ctx)
 {
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_LINK);
     if (!event) return 0;
+
+    //! @note args[0]: const char *oldname（源）, args[1]: const char *newname
+    //!       （新名）；link 没有 dirfd 参数，两个基准都保持 AT_FDCWD
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        (const void *)ctx->args[1], AT_FDCWD);
 
     hng_stash_pending(event);
     return 0;
@@ -1038,6 +1331,11 @@ int trace_syscall_rename(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_RENAME);
     if (!event) return 0;
 
+    //! @note args[0]: const char *oldname（源）, args[1]: const char *newname
+    //!       （目标）；rename 没有 dirfd 参数，两个基准都保持 AT_FDCWD
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[0], AT_FDCWD,
+                        (const void *)ctx->args[1], AT_FDCWD);
+
     hng_stash_pending(event);
     return 0;
 }
@@ -1052,6 +1350,14 @@ int trace_syscall_renameat(struct trace_event_raw_sys_enter *ctx)
 {
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_RENAMEAT);
     if (!event) return 0;
+
+    //! @note args[0]: int olddirfd, args[1]: const char *oldname,
+    //!       args[2]: int newdirfd, args[3]: const char *newname
+    event->file_event.dirfd  = (s32)ctx->args[0];
+    event->file_event.dirfd2 = (s32)ctx->args[2];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], (const void *)ctx->args[3],
+                        (int)ctx->args[2]);
 
     hng_stash_pending(event);
     return 0;
@@ -1068,6 +1374,14 @@ int trace_syscall_renameat2(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_RENAMEAT2);
     if (!event) return 0;
 
+    //! @note args[0]: int olddirfd, args[1]: const char *oldname,
+    //!       args[2]: int newdirfd, args[3]: const char *newname,
+    //!       args[4]: unsigned int flags (RENAME_*)
+    event->file_event.dirfd  = (s32)ctx->args[0];
+    event->file_event.dirfd2 = (s32)ctx->args[2];
+    hng_fill_file_paths(&event->file_event, (const void *)ctx->args[1],
+                        (int)ctx->args[0], (const void *)ctx->args[3],
+                        (int)ctx->args[2]);
     event->file_event.flags = (u32)ctx->args[4];
 
     hng_stash_pending(event);
@@ -1092,10 +1406,24 @@ int trace_mmap(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_memory_event(SYSCALL_EVENT_MMAP);
     if (!event) return 0;
 
-    //! @note args[2]: int prot (PROT_*)
-    event->memory_event.prot  = ctx->args[2];
-    //! @note args[3]: int flags (MAP_*)
-    event->memory_event.flags = ctx->args[3];
+    //! @note args[0]: void *addr, args[1]: size_t length, args[2]: int prot
+    //!       (PROT_*), args[3]: int flags (MAP_*), args[4]: int fd,
+    //!       args[5]: off_t offset
+    event->memory_event.addr   = ctx->args[0];
+    event->memory_event.length = ctx->args[1];
+    event->memory_event.prot   = ctx->args[2];
+    event->memory_event.flags  = ctx->args[3];
+    event->memory_event.fd     = (s32)ctx->args[4];
+    event->memory_event.offset = ctx->args[5];
+    //! @note MAP_ANONYMOUS 时 fd 被忽略，匿名标志独立记录
+    event->memory_event.anonymous =
+        (event->memory_event.flags & MAP_ANONYMOUS) ? 1 : 0;
+    //! @note 同时可写可执行：自修改代码与代码注入的典型特征
+    event->memory_event.wx =
+        (event->memory_event.prot & (PROT_WRITE | PROT_EXEC)) ==
+                (PROT_WRITE | PROT_EXEC)
+            ? 1
+            : 0;
 
     hng_stash_pending(event);
     return 0;
@@ -1112,8 +1440,16 @@ int trace_mprotect(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_memory_event(SYSCALL_EVENT_MPROTECT);
     if (!event) return 0;
 
-    //! @note args[2]: int prot (PROT_*)
-    event->memory_event.prot = ctx->args[2];
+    //! @note args[0]: void *addr, args[1]: size_t len, args[2]: int prot
+    event->memory_event.addr   = ctx->args[0];
+    event->memory_event.length = ctx->args[1];
+    event->memory_event.prot   = ctx->args[2];
+    //! @note W|X 同时出现即自修改代码特征；fd 与 offset 保持 init 的空值
+    event->memory_event.wx =
+        (event->memory_event.prot & (PROT_WRITE | PROT_EXEC)) ==
+                (PROT_WRITE | PROT_EXEC)
+            ? 1
+            : 0;
 
     hng_stash_pending(event);
     return 0;
@@ -1141,16 +1477,18 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     //! @note args[0]: sockfd, args[1]: 目标 sockaddr, args[2]: addrlen
-    if (parse_sockaddr((const void *)ctx->args[1], (u32)ctx->args[2],
-                       event->network_event.dst_ip,
-                       &event->network_event.dst_port,
-                       &event->network_event.family)) {
+    event->network_event.sockfd = (s32)ctx->args[0];
+    if (parse_sockaddr(
+            (const void *)ctx->args[1], (u32)ctx->args[2],
+            event->network_event.dst_ip, &event->network_event.dst_port,
+            &event->network_event.family, event->network_event.unix_path,
+            sizeof(event->network_event.unix_path))) {
         fill_local_info(get_socket_sk((u32)ctx->args[0]), &event->network_event);
     }
     else {
         /**
          * @note 解析不出 IPv4/IPv6 时只填 sockaddr 中读到的地址族，
-         * 目标地址与端口保持 0
+         * 目标地址与端口保持 0；AF_UNIX 的 sun_path 已由 parse_sockaddr 写出
          */
         struct sockaddr sa;
         if (bpf_probe_read_user(&sa, sizeof(sa), (void *)ctx->args[1]) == 0) {
@@ -1166,8 +1504,8 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
  * @brief 处理 sys_enter_sendto 事件并暂存采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件、目标地址不可解析或无法构造事件时跳过暂存。
- * @note 仅在目标 sockaddr 能解析为 IPv4/IPv6 时暂存；已 connect 的套接字通常
- *       不再携带目标地址，其连接信息由 connect 事件记录。
+ * @note 目标 sockaddr 解析为 IPv4/IPv6 或 AF_UNIX 时暂存；已 connect 的套接字
+ *       通常不再携带目标地址，其连接信息由 connect 事件记录。
  */
 SEC("tracepoint/syscalls/sys_enter_sendto")
 int trace_sendto(struct trace_event_raw_sys_enter *ctx)
@@ -1175,12 +1513,22 @@ int trace_sendto(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_network_event(SYSCALL_EVENT_SENDTO);
     if (!event) return 0;
 
-    //! @note args[0]: sockfd, args[4]: 目标 sockaddr, args[5]: addrlen
-    if (!parse_sockaddr((const void *)ctx->args[4], (u32)ctx->args[5],
-                        event->network_event.dst_ip,
-                        &event->network_event.dst_port,
-                        &event->network_event.family)) {
-        //! @note 未预留任何资源，也不写暂存表；exit 侧据此不计 pending_lost
+    //! @note args[0]: sockfd, args[2]: size_t len（本次发送的字节数）,
+    //!       args[4]: 目标 sockaddr, args[5]: addrlen
+    event->network_event.sockfd = (s32)ctx->args[0];
+    event->network_event.count  = ctx->args[2];
+    if (!parse_sockaddr(
+            (const void *)ctx->args[4], (u32)ctx->args[5],
+            event->network_event.dst_ip, &event->network_event.dst_port,
+            &event->network_event.family, event->network_event.unix_path,
+            sizeof(event->network_event.unix_path)) &&
+        event->network_event.family != AF_UNIX) {
+        /**
+         * @note 只有 IP 目标与 AF_UNIX 目标算「目标已知」：前者已填 ip/port，
+         *       后者已由 parse_sockaddr 写出 sun_path。已 connect 的套接字通常
+         *       不再携带目标地址，其连接信息由 connect 事件记录，本次不暂存；
+         *       未预留任何资源，exit 侧据此不计 pending_lost。
+         */
         return 0;
     }
 
@@ -1194,7 +1542,7 @@ int trace_sendto(struct trace_event_raw_sys_enter *ctx)
  * @brief 处理 sys_enter_sendmsg 事件并暂存采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件、目标地址不可解析或无法构造事件时跳过暂存。
- * @note 仅在 msg_name 能解析为 IPv4/IPv6 时暂存；已 connect 的套接字可传空的
+ * @note msg_name 解析为 IPv4/IPv6 或 AF_UNIX 时暂存；已 connect 的套接字可传空的
  *       msg_name，此时连接信息已由 connect 事件记录，跳过本次暂存。
  */
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
@@ -1203,19 +1551,30 @@ int trace_sendmsg(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_network_event(SYSCALL_EVENT_SENDMSG);
     if (!event) return 0;
 
-    //! @note args[0]: sockfd, args[1]: struct msghdr *, args[2]: flags
-    const void *dest_addr = NULL;
-    u32 addrlen           = 0;
-    struct msghdr msg;
+    //! @note args[0]: sockfd, args[1]: 用户态 struct msghdr *, args[2]: flags
+    event->network_event.sockfd = (s32)ctx->args[0];
+    const void *dest_addr       = NULL;
+    u32 addrlen                 = 0;
+    struct hng_user_msghdr msg  = {};
     if (bpf_probe_read_user(&msg, sizeof(msg), (void *)ctx->args[1]) == 0) {
-        dest_addr = msg.msg_name;
-        addrlen   = (u32)msg.msg_namelen;
+        dest_addr                  = msg.msg_name;
+        addrlen                    = (u32)msg.msg_namelen;
+        //! @note 字节数不在入参里：按 iovec 数组累加，至多 HNG_MAX_IOV 项
+        event->network_event.count = sum_iov_len(msg.msg_iov, msg.msg_iovlen);
     }
 
     if (!parse_sockaddr(dest_addr, addrlen, event->network_event.dst_ip,
                         &event->network_event.dst_port,
-                        &event->network_event.family)) {
-        //! @note 未预留任何资源，也不写暂存表；exit 侧据此不计 pending_lost
+                        &event->network_event.family,
+                        event->network_event.unix_path,
+                        sizeof(event->network_event.unix_path)) &&
+        event->network_event.family != AF_UNIX) {
+        /**
+         * @note 只有 IP 目标与 AF_UNIX 目标算「目标已知」：前者已填 ip/port，
+         *       后者已由 parse_sockaddr 写出 sun_path。已 connect 的套接字可传空
+         *       msg_name，连接信息由 connect 事件记录，本次不暂存；未预留任何
+         *       资源，exit 侧据此不计 pending_lost。
+         */
         return 0;
     }
 
@@ -1236,6 +1595,8 @@ int trace_socket(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_network_event(SYSCALL_EVENT_SOCKET);
     if (!event) return 0;
 
+    //! @note args[0]: int family, args[1]: int type, args[2]: int protocol；
+    //!       新 fd 在返回值里，sockfd 保持 init 的 -1
     event->network_event.family   = (u32)ctx->args[0];
     event->network_event.type     = (u32)ctx->args[1];
     event->network_event.protocol = (u32)ctx->args[2];
@@ -1255,7 +1616,8 @@ int trace_bind(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_network_event(SYSCALL_EVENT_BIND);
     if (!event) return 0;
 
-    //! @note args[1]: const struct sockaddr *addr
+    //! @note args[0]: sockfd, args[1]: const struct sockaddr *addr
+    event->network_event.sockfd = (s32)ctx->args[0];
     struct sockaddr sa;
     if (bpf_probe_read_user(&sa, sizeof(sa), (void *)ctx->args[1]) == 0) {
         event->network_event.family = sa.sa_family;
@@ -1273,6 +1635,39 @@ int trace_bind(struct trace_event_raw_sys_enter *ctx)
  */
 
 /**
+ * @brief 按 bpf 命令解出 union bpf_attr 里的类型字段
+ * @param[in] cmd bpf 命令（BPF_*）
+ * @param[in] attr 用户态 union bpf_attr
+ * @return map_type（BPF_MAP_CREATE）、prog_type（BPF_PROG_LOAD）或 attach_type
+ *         （BPF_PROG_ATTACH/DETACH）；其它命令或读取失败返回 0
+ * @note 三个字段都落在 union 的前 16 字节：map_type/prog_type 是首个 u32，
+ *       attach_type 是 ATTACH/DETACH 匿名结构的第三个 u32（偏移 8）。
+ */
+static __always_inline __u32 decode_bpf_type(__u32 cmd, const void *attr)
+{
+    __u32 offset = 0;
+    switch (cmd) {
+        case BPF_MAP_CREATE:
+        case BPF_PROG_LOAD:
+            break;
+        case BPF_PROG_ATTACH:
+        case BPF_PROG_DETACH:
+            offset = HNG_BPF_ATTR_ATTACH_TYPE_OFF;
+            break;
+        default:
+            return 0;
+    }
+    if (!attr) {
+        return 0;
+    }
+    __u32 value = 0;
+    if (bpf_probe_read_user(&value, sizeof(value), (const char *)attr + offset)) {
+        return 0;
+    }
+    return value;
+}
+
+/**
  * @brief 处理 sys_enter_ptrace 事件并暂存采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
@@ -1283,10 +1678,12 @@ int trace_ptrace(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_PTRACE);
     if (!event) return 0;
 
-    //! @note args[0]: int request (PTRACE_*)
-    event->kernel_event.command = (u32)ctx->args[0];
-    //! @note args[1]: pid_t pid — 目标进程
-    event->kernel_event.arg     = ctx->args[1];
+    //! @note args[0]: int request (PTRACE_*), args[1]: pid_t pid — 目标进程,
+    //!       args[3]: void *data — POKETEXT 是写入的字，其余请求含义不同，
+    //!       一律原样保留
+    event->kernel_event.command    = (u32)ctx->args[0];
+    event->kernel_event.target_pid = (u32)ctx->args[1];
+    event->kernel_event.arg        = ctx->args[3];
 
     hng_stash_pending(event);
     return 0;
@@ -1303,10 +1700,24 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_kernel_event(SYSCALL_EVENT_BPF);
     if (!event) return 0;
 
-    //! @note args[0]: int cmd (BPF_*)
+    //! @note args[0]: int cmd (BPF_*), args[1]: union bpf_attr *,
+    //!       args[2]: unsigned int size — 用户给出的属性大小
     event->kernel_event.command = (u32)ctx->args[0];
-    //! @note args[2]: unsigned int size — attr 大小（可用于推断 BPF 命令版本）
-    event->kernel_event.arg     = ctx->args[2];
+    /**
+     * @note 按用户给出的 size 截断读取（上限 16 字节）：短属性的命令不会因为
+     *       多读越界而在页边界失败。size 本身留在 arg 里，可用于区分命令版本。
+     */
+    __u32 attr_size             = (__u32)ctx->args[2];
+    if (attr_size > sizeof(event->kernel_event.bpf_attr)) {
+        attr_size = sizeof(event->kernel_event.bpf_attr);
+    }
+    event->kernel_event.arg = attr_size;
+    if (attr_size != 0 &&
+        bpf_probe_read_user(event->kernel_event.bpf_attr, attr_size,
+                            (void *)ctx->args[1]) == 0) {
+        event->kernel_event.bpf_type = decode_bpf_type(
+            event->kernel_event.command, (const void *)ctx->args[1]);
+    }
 
     hng_stash_pending(event);
     return 0;

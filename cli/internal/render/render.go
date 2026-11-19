@@ -365,37 +365,71 @@ func payloadDetail(p model.Payload) string {
 		if invoked := stringField(fields, "invoked"); invoked != "" && invoked != image {
 			detail += " invoked=" + invoked
 		}
+		// 动态库注入特征：LD_PRELOAD 的值原样呈现（可能含多个路径）
+		if preload := stringField(fields, "ld_preload"); preload != "" {
+			detail += " preload=" + preload
+		}
 		return detail
 	case model.SubtypeCredential:
 		return credentialDetail(name, fields)
 	case model.SubtypeNamespace:
 		return namespaceDetail(name, fields)
 	case model.SubtypeFile:
+		// 主路径沿用既有 path= 字样，第二路径仅在采集到时追加
 		detail := name
-		if path := stringField(fields, "path"); path != "" {
-			if uintField(fields, "path_flags")&pathUnresolvedFlag != 0 {
-				// 未解析的路径是用户给出的原始串，加 ? 前缀与绝对路径区分
-				detail += " path=?" + path
-			} else {
-				detail += " path=" + path
-			}
+		if path := stringField(fields, "path1"); path != "" {
+			detail += " path=" + unresolvedPathPrefix(uintField(fields, "path1_flags")) + path
+		}
+		if path := stringField(fields, "path2"); path != "" {
+			detail += " path2=" + unresolvedPathPrefix(uintField(fields, "path2_flags")) + path
 		}
 		return fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
 			uintField(fields, "flags"), uintField(fields, "mode"))
 	case model.SubtypeMemory:
-		return fmt.Sprintf("%s prot=0x%x flags=0x%x", name,
+		detail := fmt.Sprintf("%s addr=0x%x len=%d prot=0x%x flags=0x%x", name,
+			uintField(fields, "addr"), uintField(fields, "length"),
 			uintField(fields, "prot"), uintField(fields, "flags"))
+		if boolField(fields, "anonymous") {
+			detail += " anon"
+		} else if path := stringField(fields, "path"); path != "" {
+			// 文件映射的源：路径 + 区段起点；解析失败时路径为空，只留 fd 在 JSON
+			detail += fmt.Sprintf(" path=%s offset=%d", path,
+				uintField(fields, "offset"))
+		}
+		if boolField(fields, "wx") {
+			detail += " wx"
+		}
+		return detail
 	case model.SubtypeNetwork:
 		detail := fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
 			fields["family"], fields["type"], fields["protocol"])
+		unixPath := stringField(fields, "unix_path")
+		if uint32(uintField(fields, "family")) == afUNIX && unixPath != "" {
+			// AF_UNIX 的目标不是 IP：沿用 dst 字样呈现 sun_path
+			return detail + " dst=" + unixPath
+		}
 		if dst := networkDst(fields); dst != "" {
 			detail += fmt.Sprintf(" dst=%s src_port=%d", dst,
 				uintField(fields, "src_port"))
 		}
+		// sockfd 为 -1 表示 socket 事件（新 fd 在 ret）；count 为 0 时省略
+		if fd, ok := signedField(fields, "sockfd"); ok && fd >= 0 {
+			detail += fmt.Sprintf(" sockfd=%d", fd)
+		}
+		if count := uintField(fields, "count"); count != 0 {
+			detail += fmt.Sprintf(" count=%d", count)
+		}
 		return detail
 	case model.SubtypeKernel:
-		return fmt.Sprintf("%s command=%v arg=%v", name,
-			fields["command"], fields["arg"])
+		// ptrace 呈现目标 pid；bpf 呈现按命令解出的类型（解不出时省略）
+		detail := fmt.Sprintf("%s command=%v", name, fields["command"])
+		if pid := uintField(fields, "target_pid"); pid != 0 {
+			detail += fmt.Sprintf(" pid=%d", pid)
+		}
+		if bpfType := uintField(fields, "bpf_type"); bpfType != 0 {
+			detail += fmt.Sprintf(" type=%d", bpfType)
+		}
+		return detail
 	default:
 		return string(p.Kind)
 	}
@@ -483,8 +517,9 @@ func namespaceNames(mask uint32) string {
 	return strings.Join(names, ",")
 }
 
-// 地址族取值，与内核 <sys/socket.h> 的 AF_INET / AF_INET6 一致。
+// 地址族取值，与内核 <sys/socket.h> 的 AF_UNIX / AF_INET / AF_INET6 一致。
 const (
+	afUNIX  = 1
 	afINET  = 2
 	afINET6 = 10
 )
@@ -543,8 +578,23 @@ func allZeroWords(words []uint32) bool {
 	return true
 }
 
+// unresolvedPathPrefix 为无法解析的路径字段生成前缀：探针保留用户原始串，
+// 加 ? 与解析出的绝对路径区分；其余状态位不影响呈现。
+func unresolvedPathPrefix(flags uint64) string {
+	if flags&pathUnresolvedFlag != 0 {
+		return "?"
+	}
+	return ""
+}
+
 func stringField(fields map[string]any, key string) string {
 	value, _ := fields[key].(string)
+	return value
+}
+
+// boolField 取布尔字段；缺失或类型不符时为 false。
+func boolField(fields map[string]any, key string) bool {
+	value, _ := fields[key].(bool)
 	return value
 }
 

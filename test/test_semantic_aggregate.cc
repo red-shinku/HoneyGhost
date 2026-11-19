@@ -51,11 +51,11 @@ syscall_event make_syscall_raw(uint32_t pid, int32_t exit_code)
 syscall_event make_file_raw(uint32_t pid, uint32_t path_flags)
 {
     syscall_event raw{};
-    raw.hdr.head.pid          = pid;
-    raw.hdr.subtype           = FILE_EVENT;
-    raw.hdr.name              = SYSCALL_EVENT_OPEN;
-    raw.file_event.path_flags = path_flags;
-    std::strncpy(raw.file_event.path, "rel/x", sizeof(raw.file_event.path) - 1);
+    raw.hdr.head.pid           = pid;
+    raw.hdr.subtype            = FILE_EVENT;
+    raw.hdr.name               = SYSCALL_EVENT_OPEN;
+    raw.file_event.path1_flags = path_flags;
+    std::strncpy(raw.file_event.path1, "rel/x", sizeof(raw.file_event.path1) - 1);
     return raw;
 }
 
@@ -147,8 +147,8 @@ void count_unresolved_path()
         const auto* file =
             std::get_if<hng::file_syscall_semantic_data>(&event.data);
         REQUIRE(file != nullptr);
-        REQUIRE(file->path_flags() == expect);
-        REQUIRE(file->path() == "rel/x");
+        REQUIRE(file->path1_flags() == expect);
+        REQUIRE(file->path1() == "rel/x");
     }
 
     semantic.stop();

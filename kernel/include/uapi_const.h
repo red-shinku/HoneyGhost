@@ -30,12 +30,42 @@
 #define O_TRUNC 00001000
 #endif
 
+// 内存保护位（include/uapi/asm-generic/mman-common.h）
+#ifndef PROT_WRITE
+#define PROT_WRITE 0x2
+#endif
+#ifndef PROT_EXEC
+#define PROT_EXEC 0x4
+#endif
+
+// 内存映射标志（include/uapi/asm-generic/mman-common.h）
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS 0x20
+#endif
+
 // 套接字地址族（include/uapi/linux/socket.h）
+#ifndef AF_UNIX
+#define AF_UNIX 1
+#endif
 #ifndef AF_INET
 #define AF_INET 2
 #endif
 #ifndef AF_INET6
 #define AF_INET6 10
+#endif
+
+// bpf 命令（include/uapi/linux/bpf.h）
+#ifndef BPF_MAP_CREATE
+#define BPF_MAP_CREATE 0
+#endif
+#ifndef BPF_PROG_LOAD
+#define BPF_PROG_LOAD 5
+#endif
+#ifndef BPF_PROG_ATTACH
+#define BPF_PROG_ATTACH 8
+#endif
+#ifndef BPF_PROG_DETACH
+#define BPF_PROG_DETACH 9
 #endif
 
 // 命名空间克隆标志（include/uapi/linux/sched.h）

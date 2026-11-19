@@ -65,13 +65,21 @@ constexpr std::size_t SyscallRecordSize(enum syscall_event_type subtype) noexcep
 // ringbuf 记录格式与通道元素尺寸是跨内核/用户态的 ABI，锁定在编译期。
 static_assert(sizeof(struct syscall_event_head) == 80,
               "ringbuf 记录头尺寸变化会破坏按 subtype 解析的载荷偏移");
-static_assert(sizeof(struct exec_event) == 648,
+static_assert(sizeof(struct exec_event) == 904,
               "EXEC 载荷变化会改变 ringbuf 的 EXEC 记录长度");
 static_assert(sizeof(struct credential_event) == 48,
               "CREDENTIAL 载荷变化会改变 ringbuf 的 CREDENTIAL 记录长度");
 static_assert(sizeof(struct namespace_event) == 16,
               "NAMESPACE 载荷变化会改变 ringbuf 的 NAMESPACE 记录长度");
-static_assert(sizeof(syscall_event) == 728,
+static_assert(sizeof(struct file_event) == 536,
+              "FILE 载荷变化会改变 ringbuf 的 FILE 记录长度");
+static_assert(sizeof(struct memory_event) == 312,
+              "MEMORY 载荷变化会改变 ringbuf 的 MEMORY 记录长度");
+static_assert(sizeof(struct network_event) == 160,
+              "NETWORK 载荷变化会改变 ringbuf 的 NETWORK 记录长度");
+static_assert(sizeof(struct kernel_event) == 40,
+              "KERNEL 载荷变化会改变 ringbuf 的 KERNEL 记录长度");
+static_assert(sizeof(syscall_event) == 984,
               "用户态通道元素保持为 union 最大者的定长");
 static_assert(offsetof(syscall_event, process_event) ==
               sizeof(struct syscall_event_head));

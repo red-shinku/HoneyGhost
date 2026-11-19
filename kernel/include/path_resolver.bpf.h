@@ -425,4 +425,60 @@ static __always_inline void hng_fill_exec_image(struct syscall_event *pending)
     }
 }
 
+/**
+ * @brief 把 mmap 的源文件路径写入 MEMORY 事件的 path 字段。
+ * @param pending 暂存中的 MEMORY 事件；path 与 path_flags 由本函数填写
+ * @note 匿名映射（MAP_ANONYMOUS 或 fd < 0）不解析：path 为空串、path_flags 为 0。
+ * @note 文件映射取 fd → struct file → f_path，解析边界取 task->fs->root；mmap
+ *       不关闭源 fd，故 exit 侧仍读得到同一文件。
+ * @note file、fs 取不到或路径解析失败时置 PATH_UNRESOLVED 并留空串；解析被
+ *       截断时置 PATH_TRUNCATED 并保留绝对前缀。
+ * @note 结果直接写入 map value，不在栈上另开路径缓冲；本函数自身只用
+ *       hng_path_str 的固定栈占用。
+ * @see hng_fill_exec_image, hng_path_str
+ */
+static __always_inline void hng_fill_mmap_path(struct syscall_event *pending)
+{
+    if (!pending) {
+        return;
+    }
+    pending->memory_event.path[0]    = '\0';
+    pending->memory_event.path_flags = 0;
+    if (pending->memory_event.fd < 0 || pending->memory_event.anonymous) {
+        return;
+    }
+
+    struct file *file = hng_file_from_fd(pending->memory_event.fd);
+    if (!file) {
+        pending->memory_event.path_flags = PATH_UNRESOLVED;
+        return;
+    }
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        pending->memory_event.path_flags = PATH_UNRESOLVED;
+        return;
+    }
+    struct fs_struct *fs = BPF_CORE_READ(task, fs);
+    if (!fs) {
+        pending->memory_event.path_flags = PATH_UNRESOLVED;
+        return;
+    }
+
+    struct path file_path = {};
+    BPF_CORE_READ_INTO(&file_path, file, f_path);
+    struct path root = {};
+    BPF_CORE_READ_INTO(&root, fs, root);
+
+    long written =
+        hng_path_str(pending->memory_event.path,
+                     sizeof(pending->memory_event.path), &file_path, &root);
+    if (written == -1) {
+        pending->memory_event.path_flags = PATH_UNRESOLVED;
+        pending->memory_event.path[0]    = '\0';
+    }
+    else if (written == -2) {
+        pending->memory_event.path_flags = PATH_TRUNCATED;
+    }
+}
+
 #endif  // HNG_PATH_RESOLVER_BPF_H_

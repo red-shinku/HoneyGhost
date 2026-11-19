@@ -130,6 +130,10 @@ struct ExecCase {
     const char* image;    ///< 内核解析出的绝对路径，期望先 normalize
     const char* argv0;
     const char* argv1;
+    const char* argv2;
+    const char* argv3;
+    const char* ld_preload;
+    const char* ld_library_path;
     __u32 flags;
     __u32 image_flags;
     const char* expect_image;  ///< normalize 之后的 image
@@ -138,22 +142,22 @@ struct ExecCase {
 };
 
 constexpr ExecCase kExecCases[] = {
-    // 绝对路径原样保留，invoked 与 image 相同
-    {SYSCALL_EVENT_EXECVE, "/bin/bash", "/bin/bash", "bash", "deploy.sh", 0, 0,
-     "/bin/bash", "/bin/bash", "execve"},
+    // 绝对路径原样保留，invoked 与 image 相同；argv 只到第二项
+    {SYSCALL_EVENT_EXECVE, "/bin/bash", "/bin/bash", "bash", "deploy.sh", "", "",
+     "", "", 0, 0, "/bin/bash", "/bin/bash", "execve"},
     // //、.、尾斜杠被 normalize；实例片段再被语义化；invoked 保留相对写法
-    {SYSCALL_EVENT_EXECVE, "bash", "/tmp//./abc123def456/", "tmpbin", "", 0, 0,
-     "/tmp/abc123def456", "/tmp/*", "execve"},
-    // execveat：AT_* 标志与 image_flags 一并透传
+    {SYSCALL_EVENT_EXECVE, "bash", "/tmp//./abc123def456/", "tmpbin", "", "", "",
+     "", "", 0, 0, "/tmp/abc123def456", "/tmp/*", "execve"},
+    // execveat：AT_* 标志、image_flags、argv2/argv3 与两个 LD_* 一并透传
     {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "/proc/1234/cmdline", "p",
-     "-c", 0x100, PATH_TRUNCATED, "/proc/1234/cmdline", "/proc/{pid}/**",
-     "execveat"},
+     "-c", "--flag", "value", "/tmp/inject.so", "/opt/lib", 0x100, PATH_TRUNCATED,
+     "/proc/1234/cmdline", "/proc/{pid}/**", "execveat"},
     // .. 归一化
-    {SYSCALL_EVENT_EXECVE, "x", "/a//b/../c", "x", "", 0, 0, "/a/c", "/a/c",
-     "execve"},
+    {SYSCALL_EVENT_EXECVE, "x", "/a//b/../c", "x", "", "", "", "", "", 0, 0,
+     "/a/c", "/a/c", "execve"},
     // image 为空（无法解析）：image/semantic_filename 均留空，invoked 仍然搬运
-    {SYSCALL_EVENT_EXECVE, "./run.sh", "", "run.sh", "", 0, PATH_UNRESOLVED, "",
-     "", "execve"},
+    {SYSCALL_EVENT_EXECVE, "./run.sh", "", "run.sh", "", "", "", "", "", 0,
+     PATH_UNRESOLVED, "", "", "execve"},
 };
 
 void run_exec()
@@ -169,6 +173,14 @@ void run_exec()
                      sizeof(raw.exec_event.argv0) - 1);
         std::strncpy(raw.exec_event.argv1, c.argv1,
                      sizeof(raw.exec_event.argv1) - 1);
+        std::strncpy(raw.exec_event.argv2, c.argv2,
+                     sizeof(raw.exec_event.argv2) - 1);
+        std::strncpy(raw.exec_event.argv3, c.argv3,
+                     sizeof(raw.exec_event.argv3) - 1);
+        std::strncpy(raw.exec_event.ld_preload, c.ld_preload,
+                     sizeof(raw.exec_event.ld_preload) - 1);
+        std::strncpy(raw.exec_event.ld_library_path, c.ld_library_path,
+                     sizeof(raw.exec_event.ld_library_path) - 1);
         raw.exec_event.flags       = c.flags;
         raw.exec_event.image_flags = c.image_flags;
 
@@ -186,6 +198,10 @@ void run_exec()
         CHECK(d->image_flags() == c.image_flags, "exec image_flags");
         CHECK(d->argv0() == c.argv0, "exec argv0");
         CHECK(d->argv1() == c.argv1, "exec argv1");
+        CHECK(d->argv2() == c.argv2, "exec argv2");
+        CHECK(d->argv3() == c.argv3, "exec argv3");
+        CHECK(d->ld_preload() == c.ld_preload, "exec ld_preload");
+        CHECK(d->ld_library_path() == c.ld_library_path, "exec ld_library_path");
         CHECK(d->flags() == c.flags, "exec flags");
         CHECK(d->syscall_name() == c.name_str, "exec syscall_name");
     }
@@ -302,25 +318,38 @@ void run_namespace()
 
 struct FileCase {
     enum syscall_event_name name;
-    const char* path;
+    const char* path1;
+    const char* path2;
     __u32 flags;
     __u32 mode;
-    __u32 path_flags;
-    const char* expect_path;
+    __u32 path1_flags;
+    __u32 path2_flags;
+    __s32 dirfd;
+    __s32 dirfd2;
+    const char* expect_path1;
+    const char* expect_path2;
     const char* name_str;
 };
 
 constexpr FileCase kFileCases[] = {
-    {SYSCALL_EVENT_OPEN, "/tmp/../etc/./passwd", O_CREAT | O_WRONLY | O_TRUNC,
-     0644, 0, "/etc/passwd", "open"},
-    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, 0,
-     "/a/c", "renameat2"},
-    {SYSCALL_EVENT_UNLINK, "", 0, 0, 0, "", "unlink"},
-    // 内核侧无法解析为绝对路径：path 保留原始串，未解析位透传
-    {SYSCALL_EVENT_OPENAT, "../etc/shadow", O_RDONLY, 0, PATH_UNRESOLVED,
-     "../etc/shadow", "openat"},
+    // open：唯一路径在 path1，两个 dirfd 都是 AT_FDCWD
+    {SYSCALL_EVENT_OPEN, "/tmp/../etc/./passwd", "", O_CREAT | O_WRONLY | O_TRUNC,
+     0644, 0, 0, AT_FDCWD, AT_FDCWD, "/etc/passwd", "", "open"},
+    // renameat2：源与目标各自带 dirfd，两条路径都 normalize
+    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", "/x/./y", 1 /* RENAME_NOREPLACE */, 0,
+     0, 0, 5, 6, "/a/c", "/x/y", "renameat2"},
+    // unlink：P4b 起带 path1
+    {SYSCALL_EVENT_UNLINK, "/tmp/gone", "", 0, 0, 0, 0, AT_FDCWD, AT_FDCWD,
+     "/tmp/gone", "", "unlink"},
+    // 内核侧无法解析为绝对路径：path1 保留原始串，未解析位透传
+    {SYSCALL_EVENT_OPENAT, "../etc/shadow", "", O_RDONLY, 0, PATH_UNRESOLVED, 0,
+     3, AT_FDCWD, "../etc/shadow", "", "openat"},
     // 截断位与路径前缀一并透传
-    {SYSCALL_EVENT_OPEN, "/tmp", O_RDONLY, 0, PATH_TRUNCATED, "/tmp", "open"},
+    {SYSCALL_EVENT_OPEN, "/tmp", "", O_RDONLY, 0, PATH_TRUNCATED, 0, AT_FDCWD,
+     AT_FDCWD, "/tmp", "", "open"},
+    // link：新名无法解析时只有 path2 带未解析位与原始串
+    {SYSCALL_EVENT_LINK, "/tmp/src", "rel/new", 0, 0, 0, PATH_UNRESOLVED,
+     AT_FDCWD, AT_FDCWD, "/tmp/src", "rel/new", "link"},
 };
 
 void run_file()
@@ -328,11 +357,16 @@ void run_file()
     for (const FileCase& c : kFileCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, FILE_EVENT);
-        std::strncpy(raw.file_event.path, c.path,
-                     sizeof(raw.file_event.path) - 1);
-        raw.file_event.flags      = c.flags;
-        raw.file_event.mode       = c.mode;
-        raw.file_event.path_flags = c.path_flags;
+        std::strncpy(raw.file_event.path1, c.path1,
+                     sizeof(raw.file_event.path1) - 1);
+        std::strncpy(raw.file_event.path2, c.path2,
+                     sizeof(raw.file_event.path2) - 1);
+        raw.file_event.flags       = c.flags;
+        raw.file_event.mode        = c.mode;
+        raw.file_event.path1_flags = c.path1_flags;
+        raw.file_event.path2_flags = c.path2_flags;
+        raw.file_event.dirfd       = c.dirfd;
+        raw.file_event.dirfd2      = c.dirfd2;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -342,32 +376,40 @@ void run_file()
         if (!d) {
             continue;
         }
-        CHECK(d->path() == c.expect_path, "file path");
+        CHECK(d->path1() == c.expect_path1, "file path1");
+        CHECK(d->path2() == c.expect_path2, "file path2");
         CHECK(d->flags() == c.flags, "file flags");
         CHECK(d->mode() == c.mode, "file mode");
-        CHECK(d->path_flags() == c.path_flags, "file path_flags");
+        CHECK(d->path1_flags() == c.path1_flags, "file path1_flags");
+        CHECK(d->path2_flags() == c.path2_flags, "file path2_flags");
+        CHECK(d->dirfd() == c.dirfd, "file dirfd");
+        CHECK(d->dirfd2() == c.dirfd2, "file dirfd2");
         CHECK(hng::has_unresolved_path(raw) ==
-                  ((c.path_flags & PATH_UNRESOLVED) != 0),
+                  (((c.path1_flags | c.path2_flags) & PATH_UNRESOLVED) != 0),
               "file unresolved predicate");
         CHECK(d->syscall_name() == c.name_str, "file syscall_name");
     }
 }
 
-/// @brief path_unresolved 的计数判据：只认文件事件且只认未解析位
+/// @brief path_unresolved 的计数判据：只认文件事件，且两条路径任一未解析即算
 void run_unresolved_predicate()
 {
     struct syscall_event raw = {};
     fill_head(raw, SYSCALL_EVENT_OPENAT, FILE_EVENT);
-    std::strncpy(raw.file_event.path, "rel/x", sizeof(raw.file_event.path) - 1);
+    std::strncpy(raw.file_event.path1, "rel/x", sizeof(raw.file_event.path1) - 1);
+    std::strncpy(raw.file_event.path2, "rel/y", sizeof(raw.file_event.path2) - 1);
 
-    raw.file_event.path_flags = PATH_UNRESOLVED | PATH_TRUNCATED;
+    raw.file_event.path1_flags = PATH_UNRESOLVED | PATH_TRUNCATED;
     CHECK(hng::has_unresolved_path(raw), "unresolved bit counts");
-    raw.file_event.path_flags = PATH_TRUNCATED;
+    raw.file_event.path1_flags = PATH_TRUNCATED;
     CHECK(!hng::has_unresolved_path(raw), "truncated bit does not count");
-    raw.file_event.path_flags = 0;
+    raw.file_event.path1_flags = 0;
     CHECK(!hng::has_unresolved_path(raw), "resolved path does not count");
-    raw.file_event.path_flags = PATH_UNRESOLVED;
-    raw.hdr.subtype           = EXEC_EVENT;
+    raw.file_event.path2_flags = PATH_UNRESOLVED;
+    CHECK(hng::has_unresolved_path(raw), "path2 unresolved counts");
+    raw.file_event.path2_flags = 0;
+    raw.file_event.path1_flags = PATH_UNRESOLVED;
+    raw.hdr.subtype            = EXEC_EVENT;
     CHECK(!hng::has_unresolved_path(raw), "non-file subtype does not count");
 }
 
@@ -377,13 +419,31 @@ struct MemoryCase {
     enum syscall_event_name name;
     __u64 prot;
     __u64 flags;
+    __u64 addr;
+    __u64 length;
+    __u64 offset;
+    __s32 fd;
+    bool anonymous;
+    bool wx;
+    const char* path;
+    __u32 path_flags;
+    const char* expect_path;  ///< path 经 normalize 之后
     const char* name_str;
 };
 
 constexpr MemoryCase kMemoryCases[] = {
+    // 匿名 mmap：无源文件，path 为空、fd 为 -1
     {SYSCALL_EVENT_MMAP, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-     "mmap"},
-    {SYSCALL_EVENT_MPROTECT, PROT_EXEC, 0, "mprotect"},
+     0x7f0000000000ULL, 4096, 0, -1, true, false, "", 0, "", "mmap"},
+    // 文件 mmap：路径经 normalize，offset 记录区段起点
+    {SYSCALL_EVENT_MMAP, PROT_READ, MAP_PRIVATE, 0, 8192, 4096, 3, false, false,
+     "/usr//lib/./libc.so.6", 0, "/usr/lib/libc.so.6", "mmap"},
+    // mprotect：没有源 fd 与 offset，W|X 同时置位
+    {SYSCALL_EVENT_MPROTECT, PROT_READ | PROT_WRITE | PROT_EXEC, 0, 0x401000,
+     2048, 0, -1, false, true, "", 0, "", "mprotect"},
+    // 路径解析失败：path 为空串，未解析位透传
+    {SYSCALL_EVENT_MMAP, PROT_WRITE, MAP_SHARED, 0, 4096, 0, 5, false, false, "",
+     PATH_UNRESOLVED, "", "mmap"},
 };
 
 void run_memory()
@@ -391,8 +451,17 @@ void run_memory()
     for (const MemoryCase& c : kMemoryCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, MEMORY_EVENT);
-        raw.memory_event.prot  = c.prot;
-        raw.memory_event.flags = c.flags;
+        raw.memory_event.prot       = c.prot;
+        raw.memory_event.flags      = c.flags;
+        raw.memory_event.addr       = c.addr;
+        raw.memory_event.length     = c.length;
+        raw.memory_event.offset     = c.offset;
+        raw.memory_event.fd         = c.fd;
+        raw.memory_event.anonymous  = c.anonymous ? 1 : 0;
+        raw.memory_event.wx         = c.wx ? 1 : 0;
+        raw.memory_event.path_flags = c.path_flags;
+        std::strncpy(raw.memory_event.path, c.path,
+                     sizeof(raw.memory_event.path) - 1);
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -404,6 +473,14 @@ void run_memory()
         }
         CHECK(d->prot() == c.prot, "memory prot");
         CHECK(d->flags() == c.flags, "memory flags");
+        CHECK(d->addr() == c.addr, "memory addr");
+        CHECK(d->length() == c.length, "memory length");
+        CHECK(d->offset() == c.offset, "memory offset");
+        CHECK(d->fd() == c.fd, "memory fd");
+        CHECK(d->anonymous() == c.anonymous, "memory anonymous");
+        CHECK(d->wx() == c.wx, "memory wx");
+        CHECK(d->path() == c.expect_path, "memory path");
+        CHECK(d->path_flags() == c.path_flags, "memory path_flags");
         CHECK(d->syscall_name() == c.name_str, "memory syscall_name");
     }
 }
@@ -418,12 +495,16 @@ struct NetworkCase {
     __u32 dst_ip[4];
     __u16 dst_port;
     __u16 src_port;
+    __s32 sockfd;
+    __u64 count;
+    const char* unix_path;
     const char* name_str;
 };
 
 // dst_ip 按内核记录的网络字节序存放（主机为小端）：
 // 0x0a01a8c0 = 192.168.1.10，0xb80d0120/0x01000000 = 2001:db8::1
 constexpr NetworkCase kNetworkCases[] = {
+    // socket：新 fd 在返回值里，sockfd 为 -1
     {SYSCALL_EVENT_SOCKET,
      AF_INET,
      SOCK_STREAM,
@@ -431,6 +512,9 @@ constexpr NetworkCase kNetworkCases[] = {
      {0, 0, 0, 0},
      0,
      0,
+     -1,
+     0,
+     "",
      "socket"},
     {SYSCALL_EVENT_CONNECT,
      AF_INET,
@@ -439,7 +523,11 @@ constexpr NetworkCase kNetworkCases[] = {
      {0x0a01a8c0, 0, 0, 0},
      443,
      50000,
+     3,
+     0,
+     "",
      "connect"},
+    // sendto 的 count 是本次发送的字节数
     {SYSCALL_EVENT_SENDTO,
      AF_INET6,
      SOCK_DGRAM,
@@ -447,8 +535,22 @@ constexpr NetworkCase kNetworkCases[] = {
      {0xb80d0120, 0, 0, 0x01000000},
      53,
      40000,
+     4,
+     512,
+     "",
      "sendto"},
-    {SYSCALL_EVENT_BIND, AF_UNIX, 0, 0, {0, 0, 0, 0}, 0, 0, "bind"},
+    // AF_UNIX：目标不是 IP，dst_ip/端口为 0，sun_path 带上抽象命名空间前缀
+    {SYSCALL_EVENT_CONNECT,
+     AF_UNIX,
+     SOCK_STREAM,
+     0,
+     {0, 0, 0, 0},
+     0,
+     0,
+     5,
+     0,
+     "@/run/dbus",
+     "connect"},
 };
 
 void run_network()
@@ -464,6 +566,10 @@ void run_network()
         }
         raw.network_event.dst_port = c.dst_port;
         raw.network_event.src_port = c.src_port;
+        raw.network_event.sockfd   = c.sockfd;
+        raw.network_event.count    = c.count;
+        std::strncpy(raw.network_event.unix_path, c.unix_path,
+                     sizeof(raw.network_event.unix_path) - 1);
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -483,6 +589,9 @@ void run_network()
         }
         CHECK(d->dst_port() == c.dst_port, "network dst_port");
         CHECK(d->src_port() == c.src_port, "network src_port");
+        CHECK(d->sockfd() == c.sockfd, "network sockfd");
+        CHECK(d->count() == c.count, "network count");
+        CHECK(d->unix_path() == c.unix_path, "network unix_path");
         CHECK(d->syscall_name() == c.name_str, "network syscall_name");
     }
 }
@@ -492,13 +601,26 @@ void run_network()
 struct KernelCase {
     enum syscall_event_name name;
     __u32 command;
+    __u32 target_pid;
     __u64 arg;
+    __u32 attr[4];
+    __u32 bpf_type;
     const char* name_str;
 };
 
 constexpr KernelCase kKernelCases[] = {
-    {SYSCALL_EVENT_PTRACE, PTRACE_PEEKDATA, 999, "ptrace"},
-    {SYSCALL_EVENT_BPF, 0, 4096, "bpf"},  // 0 = BPF_MAP_CREATE
+    // ptrace：目标是 pid，arg 是 POKETEXT 的数据
+    {SYSCALL_EVENT_PTRACE,
+     PTRACE_POKETEXT,
+     4242,
+     0x4141414141414141ULL,
+     {0, 0, 0, 0},
+     0,
+     "ptrace"},
+    // bpf BPF_MAP_CREATE：attr 前 16 字节原样搬运，类型解出为 map_type=6
+    {SYSCALL_EVENT_BPF, 0 /* BPF_MAP_CREATE */, 0, 0, {6, 4, 4, 0}, 6, "bpf"},
+    // bpf BPF_PROG_ATTACH：attach_type 在 attr 的第 3 个字
+    {SYSCALL_EVENT_BPF, 8 /* BPF_PROG_ATTACH */, 0, 0, {7, 9, 3, 0}, 3, "bpf"},
 };
 
 void run_kernel()
@@ -506,8 +628,13 @@ void run_kernel()
     for (const KernelCase& c : kKernelCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, KERNEL_EVENT);
-        raw.kernel_event.command = c.command;
-        raw.kernel_event.arg     = c.arg;
+        raw.kernel_event.command    = c.command;
+        raw.kernel_event.target_pid = c.target_pid;
+        raw.kernel_event.arg        = c.arg;
+        for (int i = 0; i < 4; ++i) {
+            raw.kernel_event.bpf_attr[i] = c.attr[i];
+        }
+        raw.kernel_event.bpf_type = c.bpf_type;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -518,7 +645,13 @@ void run_kernel()
             continue;
         }
         CHECK(d->command() == c.command, "kernel command");
+        CHECK(d->target_pid() == c.target_pid, "kernel target_pid");
         CHECK(d->arg() == c.arg, "kernel arg");
+        CHECK(d->bpf_attr_size() == 4, "kernel bpf_attr size");
+        for (int i = 0; i < 4 && i < d->bpf_attr_size(); ++i) {
+            CHECK(d->bpf_attr(i) == c.attr[i], "kernel bpf_attr");
+        }
+        CHECK(d->bpf_type() == c.bpf_type, "kernel bpf_type");
         CHECK(d->syscall_name() == c.name_str, "kernel syscall_name");
     }
 }

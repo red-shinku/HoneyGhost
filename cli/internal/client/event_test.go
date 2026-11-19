@@ -124,6 +124,10 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SemanticFilename: "/usr/sbin/nginx",
 					Argv0:            "nginx",
 					Argv1:            "-g",
+					Argv2:            "--flag",
+					Argv3:            "value",
+					LdPreload:        "/tmp/inject.so",
+					LdLibraryPath:    "/opt/lib",
 					Flags:            1,
 					Invoked:          "./nginx",
 					Image:            "/usr/sbin/nginx",
@@ -136,6 +140,10 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				"semantic_filename": "/usr/sbin/nginx",
 				"argv0":             "nginx",
 				"argv1":             "-g",
+				"argv2":             "--flag",
+				"argv3":             "value",
+				"ld_preload":        "/tmp/inject.so",
+				"ld_library_path":   "/opt/lib",
 				"flags":             uint32(1),
 				"invoked":           "./nginx",
 				"image":             "/usr/sbin/nginx",
@@ -208,24 +216,34 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			name: "file_syscall",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_FileData{
 				FileData: &hng.FileSyscallSemanticData{
-					Flags: 3, Mode: 420, Path: "../x", PathFlags: 2,
+					Flags: 3, Mode: 420, Path1: "../x", Path2: "rel/y",
+					Path1Flags: 2, Path2Flags: 0, Dirfd: -100, Dirfd2: 7,
 					SyscallName: "openat",
 				},
 			}},
 			kind: model.SubtypeFile,
 			fields: map[string]any{
-				"flags": uint32(3), "mode": uint32(420), "path": "../x",
-				"path_flags": uint32(2), "syscall_name": "openat",
+				"flags": uint32(3), "mode": uint32(420), "path1": "../x",
+				"path2": "rel/y", "path1_flags": uint32(2), "path2_flags": uint32(0),
+				"dirfd": int32(-100), "dirfd2": int32(7), "syscall_name": "openat",
 			},
 		},
 		{
 			name: "memory",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_MemoryData{
-				MemoryData: &hng.MemorySemanticData{Prot: 4, Flags: 5, SyscallName: "mmap"},
+				MemoryData: &hng.MemorySemanticData{
+					Prot: 4, Flags: 5, Addr: 0x7f0000000000, Length: 4096,
+					Offset: 4096, Fd: 3, Anonymous: false, Wx: true,
+					Path: "/usr/lib/libc.so.6", PathFlags: 1, SyscallName: "mmap",
+				},
 			}},
 			kind: model.SubtypeMemory,
 			fields: map[string]any{
-				"prot": uint64(4), "flags": uint64(5), "syscall_name": "mmap",
+				"prot": uint64(4), "flags": uint64(5),
+				"addr": uint64(0x7f0000000000), "length": uint64(4096),
+				"offset": uint64(4096), "fd": int32(3), "anonymous": false,
+				"wx": true, "path": "/usr/lib/libc.so.6", "path_flags": uint32(1),
+				"syscall_name": "mmap",
 			},
 		},
 		{
@@ -234,6 +252,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				NetData: &hng.NetworkSyscallSemanticData{
 					Family: 2, Type: 1, Protocol: 6,
 					DstIp: []uint32{0x0a01a8c0, 0, 0, 0}, DstPort: 443, SrcPort: 50000,
+					Sockfd: 3, Count: 512, UnixPath: "/run/x.sock",
 					SyscallName: "connect",
 				},
 			}},
@@ -242,31 +261,40 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
 				"dst_ip":   []uint32{0x0a01a8c0, 0, 0, 0},
 				"dst_port": uint32(443), "src_port": uint32(50000),
-				"syscall_name": "connect",
+				"sockfd": int32(3), "count": uint64(512),
+				"unix_path": "/run/x.sock", "syscall_name": "connect",
 			},
 		},
 		{
 			name: "network_syscall_no_dst",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NetData{
 				NetData: &hng.NetworkSyscallSemanticData{
-					Family: 2, Type: 1, Protocol: 6, SyscallName: "socket",
+					Family: 2, Type: 1, Protocol: 6, Sockfd: -1,
+					SyscallName: "socket",
 				},
 			}},
 			kind: model.SubtypeNetwork,
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
 				"dst_ip": []uint32{}, "dst_port": uint32(0), "src_port": uint32(0),
+				"sockfd": int32(-1), "count": uint64(0), "unix_path": "",
 				"syscall_name": "socket",
 			},
 		},
 		{
 			name: "kernel",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_KernelData{
-				KernelData: &hng.KernelSemanticData{Command: 7, Arg: 8, SyscallName: "ptrace"},
+				KernelData: &hng.KernelSemanticData{
+					Command: 7, TargetPid: 4242, Arg: 8,
+					BpfAttr: []uint32{6, 4, 4, 0}, BpfType: 6,
+					SyscallName: "bpf",
+				},
 			}},
 			kind: model.SubtypeKernel,
 			fields: map[string]any{
-				"command": uint32(7), "arg": uint64(8), "syscall_name": "ptrace",
+				"command": uint32(7), "target_pid": uint32(4242), "arg": uint64(8),
+				"bpf_attr": []uint32{6, 4, 4, 0}, "bpf_type": uint32(6),
+				"syscall_name": "bpf",
 			},
 		},
 	}

@@ -6,9 +6,10 @@
  * syscall_semantic_data。本工具不持有队列与线程状态。
  *
  * 语义化原则：去除随机性信息。除 exec 的 image（先 normalize，再复用
- * agent/semantic/path/ 规则引擎语义化）、file 的 path（normalize 消除拼写差异）
- * 与 credential 按 kind 展开 requested 外，其余事件为纯字段搬运——进程身份头部
- * 原样拷贝，syscall 名由 hdr.name 枚举映射为字符串。
+ * agent/semantic/path/ 规则引擎语义化）、file 的 path1/path2 与 memory 的 path
+ * （各自 normalize 消除拼写差异）与 credential 按 kind 展开 requested 外，其余
+ * 事件为纯字段搬运——进程身份头部原样拷贝，syscall 名由 hdr.name 枚举映射为
+ * 字符串。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -199,7 +200,8 @@ void process_to_semantic(const struct syscall_event& raw,
  * @details image 先 normalize 消除拼写差异后原样输出（供取证，保留实例信息），
  * 再经路径语义化规则引擎去除随机性后输出 semantic_filename（供规则与基线）；
  * invoked 是用户原始输入，不做 normalize 直接搬运。image 为空时上述两个路径
- * 字段均为空串。argv0/argv1 为稳定语义，原样保留；image_flags 原样透传。
+ * 字段均为空串。argv0..argv3、LD_PRELOAD 与 LD_LIBRARY_PATH 是命令行/注入特征，
+ * 原样保留；image_flags 原样透传。
  */
 void exec_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
@@ -216,6 +218,10 @@ void exec_to_semantic(const struct syscall_event& raw,
     d.set_image_flags(raw.exec_event.image_flags);
     d.set_argv0(raw.exec_event.argv0);
     d.set_argv1(raw.exec_event.argv1);
+    d.set_argv2(raw.exec_event.argv2);
+    d.set_argv3(raw.exec_event.argv3);
+    d.set_ld_preload(raw.exec_event.ld_preload);
+    d.set_ld_library_path(raw.exec_event.ld_library_path);
     d.set_flags(raw.exec_event.flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
@@ -259,25 +265,33 @@ void namespace_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 文件系统调用事件 → file_syscall_semantic_data
- * @details 路径由探针解析为绝对路径，经 normalize 消除拼写差异后输出；
- * 未解析的事件保留原始串，path_flags 一并搬运供呈现层标记。
+ * @details 两条路径均由探针解析为绝对路径，各自经 normalize 消除拼写差异后
+ * 输出；未解析的路径保留原始串，其状态位一并搬运供呈现层标记。dirfd/dirfd2
+ * 原样透传，无 *at 语义或没有第二路径时为 AT_FDCWD。
  */
 void file_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::file_syscall_semantic_data>();
     std::string norm;
-    hng::path::normalize(raw.file_event.path, norm);
-    d.set_path(norm);
+    hng::path::normalize(raw.file_event.path1, norm);
+    d.set_path1(norm);
+    hng::path::normalize(raw.file_event.path2, norm);
+    d.set_path2(norm);
     d.set_flags(raw.file_event.flags);
     d.set_mode(raw.file_event.mode);
-    d.set_path_flags(raw.file_event.path_flags);
+    d.set_path1_flags(raw.file_event.path1_flags);
+    d.set_path2_flags(raw.file_event.path2_flags);
+    d.set_dirfd(raw.file_event.dirfd);
+    d.set_dirfd2(raw.file_event.dirfd2);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 内存事件 → memory_semantic_data
- * @details 纯搬运：PROT_* 权限与 MAP_* 标志。
+ * @details 纯搬运：请求地址、长度、PROT_*、MAP_*、文件区段起点、源 fd、匿名与
+ * W|X 标志。mmap 的源文件路径由 exit 钩子解析，经 normalize 消除拼写差异后
+ * 输出，path_flags 一并搬运；匿名映射的 path 为空、path_flags 为 0。
  */
 void memory_to_semantic(const struct syscall_event& raw,
                         hng::syscall_semantic_data& out)
@@ -285,13 +299,24 @@ void memory_to_semantic(const struct syscall_event& raw,
     auto& d = out.data.emplace<hng::memory_semantic_data>();
     d.set_prot(raw.memory_event.prot);
     d.set_flags(raw.memory_event.flags);
+    d.set_addr(raw.memory_event.addr);
+    d.set_length(raw.memory_event.length);
+    d.set_offset(raw.memory_event.offset);
+    d.set_fd(raw.memory_event.fd);
+    d.set_anonymous(raw.memory_event.anonymous != 0);
+    d.set_wx(raw.memory_event.wx != 0);
+    std::string norm;
+    hng::path::normalize(raw.memory_event.path, norm);
+    d.set_path(norm);
+    d.set_path_flags(raw.memory_event.path_flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 网络事件 → network_syscall_semantic_data
- * @details 纯搬运：地址族 / 套接字类型 / 协议号，以及目标 IP、目标端口与本地
- * 端口。dst_ip 固定输出 4 个网络字节序的字，未采集时为 0。
+ * @details 纯搬运：地址族 / 套接字类型 / 协议号、目标 IP 与端口、本地端口、
+ * 套接字 fd、发送字节数与 AF_UNIX 的 sun_path。dst_ip 固定输出 4 个网络字节
+ * 序的字，未采集时为 0。
  */
 void network_to_semantic(const struct syscall_event& raw,
                          hng::syscall_semantic_data& out)
@@ -305,19 +330,28 @@ void network_to_semantic(const struct syscall_event& raw,
     }
     d.set_dst_port(raw.network_event.dst_port);
     d.set_src_port(raw.network_event.src_port);
+    d.set_sockfd(raw.network_event.sockfd);
+    d.set_count(raw.network_event.count);
+    d.set_unix_path(raw.network_event.unix_path);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 内核操作事件 → kernel_semantic_data
- * @details 纯搬运：ptrace 请求类型或 bpf 命令及其关联参数。
+ * @details 纯搬运：ptrace 的请求类型、目标 pid 与数据参数；bpf 的命令、前 16 字节
+ * 属性与按命令解出的类型。bpf_attr 固定输出 4 个小端 u32，未采集时为 0。
  */
 void kernel_to_semantic(const struct syscall_event& raw,
                         hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::kernel_semantic_data>();
     d.set_command(raw.kernel_event.command);
+    d.set_target_pid(raw.kernel_event.target_pid);
     d.set_arg(raw.kernel_event.arg);
+    for (int i = 0; i < 4; ++i) {
+        d.add_bpf_attr(raw.kernel_event.bpf_attr[i]);
+    }
+    d.set_bpf_type(raw.kernel_event.bpf_type);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
@@ -385,7 +419,8 @@ namespace hng {
 bool has_unresolved_path(const struct syscall_event& raw)
 {
     return raw.hdr.subtype == FILE_EVENT &&
-           (raw.file_event.path_flags & PATH_UNRESOLVED) != 0;
+           ((raw.file_event.path1_flags | raw.file_event.path2_flags) &
+            PATH_UNRESOLVED) != 0;
 }
 
 }  // namespace hng

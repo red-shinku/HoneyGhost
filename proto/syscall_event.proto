@@ -35,6 +35,12 @@ message exec_semantic_data
     // image 的解析状态位，取值与 kernel/include/syscall_event_type.h 的
     // enum path_flag 一致：bit0 路径被截断，bit1 无法解析
     uint32 image_flags       = 8;
+    string argv2             = 9;   // argv[2]；参数不足时为空
+    string argv3             = 10;  // argv[3]；参数不足时为空
+    // LD_PRELOAD / LD_LIBRARY_PATH 的值（已去掉变量名前缀）；envp 前 16 项内
+    // 未命中时为空。进程注入的典型特征
+    string ld_preload        = 11;
+    string ld_library_path   = 12;
 }
 
 // 权限变更事件（setuid / setgid / capset）。
@@ -72,16 +78,24 @@ message namespace_semantic_data
 // 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。
 message file_syscall_semantic_data
 {
+    reserved 4;
+    reserved "path";
+
     uint32 flags        = 1;  // open 系列的 O_* 标志；renameat2 的 RENAME_* 标志
     uint32 mode         = 2;  // creat()/open(O_CREAT) 创建权限
     string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
-    string path         = 4;  // 系统调用携带的文件路径；未采集时为空
-    reserved 5;
-    reserved "is_innamespace";
-    // 路径字段的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // 主路径：open 族的唯一路径、rename/link 的源；未采集时为空
+    string path1        = 5;
+    // 第二路径：rename 的目标、link 的新名；无第二路径时为空
+    string path2        = 6;
+    // 两条路径的解析状态位，取值与 kernel/include/syscall_event_type.h 的
     // enum path_flag 一致：bit0 路径被截断，bit1 无法解析为绝对路径（此时
-    // path 承载的是用户给出的原始串）
-    uint32 path_flags   = 6;
+    // 该路径承载的是用户给出的原始串）
+    uint32 path1_flags  = 7;
+    uint32 path2_flags  = 8;
+    // 两条路径的基准目录 fd；无 *at 语义或没有第二路径时为 AT_FDCWD(-100)
+    sint32 dirfd        = 9;
+    sint32 dirfd2       = 10;
 }
 
 // 内存事件（mmap / mprotect）。
@@ -90,6 +104,16 @@ message memory_semantic_data
     uint64 prot         = 1;  // PROT_* 权限
     uint64 flags        = 2;  // MAP_* 标志（mmap）或保留扩展
     string syscall_name = 3;  // 系统调用名（如 "mmap"、"mprotect"）
+    uint64 addr         = 4;  // 请求地址；实际地址在事件头的 ret
+    uint64 length       = 5;  // 映射/保护的字节数
+    uint64 offset       = 6;  // mmap 的文件区段起点；mprotect 为 0
+    sint32 fd           = 7;  // mmap 的源文件 fd；匿名映射与 mprotect 为 -1
+    bool anonymous      = 8;  // MAP_ANONYMOUS：匿名内存
+    bool wx             = 9;  // prot 同时含 PROT_WRITE 与 PROT_EXEC
+    // mmap 的源文件绝对路径；匿名映射或解析失败时为空。解析状态位取值与
+    // kernel/include/syscall_event_type.h 的 enum path_flag 一致
+    string path         = 10;
+    uint32 path_flags   = 11;
 }
 
 // 网络事件（socket / bind / connect / sendto / sendmsg）。
@@ -104,12 +128,21 @@ message network_syscall_semantic_data
     repeated uint32 dst_ip = 5;
     uint32 dst_port        = 6;  // 目标端口（主机字节序）
     uint32 src_port        = 7;  // 本地端口（主机字节序）；connect 的 enter 阶段可能为 0
+    sint32 sockfd          = 8;  // 涉及套接字的 fd；socket 事件为 -1（新 fd 在 ret）
+    uint64 count           = 9;  // sendto/sendmsg 的字节数；其余为 0
+    // AF_UNIX 的目标 sun_path（抽象命名空间以 '@' 开头）；非 AF_UNIX 为空
+    string unix_path       = 10;
 }
 
 // 内核操作事件（ptrace / bpf）。
 message kernel_semantic_data
 {
     uint32 command      = 1;  // ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
-    uint64 arg          = 2;  // 与 command 对应的重要参数（按事件类型解释）
+    uint64 arg          = 2;  // ptrace 的数据参数（POKETEXT 的 data）；bpf 为 attr 大小
     string syscall_name = 3;  // 系统调用名（如 "ptrace"、"bpf"）
+    uint32 target_pid   = 4;  // ptrace 的目标 pid；bpf 为 0
+    // bpf：union bpf_attr 的前 16 字节，按 4 个小端 u32 原样搬运
+    repeated uint32 bpf_attr = 5;
+    // bpf：按 cmd 解出的类型（map_type / prog_type / attach_type）；解不出为 0
+    uint32 bpf_type     = 6;
 }

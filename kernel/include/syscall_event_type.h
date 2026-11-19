@@ -29,12 +29,16 @@ struct process_event {
 };
 
 struct exec_event {
-    char invoked[MAX_PATH_LEN];  ///< 用户给出的原始路径（可相对、可裸名、可空）
-    char image[MAX_PATH_LEN];    ///< 实际执行的镜像绝对路径
-    char argv0[MAX_ARG_LEN];     ///< argv[0]（程序名或启动命令）
-    char argv1[MAX_ARG_LEN];     ///< argv[1]（第一个参数；无参数时为空串）
-    __u32 flags;                 ///< execveat 有效，AT_* 标志
-    __u32 image_flags;           ///< image 的解析状态位，见 enum path_flag
+    char invoked[MAX_PATH_LEN];    ///< 用户给出的原始路径（可相对、可裸名、可空）
+    char image[MAX_PATH_LEN];      ///< 实际执行的镜像绝对路径
+    char argv0[MAX_ARG_LEN];       ///< argv[0]（程序名或启动命令）
+    char argv1[MAX_ARG_LEN];       ///< argv[1]（第一个参数；无参数时为空串）
+    char argv2[MAX_ARG_LEN];       ///< argv[2]；参数不足时为空串
+    char argv3[MAX_ARG_LEN];       ///< argv[3]；参数不足时为空串
+    char ld_preload[MAX_ARG_LEN];  ///< LD_PRELOAD 的值（已去掉变量名前缀）
+    char ld_library_path[MAX_ARG_LEN];  ///< LD_LIBRARY_PATH 的值（已去掉前缀）
+    __u32 flags;                        ///< execveat 有效，AT_* 标志
+    __u32 image_flags;                  ///< image 的解析状态位，见 enum path_flag
 };
 
 /// @brief 请求的凭据类别；数值与 proto credential_semantic_data.kind 一致
@@ -67,29 +71,47 @@ enum path_flag {
 };
 
 struct file_event {
-    char path[MAX_PATH_LEN];  ///< open/openat/openat2/creat 携带的文件路径
+    char path1[MAX_PATH_LEN];  ///< 主路径（open 族唯一路径、rename/link 的源）
+    char path2[MAX_PATH_LEN];  ///< 第二路径（rename 目标、link 的新名）；无则空串
+    __u32 path1_flags;         ///< path1 的解析状态位，见 enum path_flag
+    __u32 path2_flags;         ///< path2 的解析状态位，见 enum path_flag
+    __s32 dirfd;               ///< path1 的基准目录；无 *at 语义时为 AT_FDCWD
+    __s32 dirfd2;              ///< path2 的基准目录；无 path2 时为 AT_FDCWD
     __u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
     __u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
-    __u32 path_flags;  ///< 路径解析状态位，见 enum path_flag
 };
 
 struct memory_event {
-    __u64 prot;   ///< PROT_* 权限（mmap/mprotect）
-    __u64 flags;  ///< MAP_* 标志（mmap）或保留扩展
+    __u64 prot;               ///< PROT_* 权限（mmap/mprotect）
+    __u64 flags;              ///< MAP_* 标志（mmap）或保留扩展
+    __u64 addr;               ///< 请求地址；实际地址在事件的 ret
+    __u64 length;             ///< 映射/保护的字节数
+    __u64 offset;             ///< mmap 的文件区段起点；mprotect 为 0
+    __s32 fd;                 ///< mmap 的文件 fd；匿名映射与 mprotect 为 -1
+    __u8 anonymous;           ///< MAP_ANONYMOUS：匿名内存
+    __u8 wx;                  ///< prot 同时含 PROT_WRITE 与 PROT_EXEC
+    char path[MAX_PATH_LEN];  ///< mmap 的源文件绝对路径；匿名时为空
+    __u32 path_flags;         ///< path 的解析状态位，见 enum path_flag
 };
 
 struct network_event {
-    __u32 family;     ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
-    __u32 type;       ///< SOCK_STREAM / SOCK_DGRAM 等
-    __u32 protocol;   ///< IPPROTO_TCP 等协议号
-    __u32 dst_ip[4];  ///< 目标 IP（网络字节序）：IPv4 用 [0]，IPv6 用 [0..3]
-    __u16 dst_port;   ///< 目标端口（主机字节序）
-    __u16 src_port;   ///< 源端口（主机字节序）；connect 的 enter 阶段可能为 0
+    __u32 family;         ///< AF_INET / AF_INET6 / AF_UNIX 等地址族
+    __u32 type;           ///< SOCK_STREAM / SOCK_DGRAM 等
+    __u32 protocol;       ///< IPPROTO_TCP 等协议号
+    __u32 dst_ip[4];      ///< 目标 IP（网络字节序）：IPv4 用 [0]，IPv6 用 [0..3]
+    __u16 dst_port;       ///< 目标端口（主机字节序）
+    __u16 src_port;       ///< 源端口（主机字节序）；connect 的 enter 阶段可能为 0
+    __s32 sockfd;         ///< 涉及套接字的 fd；socket 事件为 -1（新 fd 在 ret）
+    __u64 count;          ///< sendto/sendmsg 的字节数；其余为 0
+    char unix_path[108];  ///< AF_UNIX 的 sun_path；抽象命名空间以 '@' 开头
 };
 
 struct kernel_event {
-    __u32 command;  ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
-    __u64 arg;      ///< 与 command 对应的重要参数（可根据事件类型解释）
+    __u32 command;      ///< ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
+    __u32 target_pid;   ///< ptrace 的 pid 参数；bpf 为 0
+    __u64 arg;          ///< ptrace 的数据参数（POKETEXT 的 data）；bpf 为属性大小
+    __u32 bpf_attr[4];  ///< bpf：union bpf_attr 的前 16 字节
+    __u32 bpf_type;     ///< bpf：按 cmd 解出的类型；解不出为 0
 };
 
 /**
