@@ -239,9 +239,10 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
     for (const uint32_t value : atom.numbers()) {
         switch (result.field) {
             case hng::FilterField::TYPE:
-                if (value > 3) {
+                if (value != 0) {
                     error = "invalid filter expression: type value " +
-                            std::to_string(value) + " is out of range 0..3";
+                            std::to_string(value) +
+                            " is not EVENT_TYPE_SYSCALL (0)";
                     return std::nullopt;
                 }
                 break;
@@ -380,10 +381,28 @@ std::optional<RuntimeInfoFilter> hng::cli::ToRuntimeInfoFilter(
     std::vector<hng::EventType> etypes;
     etypes.reserve(static_cast<std::size_t>(request.etype_size()));
     for (const int raw : request.etype()) {
-        etypes.push_back(
-            FromProtoEventType(static_cast<hng::clisv::EventType>(raw)));
+        std::optional<hng::EventType> etype =
+            FromProtoEventType(static_cast<hng::clisv::EventType>(raw));
+        if (!etype.has_value()) {
+            error = "invalid event type " + std::to_string(raw) +
+                    ": only syscall events are available";
+            return std::nullopt;
+        }
+        etypes.push_back(*etype);
     }
     filter.set_etype(std::move(etypes));
+
+    std::vector<syscall_event_type> subtypes;
+    subtypes.reserve(static_cast<std::size_t>(request.subtype_size()));
+    for (const int value : request.subtype()) {
+        if (value < 1 || value > 8) {
+            error = "invalid event subtype " + std::to_string(value) +
+                    ": value is out of range 1..8";
+            return std::nullopt;
+        }
+        subtypes.push_back(static_cast<syscall_event_type>(value));
+    }
+    filter.set_subtype(std::move(subtypes));
 
     if (request.has_info()) {
         const hng::clisv::runtimeinfo& info = request.info();

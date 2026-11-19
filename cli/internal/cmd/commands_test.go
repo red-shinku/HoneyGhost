@@ -83,17 +83,17 @@ func (f fakeProcessService) Stats(ctx context.Context) (model.ProcessStats, erro
 
 type fakeEventService struct {
 	subscribe func(context.Context, model.RuntimeSelector,
-		[]model.EventType) (api.EventStream, error)
+		[]model.Subtype) (api.EventStream, error)
 	stats   func(context.Context) (model.PipelineStats, error)
 	gotOpts *api.SubscribeOptions
 }
 
 func (f fakeEventService) Subscribe(ctx context.Context, sel model.RuntimeSelector,
-	types []model.EventType, opts api.SubscribeOptions) (api.EventStream, error) {
+	subtypes []model.Subtype, opts api.SubscribeOptions) (api.EventStream, error) {
 	if f.gotOpts != nil {
 		*f.gotOpts = opts
 	}
-	return f.subscribe(ctx, sel, types)
+	return f.subscribe(ctx, sel, subtypes)
 }
 
 func (f fakeEventService) Stats(ctx context.Context) (model.PipelineStats, error) {
@@ -879,21 +879,23 @@ func testEventStream() *fakeEventStream {
 				PID:       1234,
 				PPID:      1,
 				Type:      model.EventTypeSyscall,
+				Subtype:   model.SubtypeExec,
 			},
-			Payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+			Payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
 				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
 			}},
 		}},
 		{Stats: &model.StreamStats{DroppedEvents: 2}},
 		{Event: &model.Event{
 			Head: model.Head{
-				RoleID: 7,
-				PID:    2002,
-				PPID:   1,
-				Type:   model.EventTypeFile,
+				RoleID:  7,
+				PID:     2002,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeFile,
 			},
-			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
-				"semantic_filename": "/etc/nginx/nginx.conf",
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "openat", "path": "/etc/nginx/nginx.conf",
 			}},
 		}},
 	}}
@@ -903,7 +905,7 @@ func TestEventsTable(t *testing.T) {
 	stream := testEventStream()
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return stream, nil
 		},
 	}}
@@ -912,9 +914,9 @@ func TestEventsTable(t *testing.T) {
 		t.Fatalf("events: %v", err)
 	}
 	for _, want := range []string{
-		"TYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL",
-		"syscall", "execve /usr/sbin/nginx",
-		"file", "/etc/nginx/nginx.conf",
+		"TYPE", "SUBTYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL",
+		"syscall", "exec", "execve /usr/sbin/nginx",
+		"file", "openat path=/etc/nginx/nginx.conf",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q:\n%s", want, out)
@@ -933,7 +935,7 @@ func TestEventsTable(t *testing.T) {
 	noHeadersStream := testEventStream()
 	noHeadersSvcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return noHeadersStream, nil
 		},
 	}}
@@ -955,16 +957,17 @@ func TestEventsJSON(t *testing.T) {
 				PID:       1234,
 				PPID:      1,
 				Type:      model.EventTypeSyscall,
+				Subtype:   model.SubtypeFile,
 			},
-			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
-				"semantic_filename": "/x",
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "openat", "path": "/x",
 			}},
 		}},
 		{Stats: &model.StreamStats{DroppedEvents: 2}},
 	}}
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return stream, nil
 		},
 	}}
@@ -973,8 +976,9 @@ func TestEventsJSON(t *testing.T) {
 		t.Fatalf("events json: %v", err)
 	}
 	want := `{"kind":"event","head":{"role_label":"nginx","role_id":7,"context_id":0,` +
-		`"pid":1234,"pid_start_time":0,"ppid":1,"ppid_start_time":0,"type":"syscall"},` +
-		`"payload":{"kind":"file","fields":{"semantic_filename":"/x"}}}` + "\n" +
+		`"pid":1234,"pid_start_time":0,"ppid":1,"ppid_start_time":0,"type":"syscall",` +
+		`"subtype":"file"},` +
+		`"payload":{"kind":"file","fields":{"path":"/x","syscall_name":"openat"}}}` + "\n" +
 		`{"kind":"stats","dropped_events":2}` + "\n"
 	if out != want {
 		t.Errorf("stdout = %q, want %q", out, want)
@@ -986,23 +990,23 @@ func TestEventsJSON(t *testing.T) {
 
 func TestEventsFilters(t *testing.T) {
 	var gotSelector model.RuntimeSelector
-	var gotTypes []model.EventType
+	var gotSubtypes []model.Subtype
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(_ context.Context, sel model.RuntimeSelector,
-			types []model.EventType) (api.EventStream, error) {
+			subtypes []model.Subtype) (api.EventStream, error) {
 			gotSelector = sel
-			gotTypes = types
+			gotSubtypes = subtypes
 			return &fakeEventStream{}, nil
 		},
 	}}
 	_, _, err := executeWithServices(t, svcs, "events",
-		"-t", "file,syscall", "-i", "role=nginx", "-i", "pid=1234", "-i", "roleID=7")
+		"-t", "file,credential", "-i", "role=nginx", "-i", "pid=1234", "-i", "roleID=7")
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	wantTypes := []model.EventType{model.EventTypeSyscall, model.EventTypeFile}
-	if !reflect.DeepEqual(gotTypes, wantTypes) {
-		t.Errorf("types = %v, want %v", gotTypes, wantTypes)
+	wantSubtypes := []model.Subtype{model.SubtypeCredential, model.SubtypeFile}
+	if !reflect.DeepEqual(gotSubtypes, wantSubtypes) {
+		t.Errorf("subtypes = %v, want %v", gotSubtypes, wantSubtypes)
 	}
 	wantSelector := model.RuntimeSelector{
 		RoleIDs:    []uint32{7},
@@ -1019,7 +1023,7 @@ func TestEventsExprPassedToSubscribe(t *testing.T) {
 	svcs := api.Services{Events: fakeEventService{
 		gotOpts: &gotOpts,
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return &fakeEventStream{}, nil
 		},
 	}}
@@ -1084,10 +1088,10 @@ func TestEventsOldKindKeyRejected(t *testing.T) {
 	}
 }
 
-func TestEventsTypeExprConflict(t *testing.T) {
+func TestEventsSubtypeExprConflict(t *testing.T) {
 	for _, args := range [][]string{
-		{"events", "-t", "syscall", "-e", "type=syscall"},
-		{"events", "--type", "file", "-e", "not (type=file)"},
+		{"events", "-t", "file", "-e", "subtype=exec"},
+		{"events", "--type", "process", "-e", "not (subtype=file)"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, _, err := executeWithoutDial(t, args...)
@@ -1097,7 +1101,7 @@ func TestEventsTypeExprConflict(t *testing.T) {
 			if ExitCode(err, false) != 2 {
 				t.Errorf("ExitCode = %d, want 2", ExitCode(err, false))
 			}
-			want := "--type and a type predicate in --expr cannot be combined"
+			want := "--type and a subtype predicate in --expr cannot be combined"
 			if err.Error() != want {
 				t.Errorf("error = %q, want %q", err.Error(), want)
 			}
@@ -1106,16 +1110,16 @@ func TestEventsTypeExprConflict(t *testing.T) {
 
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return &fakeEventStream{}, nil
 		},
 	}}
 	if _, _, err := executeWithServices(t, svcs, "events",
-		"-t", "file", "-e", "subtype=exec"); err != nil {
-		t.Errorf("events -t with a non-type expression: %v", err)
+		"-t", "file", "-e", "type=syscall"); err != nil {
+		t.Errorf("events -t with a type expression: %v", err)
 	}
 	if _, _, err := executeWithServices(t, svcs, "events",
-		"-e", "type=file"); err != nil {
+		"-e", "type=syscall"); err != nil {
 		t.Errorf("events -e type without -t: %v", err)
 	}
 }
@@ -1124,7 +1128,7 @@ func TestEventsSelectorAllowsZeroIDs(t *testing.T) {
 	var gotSelector model.RuntimeSelector
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(_ context.Context, sel model.RuntimeSelector,
-			_ []model.EventType) (api.EventStream, error) {
+			_ []model.Subtype) (api.EventStream, error) {
 			gotSelector = sel
 			return &fakeEventStream{}, nil
 		},
@@ -1151,7 +1155,8 @@ func TestEventsUsageErrors(t *testing.T) {
 		{"events", "-i", "bogus=1"},
 		{"events", "-e", "pid=1 and"},
 		{"events", "-e", "pid=0"},
-		{"events", "-t", "syscall", "-e", "type=syscall"},
+		{"events", "-t", "file", "-e", "subtype=exec"},
+		{"events", "-e", "type=file"},
 		{"events", "--tee"},
 		{"events", "-w", ""},
 	}
@@ -1184,7 +1189,7 @@ func (blockingStream) Close() error { return nil }
 func TestEventsDuration(t *testing.T) {
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(ctx context.Context, _ model.RuntimeSelector,
-			_ []model.EventType) (api.EventStream, error) {
+			_ []model.Subtype) (api.EventStream, error) {
 			return blockingStream{ctx: ctx}, nil
 		},
 	}}
@@ -1208,7 +1213,7 @@ func TestEventsDeadlineWithoutContextError(t *testing.T) {
 		t.Run(fmt.Sprint(kind), func(t *testing.T) {
 			svcs := api.Services{Events: fakeEventService{
 				subscribe: func(context.Context, model.RuntimeSelector,
-					[]model.EventType) (api.EventStream, error) {
+					[]model.Subtype) (api.EventStream, error) {
 					return &fakeEventStream{endErr: &api.StatusError{
 						Op: "ReceiveEvent", Kind: kind, Message: "stop",
 					}}, nil
@@ -1228,7 +1233,7 @@ func TestEventsDeadlineWithoutContextError(t *testing.T) {
 func TestEventsRPCError(t *testing.T) {
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return &fakeEventStream{endErr: &api.StatusError{
 				Op: "ReceiveEvent", Kind: api.ErrorUnimplemented, Message: "nope",
 			}}, nil
@@ -1257,7 +1262,7 @@ func TestEventsEPIPE(t *testing.T) {
 	for _, format := range []render.Format{render.FormatTable, render.FormatJSON} {
 		svcs := api.Services{Events: fakeEventService{
 			subscribe: func(context.Context, model.RuntimeSelector,
-				[]model.EventType) (api.EventStream, error) {
+				[]model.Subtype) (api.EventStream, error) {
 				return testEventStream(), nil
 			},
 		}}
@@ -1278,7 +1283,7 @@ func TestEventsEPIPE(t *testing.T) {
 func eventsServices(stream api.EventStream) api.Services {
 	return api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return stream, nil
 		},
 	}}
@@ -1425,7 +1430,7 @@ func TestEventsWriteFilePrivatePermissions(t *testing.T) {
 func TestEventsWriteFileOpenError(t *testing.T) {
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			t.Fatal("subscribe must not be called when the events file cannot be opened")
 			return nil, nil
 		},
@@ -1466,7 +1471,7 @@ func TestEventsWriteFileSubscribeFailureLeavesEmptyFile(t *testing.T) {
 	}
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return nil, &api.StatusError{
 				Op: "ReceiveEvent", Kind: api.ErrorUnimplemented, Message: "nope",
 			}
@@ -1518,7 +1523,7 @@ func TestEventsWriteFileDuration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.txt")
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(ctx context.Context, _ model.RuntimeSelector,
-			_ []model.EventType) (api.EventStream, error) {
+			_ []model.Subtype) (api.EventStream, error) {
 			return blockingStream{ctx: ctx}, nil
 		},
 	}}

@@ -202,7 +202,7 @@ func TestIntegrationEventStream(t *testing.T) {
 		PIDs:       []uint32{1234},
 	}
 	stream, err := c.Services().Events.Subscribe(ctx, selector,
-		[]model.EventType{model.EventTypeFile, model.EventTypeSyscall},
+		[]model.Subtype{model.SubtypeFile, model.SubtypeProcess},
 		api.SubscribeOptions{BatchSize: 7})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -210,12 +210,12 @@ func TestIntegrationEventStream(t *testing.T) {
 	defer stream.Close()
 
 	req := <-server.requests
-	wantTypes := []clisv.EventType{
-		clisv.EventType_EVENT_TYPE_FILE,
-		clisv.EventType_EVENT_TYPE_SYSCALL,
+	wantSubtypes := []clisv.Subtype{
+		clisv.Subtype_SUBTYPE_FILE,
+		clisv.Subtype_SUBTYPE_PROCESS,
 	}
-	if !reflect.DeepEqual(req.Etype, wantTypes) {
-		t.Errorf("Etype = %v, want %v", req.Etype, wantTypes)
+	if !reflect.DeepEqual(req.Subtype, wantSubtypes) {
+		t.Errorf("Subtype = %v, want %v", req.Subtype, wantSubtypes)
 	}
 	if req.BatchSize != 7 {
 		t.Errorf("BatchSize = %d, want 7", req.BatchSize)
@@ -234,10 +234,11 @@ func TestIntegrationEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv event: %v", err)
 	}
-	if item.Event == nil || item.Event.Payload.Kind != model.PayloadExec {
+	if item.Event == nil || item.Event.Payload.Kind != model.SubtypeExec {
 		t.Fatalf("event = %+v, want exec payload", item.Event)
 	}
-	if item.Event.Head.PID != 1234 || item.Event.Head.Type != model.EventTypeSyscall {
+	if item.Event.Head.PID != 1234 || item.Event.Head.Type != model.EventTypeSyscall ||
+		item.Event.Head.Subtype != model.SubtypeExec {
 		t.Errorf("head = %+v, want test head", item.Event.Head)
 	}
 
@@ -288,6 +289,9 @@ func TestIntegrationEventRequestEmpty(t *testing.T) {
 	}
 	if len(req.Etype) != 0 {
 		t.Errorf("Etype = %v, want empty", req.Etype)
+	}
+	if len(req.Subtype) != 0 {
+		t.Errorf("Subtype = %v, want empty", req.Subtype)
 	}
 	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
 		t.Errorf("Recv error = %v, want io.EOF", err)

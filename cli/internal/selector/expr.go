@@ -19,14 +19,14 @@ const (
 
 // subtypeOrder 是 subtype 取值的输出顺序，按内核 syscall_event_type 的语义顺序排列。
 var subtypeOrder = map[model.Subtype]int{
-	model.SubtypeProcess:        0,
-	model.SubtypeExec:           1,
-	model.SubtypeCredential:     2,
-	model.SubtypeNamespace:      3,
-	model.SubtypeFileSyscall:    4,
-	model.SubtypeMemory:         5,
-	model.SubtypeNetworkSyscall: 6,
-	model.SubtypeKernel:         7,
+	model.SubtypeProcess:    0,
+	model.SubtypeExec:       1,
+	model.SubtypeCredential: 2,
+	model.SubtypeNamespace:  3,
+	model.SubtypeFile:       4,
+	model.SubtypeMemory:     5,
+	model.SubtypeNetwork:    6,
+	model.SubtypeKernel:     7,
 }
 
 // exprKeys 是 -e 允许的 key；key 大小写敏感。
@@ -281,7 +281,7 @@ func (p *exprParser) parseAtom() (*model.FilterExpr, int, error) {
 			eventType, ok := parseExprEventType(value)
 			if !ok {
 				return nil, 0, p.errorf(columns[i],
-					"invalid type %q (want syscall, file, network, or ipc)", value)
+					"invalid type %q (want syscall)", value)
 			}
 			set[eventType] = true
 		}
@@ -293,7 +293,7 @@ func (p *exprParser) parseAtom() (*model.FilterExpr, int, error) {
 			if !ok {
 				return nil, 0, p.errorf(columns[i],
 					"invalid subtype %q (want process, exec, credential, namespace, "+
-						"file_syscall, memory, network_syscall, or kernel)", value)
+						"file, memory, network, or kernel)", value)
 			}
 			set[subtype] = true
 		}

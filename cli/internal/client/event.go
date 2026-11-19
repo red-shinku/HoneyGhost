@@ -77,14 +77,9 @@ func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
 	}
 	if semantic := in.GetSemantic(); semantic != nil {
 		out.Semantic = &model.SemanticStats{
-			ProcessedFile:      semantic.GetProcessedFile(),
 			ProcessedSyscall:   semantic.GetProcessedSyscall(),
-			RawFileDropped:     semantic.GetRawFileDropped(),
-			RawFileRejected:    semantic.GetRawFileRejected(),
 			RawSyscallDropped:  semantic.GetRawSyscallDropped(),
 			RawSyscallRejected: semantic.GetRawSyscallRejected(),
-			OutFileDropped:     semantic.GetOutFileDropped(),
-			OutFileRejected:    semantic.GetOutFileRejected(),
 			OutSyscallDropped:  semantic.GetOutSyscallDropped(),
 			OutSyscallRejected: semantic.GetOutSyscallRejected(),
 		}
@@ -96,7 +91,6 @@ func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
 			QueueRejected:   engine.GetQueueRejected(),
 			IdleWaits:       engine.GetIdleWaits(),
 			SyscallDropped:  engine.GetSyscallDropped(),
-			FileDropped:     engine.GetFileDropped(),
 		}
 	}
 	if cli := in.GetCli(); cli != nil {
@@ -109,31 +103,33 @@ func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
 	return out
 }
 
-func toProtoEventType(eventType model.EventType) (clisv.EventType, error) {
-	switch eventType {
-	case model.EventTypeSyscall:
-		return clisv.EventType_EVENT_TYPE_SYSCALL, nil
-	case model.EventTypeFile:
-		return clisv.EventType_EVENT_TYPE_FILE, nil
-	case model.EventTypeNetwork:
-		return clisv.EventType_EVENT_TYPE_NETWORK, nil
-	case model.EventTypeIPC:
-		return clisv.EventType_EVENT_TYPE_IPC, nil
-	default:
-		return 0, fmt.Errorf("unknown event type %q", eventType)
-	}
-}
-
 func eventTypeFromProto(eventType clisv.EventType) model.EventType {
 	switch eventType {
 	case clisv.EventType_EVENT_TYPE_SYSCALL:
 		return model.EventTypeSyscall
-	case clisv.EventType_EVENT_TYPE_FILE:
-		return model.EventTypeFile
-	case clisv.EventType_EVENT_TYPE_NETWORK:
-		return model.EventTypeNetwork
-	case clisv.EventType_EVENT_TYPE_IPC:
-		return model.EventTypeIPC
+	default:
+		return ""
+	}
+}
+
+func subtypeFromProto(subtype clisv.Subtype) model.Subtype {
+	switch subtype {
+	case clisv.Subtype_SUBTYPE_PROCESS:
+		return model.SubtypeProcess
+	case clisv.Subtype_SUBTYPE_EXEC:
+		return model.SubtypeExec
+	case clisv.Subtype_SUBTYPE_CREDENTIAL:
+		return model.SubtypeCredential
+	case clisv.Subtype_SUBTYPE_NAMESPACE:
+		return model.SubtypeNamespace
+	case clisv.Subtype_SUBTYPE_FILE:
+		return model.SubtypeFile
+	case clisv.Subtype_SUBTYPE_MEMORY:
+		return model.SubtypeMemory
+	case clisv.Subtype_SUBTYPE_NETWORK:
+		return model.SubtypeNetwork
+	case clisv.Subtype_SUBTYPE_KERNEL:
+		return model.SubtypeKernel
 	default:
 		return ""
 	}
@@ -162,26 +158,18 @@ func convertEventResponse(response *clisv.ReceiveEventResponse) ([]model.StreamI
 }
 
 func convertEventRecord(record *clisv.Eventrecord) (model.Event, error) {
-	switch event := record.GetEvent().(type) {
-	case *clisv.Eventrecord_SyscallEv:
-		payload, err := convertSyscallPayload(event.SyscallEv)
-		if err != nil {
-			return model.Event{}, err
-		}
-		return model.Event{
-			Head:    convertEventHead(record.GetHead()),
-			Payload: payload,
-		}, nil
-
-	case *clisv.Eventrecord_FileEv:
-		return model.Event{
-			Head:    convertEventHead(record.GetHead()),
-			Payload: convertFilePayload(event.FileEv),
-		}, nil
-
-	default:
+	event, ok := record.GetEvent().(*clisv.Eventrecord_SyscallEv)
+	if !ok {
 		return model.Event{}, fmt.Errorf("ReceiveEvent: unknown event payload")
 	}
+	payload, err := convertSyscallPayload(event.SyscallEv)
+	if err != nil {
+		return model.Event{}, err
+	}
+	return model.Event{
+		Head:    convertEventHead(record.GetHead()),
+		Payload: payload,
+	}, nil
 }
 
 func convertEventHead(in *clisv.Eventhead) model.Head {
@@ -197,6 +185,7 @@ func convertEventHead(in *clisv.Eventhead) model.Head {
 		PPID:          in.GetPpid(),
 		PPIDStartTime: in.GetPpidStartTime(),
 		Type:          eventTypeFromProto(in.GetType()),
+		Subtype:       subtypeFromProto(in.GetSubtype()),
 	}
 }
 
@@ -204,14 +193,14 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 	switch data := in.GetSData().(type) {
 	case *clisv.SyscallEventData_ProcessData:
 		value := data.ProcessData
-		return payload(model.PayloadProcess, map[string]any{
+		return payload(model.SubtypeProcess, map[string]any{
 			"exit_code":    value.GetExitCode(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_ExecData:
 		value := data.ExecData
-		return payload(model.PayloadExec, map[string]any{
+		return payload(model.SubtypeExec, map[string]any{
 			"semantic_filename": value.GetSemanticFilename(),
 			"argv0":             value.GetArgv0(),
 			"argv1":             value.GetArgv1(),
@@ -224,7 +213,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 
 	case *clisv.SyscallEventData_NamespaceData:
 		value := data.NamespaceData
-		return payload(model.PayloadNamespace, map[string]any{
+		return payload(model.SubtypeNamespace, map[string]any{
 			"ns_type":      value.GetNsType(),
 			"flags":        value.GetFlags(),
 			"syscall_name": value.GetSyscallName(),
@@ -232,7 +221,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 
 	case *clisv.SyscallEventData_FileData:
 		value := data.FileData
-		return payload(model.PayloadFileSyscall, map[string]any{
+		return payload(model.SubtypeFile, map[string]any{
 			"flags":          value.GetFlags(),
 			"mode":           value.GetMode(),
 			"path":           value.GetPath(),
@@ -242,7 +231,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 
 	case *clisv.SyscallEventData_MemoryData:
 		value := data.MemoryData
-		return payload(model.PayloadMemory, map[string]any{
+		return payload(model.SubtypeMemory, map[string]any{
 			"prot":         value.GetProt(),
 			"flags":        value.GetFlags(),
 			"syscall_name": value.GetSyscallName(),
@@ -254,7 +243,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 		if dstIP == nil {
 			dstIP = []uint32{}
 		}
-		return payload(model.PayloadNetworkSyscall, map[string]any{
+		return payload(model.SubtypeNetwork, map[string]any{
 			"family":       value.GetFamily(),
 			"type":         value.GetType(),
 			"protocol":     value.GetProtocol(),
@@ -266,7 +255,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 
 	case *clisv.SyscallEventData_KernelData:
 		value := data.KernelData
-		return payload(model.PayloadKernel, map[string]any{
+		return payload(model.SubtypeKernel, map[string]any{
 			"command":      value.GetCommand(),
 			"arg":          value.GetArg(),
 			"syscall_name": value.GetSyscallName(),
@@ -294,18 +283,9 @@ func convertCredentialPayload(in *hng.CredentialSemanticData) model.Payload {
 			"inheritable": capset.GetInheritable(),
 		}
 	}
-	return payload(model.PayloadCredential, fields)
+	return payload(model.SubtypeCredential, fields)
 }
 
-func convertFilePayload(in *hng.FileEventData) model.Payload {
-	return payload(model.PayloadFile, map[string]any{
-		"semantic_filename": in.GetSemanticFilename(),
-		"flags":             in.GetFlags(),
-		"is_innamespace":    in.GetIsInnamespace(),
-		"comm":              in.GetComm(),
-	})
-}
-
-func payload(kind string, fields map[string]any) model.Payload {
+func payload(kind model.Subtype, fields map[string]any) model.Payload {
 	return model.Payload{Kind: kind, Fields: fields}
 }

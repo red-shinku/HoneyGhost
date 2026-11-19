@@ -918,7 +918,7 @@ void run_multi_stream(hng::clisv::RuntimeService::Stub& runtime)
 
 void run_filter(hng::clisv::RuntimeService::Stub& runtime)
 {
-    // -t syscall：只应收到系统调用事件
+    // 事件来源：只应收到系统调用事件
     grpc::ClientContext context;
     SetDeadline(context, std::chrono::seconds(10));
     hng::clisv::ReceiveEventRequest request;
@@ -944,8 +944,34 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     context.TryCancel();
     (void)reader->Finish();
 
-    CHECK(saw_syscall, "按事件类型过滤后应收到系统调用事件");
-    CHECK(!saw_other, "按事件类型过滤后不应收到其他类型");
+    CHECK(saw_syscall, "按事件来源过滤后应收到系统调用事件");
+    CHECK(!saw_other, "按事件来源过滤后不应收到其他类型");
+
+    // -t 语义子类型：合成事件全部是 PROCESS
+    {
+        grpc::ClientContext typed_context;
+        SetDeadline(typed_context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest typed;
+        typed.add_subtype(hng::clisv::SUBTYPE_PROCESS);
+        auto typed_reader = runtime.ReceiveEvent(&typed_context, typed);
+
+        bool saw_record   = false;
+        hng::clisv::ReceiveEventResponse typed_message;
+        for (int i = 0; i < 5 && typed_reader->Read(&typed_message); ++i) {
+            if (!typed_message.has_batch()) {
+                continue;
+            }
+            for (const hng::clisv::eventrecord& record :
+                 typed_message.batch().records()) {
+                saw_record = true;
+                CHECK(record.head().subtype() == hng::clisv::SUBTYPE_PROCESS,
+                      "-t process 只应收到该子类型");
+            }
+        }
+        typed_context.TryCancel();
+        (void)typed_reader->Finish();
+        CHECK(saw_record, "-t process 应收到事件");
+    }
 }
 
 /// @brief 按给定请求订阅，收集若干批中的全部事件记录

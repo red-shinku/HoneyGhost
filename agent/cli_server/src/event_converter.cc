@@ -7,6 +7,7 @@
 
 #include "agent/cli_server/src/event_converter.hpp"
 
+#include <optional>
 #include <utility>
 #include <variant>
 
@@ -120,33 +121,21 @@ hng::clisv::EventType ToProtoEventType(hng::EventType etype)
     switch (etype) {
         case hng::EventType::SYSCALL_EVENT:
             return hng::clisv::EVENT_TYPE_SYSCALL;
-        case hng::EventType::FILE_EVENT:
-            return hng::clisv::EVENT_TYPE_FILE;
-        case hng::EventType::NETWORK_EVENT:
-            return hng::clisv::EVENT_TYPE_NETWORK;
-        case hng::EventType::IPC_EVENT:
-            return hng::clisv::EVENT_TYPE_IPC;
     }
     return hng::clisv::EVENT_TYPE_SYSCALL;
 }
 
-hng::EventType FromProtoEventType(hng::clisv::EventType etype)
+std::optional<hng::EventType> FromProtoEventType(hng::clisv::EventType etype)
 {
     switch (etype) {
         case hng::clisv::EVENT_TYPE_SYSCALL:
             return hng::EventType::SYSCALL_EVENT;
-        case hng::clisv::EVENT_TYPE_FILE:
-            return hng::EventType::FILE_EVENT;
-        case hng::clisv::EVENT_TYPE_NETWORK:
-            return hng::EventType::NETWORK_EVENT;
-        case hng::clisv::EVENT_TYPE_IPC:
-            return hng::EventType::IPC_EVENT;
         // proto 为把枚举定宽到 int 而生成的两个哨兵成员，不能省，否则 switch 不全
         case hng::clisv::EventType_INT_MIN_SENTINEL_DO_NOT_USE_:
         case hng::clisv::EventType_INT_MAX_SENTINEL_DO_NOT_USE_:
             break;
     }
-    return hng::EventType::SYSCALL_EVENT;
+    return std::nullopt;
 }
 
 void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)

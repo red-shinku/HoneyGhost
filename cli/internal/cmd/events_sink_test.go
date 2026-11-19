@@ -24,15 +24,19 @@ func sinkTestEvents() []model.Event {
 			Head: model.Head{
 				RoleLabel: "nginx:1.25", RoleID: 7, ContextID: 3,
 				PID: 1234, PPID: 1, Type: model.EventTypeSyscall,
+				Subtype: model.SubtypeExec,
 			},
-			Payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+			Payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
 				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
 			}},
 		},
 		{
-			Head: model.Head{RoleID: 7, PID: 2002, PPID: 1, Type: model.EventTypeFile},
-			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
-				"semantic_filename": "/etc/nginx/nginx.conf",
+			Head: model.Head{
+				RoleID: 7, PID: 2002, PPID: 1, Type: model.EventTypeSyscall,
+				Subtype: model.SubtypeFile,
+			},
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"path": "/etc/nginx/nginx.conf", "syscall_name": "openat",
 			}},
 		},
 	}
@@ -50,7 +54,7 @@ func TestRecordSinkTableBothTargets(t *testing.T) {
 		t.Errorf("stdout and file differ:\nstdout:\n%s\nfile:\n%s", stdout.String(), file.String())
 	}
 	got := file.String()
-	if n := strings.Count(got, "TYPE"); n != 1 {
+	if n := strings.Count(got, "SUBTYPE"); n != 1 {
 		t.Errorf("header count = %d, want 1:\n%s", n, got)
 	}
 	if !strings.HasPrefix(got, "TYPE") {
@@ -210,7 +214,7 @@ func TestRecordSinkNilTargets(t *testing.T) {
 func TestRunEventsStdoutEPIPEDoesNotCountReceived(t *testing.T) {
 	svcs := api.Services{Events: fakeEventService{
 		subscribe: func(context.Context, model.RuntimeSelector,
-			[]model.EventType) (api.EventStream, error) {
+			[]model.Subtype) (api.EventStream, error) {
 			return testEventStream(), nil
 		},
 	}}

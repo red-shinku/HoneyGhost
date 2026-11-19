@@ -21,7 +21,7 @@ namespace hng {
  * 对应 FilterAtom::numbers，role 标签对应 FilterAtom::strings。
  */
 enum class FilterField : uint8_t {
-    TYPE = 1,    ///< 顶层事件大类 hng::EventType
+    TYPE = 1,    ///< 事件来源 hng::EventType
     SUBTYPE,     ///< 语义子类型 syscall_event_type
     PID,         ///< 事件主体进程的 pid
     PPID,        ///< 事件发生时刻的父进程 pid

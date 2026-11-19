@@ -13,16 +13,14 @@
 namespace hng {
 
 /**
- * @brief 顶层事件大类，写入通用事件头 event_head::type，标记事件所属采集流
- * @details 当前唯一的事件来源是系统调用采集线；其余取值保留至 CLI 词汇收敛。
+ * @brief 事件来源，写入通用事件头 event_head::type
+ * @details 本期只有内核探针一种来源，统一记为 SYSCALL_EVENT；非探针来源
+ * （agent 自产、procfs 快照等）将来在此新增取值，不复用已删除的编号。
  * 注意强类型枚举，避免与 kernel 侧无作用域枚举 syscall_event_type
  * 的同名成员在裸用时的歧义。
  */
 enum class EventType : uint8_t {
-    SYSCALL_EVENT = 0,  ///< 系统调用事件流
-    FILE_EVENT    = 1,  ///< 文件访问事件流
-    NETWORK_EVENT = 2,  ///< 网络连接事件流
-    IPC_EVENT     = 3   ///< IPC 通信事件流
+    SYSCALL_EVENT = 0  ///< 内核探针来源（系统调用与其它 tracepoint/kprobe）
 };
 
 }  // namespace hng

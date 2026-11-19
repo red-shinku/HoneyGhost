@@ -297,8 +297,9 @@ func testEvents() []model.Event {
 				PID:       1234,
 				PPID:      1,
 				Type:      model.EventTypeSyscall,
+				Subtype:   model.SubtypeExec,
 			},
-			Payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+			Payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
 				"semantic_filename": "/usr/sbin/nginx",
 				"argv0":             "nginx",
 				"argv1":             "",
@@ -308,16 +309,18 @@ func testEvents() []model.Event {
 		},
 		{
 			Head: model.Head{
-				RoleID: 7,
-				PID:    2002,
-				PPID:   1,
-				Type:   model.EventTypeFile,
+				RoleID:  7,
+				PID:     2002,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeFile,
 			},
-			Payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
-				"semantic_filename": "/etc/nginx/nginx.conf",
-				"flags":             uint32(0),
-				"is_innamespace":    false,
-				"comm":              "nginx",
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"path":           "/etc/nginx/nginx.conf",
+				"flags":          uint32(0),
+				"mode":           uint32(0),
+				"is_innamespace": false,
+				"syscall_name":   "openat",
 			}},
 		},
 	}
@@ -343,35 +346,35 @@ func TestEventDetail(t *testing.T) {
 	}{
 		{
 			name: "process",
-			payload: model.Payload{Kind: model.PayloadProcess, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeProcess, Fields: map[string]any{
 				"exit_code": int32(-9), "syscall_name": "exit_group",
 			}},
 			want: "exit_group exit=-9",
 		},
 		{
 			name: "exec",
-			payload: model.Payload{Kind: model.PayloadExec, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
 				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
 			}},
 			want: "execve /usr/sbin/nginx",
 		},
 		{
 			name: "setuid",
-			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
 				"syscall_name": "setuid", "setuid_uid": uint32(1000),
 			}},
 			want: "setuid uid=1000",
 		},
 		{
 			name: "setgid",
-			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
 				"syscall_name": "setgid", "setgid_gid": uint32(1000),
 			}},
 			want: "setgid gid=1000",
 		},
 		{
 			name: "capset",
-			payload: model.Payload{Kind: model.PayloadCredential, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
 				"syscall_name": "capset",
 				"capset": map[string]any{
 					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
@@ -381,14 +384,14 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "namespace",
-			payload: model.Payload{Kind: model.PayloadNamespace, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
 				"syscall_name": "unshare", "ns_type": uint32(1), "flags": uint64(2),
 			}},
 			want: "unshare ns_type=1 flags=0x2",
 		},
 		{
 			name: "file_syscall",
-			payload: model.Payload{Kind: model.PayloadFileSyscall, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
 				"path": "/tmp/x", "is_innamespace": true,
 			}},
@@ -396,7 +399,7 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "file_syscall_no_path",
-			payload: model.Payload{Kind: model.PayloadFileSyscall, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "unlink", "flags": uint32(0), "mode": uint32(0),
 				"path": "",
 			}},
@@ -404,14 +407,14 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "memory",
-			payload: model.Payload{Kind: model.PayloadMemory, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeMemory, Fields: map[string]any{
 				"syscall_name": "mmap", "prot": uint64(4), "flags": uint64(5),
 			}},
 			want: "mmap prot=0x4 flags=0x5",
 		},
 		{
 			name: "network",
-			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
 				"syscall_name": "connect", "family": uint32(2), "type": uint32(1),
 				"protocol": uint32(6), "dst_ip": []uint32{0x0a01a8c0, 0, 0, 0},
 				"dst_port": uint32(443), "src_port": uint32(50000),
@@ -420,7 +423,7 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "network_no_dst",
-			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
 				"syscall_name": "socket", "family": uint32(2), "type": uint32(1),
 				"protocol": uint32(6), "dst_ip": []uint32{0, 0, 0, 0},
 				"dst_port": uint32(0), "src_port": uint32(0),
@@ -429,7 +432,7 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "network_ipv6",
-			payload: model.Payload{Kind: model.PayloadNetworkSyscall, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeNetwork, Fields: map[string]any{
 				"syscall_name": "sendto", "family": uint32(10), "type": uint32(2),
 				"protocol": uint32(17),
 				"dst_ip":   []uint32{0xb80d0120, 0, 0, 0x01000000},
@@ -439,17 +442,10 @@ func TestEventDetail(t *testing.T) {
 		},
 		{
 			name: "kernel",
-			payload: model.Payload{Kind: model.PayloadKernel, Fields: map[string]any{
+			payload: model.Payload{Kind: model.SubtypeKernel, Fields: map[string]any{
 				"syscall_name": "ptrace", "command": uint32(7), "arg": uint64(8),
 			}},
 			want: "ptrace command=7 arg=8",
-		},
-		{
-			name: "file",
-			payload: model.Payload{Kind: model.PayloadFile, Fields: map[string]any{
-				"semantic_filename": "/etc/nginx/nginx.conf",
-			}},
-			want: "/etc/nginx/nginx.conf",
 		},
 	}
 

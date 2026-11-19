@@ -42,14 +42,13 @@ func TestToProtoFilterAtom(t *testing.T) {
 			name: "type",
 			atom: &model.FilterAtom{
 				Field: model.FilterFieldType, Compare: model.FilterCompareEq,
-				Types: []model.EventType{model.EventTypeSyscall, model.EventTypeFile},
+				Types: []model.EventType{model.EventTypeSyscall},
 			},
 			want: &clisv.FilterAtom{
 				Field:   clisv.FilterField_FILTER_FIELD_TYPE,
 				Compare: clisv.FilterCompare_FILTER_COMPARE_EQ,
 				Numbers: []uint32{
 					uint32(clisv.EventType_EVENT_TYPE_SYSCALL),
-					uint32(clisv.EventType_EVENT_TYPE_FILE),
 				},
 			},
 		},
@@ -166,7 +165,7 @@ func TestToProtoFilterNested(t *testing.T) {
 			{Logic: model.FilterLogicOr, Kids: []model.FilterExpr{
 				{Atom: &model.FilterAtom{
 					Field: model.FilterFieldType, Compare: model.FilterCompareEq,
-					Types: []model.EventType{model.EventTypeFile},
+					Types: []model.EventType{model.EventTypeSyscall},
 				}},
 				{Atom: &model.FilterAtom{
 					Field: model.FilterFieldSubtype, Compare: model.FilterCompareEq,
@@ -187,7 +186,7 @@ func TestToProtoFilterNested(t *testing.T) {
 		protoLogic(clisv.FilterLogic_FILTER_LOGIC_OR,
 			protoAtom(clisv.FilterField_FILTER_FIELD_TYPE,
 				clisv.FilterCompare_FILTER_COMPARE_EQ,
-				[]uint32{uint32(clisv.EventType_EVENT_TYPE_FILE)}, nil),
+				[]uint32{uint32(clisv.EventType_EVENT_TYPE_SYSCALL)}, nil),
 			protoAtom(clisv.FilterField_FILTER_FIELD_SUBTYPE,
 				clisv.FilterCompare_FILTER_COMPARE_EQ,
 				[]uint32{uint32(clisv.Subtype_SUBTYPE_EXEC)}, nil)),

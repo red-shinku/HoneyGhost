@@ -5,7 +5,7 @@
  * @file syscall_event.hpp
  * @brief 系统调用语义事件的输出结构定义
  * @details
- * 头部（hng::event_head）为手写通用 POD 结构，记录进程身份与顶层事件大类
+ * 头部（hng::event_head）为手写通用 POD 结构，记录进程身份与事件来源
  * （hng::EventType）；载荷（hng::process_semantic_data 等八个消息）由 proto
  * 生成，两者组合为
  * syscall_semantic_data，即语义化模块推向下游（控制平面 / 检测）队列的元素类型。

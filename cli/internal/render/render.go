@@ -234,14 +234,9 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 	if s.Semantic != nil {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  SEMANTIC")
-		fmt.Fprintf(tw, "    processed_file	%d\n", s.Semantic.ProcessedFile)
 		fmt.Fprintf(tw, "    processed_syscall	%d\n", s.Semantic.ProcessedSyscall)
-		fmt.Fprintf(tw, "    raw_file_dropped	%d\n", s.Semantic.RawFileDropped)
-		fmt.Fprintf(tw, "    raw_file_rejected	%d\n", s.Semantic.RawFileRejected)
 		fmt.Fprintf(tw, "    raw_syscall_dropped	%d\n", s.Semantic.RawSyscallDropped)
 		fmt.Fprintf(tw, "    raw_syscall_rejected	%d\n", s.Semantic.RawSyscallRejected)
-		fmt.Fprintf(tw, "    out_file_dropped	%d\n", s.Semantic.OutFileDropped)
-		fmt.Fprintf(tw, "    out_file_rejected	%d\n", s.Semantic.OutFileRejected)
 		fmt.Fprintf(tw, "    out_syscall_dropped	%d\n", s.Semantic.OutSyscallDropped)
 		fmt.Fprintf(tw, "    out_syscall_rejected	%d\n", s.Semantic.OutSyscallRejected)
 		if err := tw.Flush(); err != nil {
@@ -256,7 +251,6 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 		fmt.Fprintf(tw, "    queue_rejected	%d\n", s.Engine.QueueRejected)
 		fmt.Fprintf(tw, "    idle_waits	%d\n", s.Engine.IdleWaits)
 		fmt.Fprintf(tw, "    syscall_dropped	%d\n", s.Engine.SyscallDropped)
-		fmt.Fprintf(tw, "    file_dropped	%d\n", s.Engine.FileDropped)
 		if err := tw.Flush(); err != nil {
 			return err
 		}
@@ -277,8 +271,8 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 // events 表格的固定列宽：逐行输出时无法预知后续字段宽度，
 // 固定宽度保证每一行都与表头对齐；超宽字段原样溢出，不截断。
 const (
-	eventHeaderFormat = "%-7s %-10s %-10s %-24s %-10s %s\n"
-	eventRowFormat    = "%-7s %-10d %-10d %-24s %-10s %s\n"
+	eventHeaderFormat = "%-7s %-9s %-10s %-10s %-24s %-10s %s\n"
+	eventRowFormat    = "%-7s %-9s %-10d %-10d %-24s %-10s %s\n"
 )
 
 func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
@@ -287,7 +281,7 @@ func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
 		st.headerPrinted = true
 		if !r.opts.NoHeaders {
 			if _, err := fmt.Fprintf(w, eventHeaderFormat,
-				"TYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL"); err != nil {
+				"TYPE", "SUBTYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL"); err != nil {
 				return err
 			}
 		}
@@ -309,9 +303,14 @@ func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
 	if eventType == "" {
 		eventType = "-"
 	}
+	subtype := string(ev.Head.Subtype)
+	if subtype == "" {
+		subtype = "-"
+	}
 
 	_, err := fmt.Fprintf(w, eventRowFormat,
-		eventType, ev.Head.PID, ev.Head.PPID, role, contextID, eventDetail(ev.Payload))
+		eventType, subtype, ev.Head.PID, ev.Head.PPID, role, contextID,
+		eventDetail(ev.Payload))
 	return err
 }
 
@@ -325,11 +324,11 @@ func eventDetail(p model.Payload) string {
 	fields := p.Fields
 	name := stringField(fields, "syscall_name")
 	switch p.Kind {
-	case model.PayloadProcess:
+	case model.SubtypeProcess:
 		return fmt.Sprintf("%s exit=%v", name, fields["exit_code"])
-	case model.PayloadExec:
+	case model.SubtypeExec:
 		return strings.TrimSpace(name + " " + stringField(fields, "semantic_filename"))
-	case model.PayloadCredential:
+	case model.SubtypeCredential:
 		if uid, ok := fields["setuid_uid"]; ok {
 			return fmt.Sprintf("%s uid=%v", name, uid)
 		}
@@ -341,20 +340,20 @@ func eventDetail(p model.Payload) string {
 				capset["effective"], capset["permitted"], capset["inheritable"])
 		}
 		return name
-	case model.PayloadNamespace:
+	case model.SubtypeNamespace:
 		return fmt.Sprintf("%s ns_type=%v flags=0x%x", name,
 			fields["ns_type"], uintField(fields, "flags"))
-	case model.PayloadFileSyscall:
+	case model.SubtypeFile:
 		detail := name
 		if path := stringField(fields, "path"); path != "" {
 			detail += " path=" + path
 		}
 		return fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
 			uintField(fields, "flags"), uintField(fields, "mode"))
-	case model.PayloadMemory:
+	case model.SubtypeMemory:
 		return fmt.Sprintf("%s prot=0x%x flags=0x%x", name,
 			uintField(fields, "prot"), uintField(fields, "flags"))
-	case model.PayloadNetworkSyscall:
+	case model.SubtypeNetwork:
 		detail := fmt.Sprintf("%s family=%v type=%v protocol=%v", name,
 			fields["family"], fields["type"], fields["protocol"])
 		if dst := networkDst(fields); dst != "" {
@@ -362,13 +361,11 @@ func eventDetail(p model.Payload) string {
 				uintField(fields, "src_port"))
 		}
 		return detail
-	case model.PayloadKernel:
+	case model.SubtypeKernel:
 		return fmt.Sprintf("%s command=%v arg=%v", name,
 			fields["command"], fields["arg"])
-	case model.PayloadFile:
-		return stringField(fields, "semantic_filename")
 	default:
-		return p.Kind
+		return string(p.Kind)
 	}
 }
 

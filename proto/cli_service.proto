@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package hng.clisv;
 
-import "file_event.proto";
 import "syscall_event.proto";
 
 message role
@@ -242,12 +241,11 @@ service ProcessManagerService
 // RuntimeService
 // =============================================
 
-// 顶层事件大类，取值与 hng::EventType 一一对应
+// 事件来源，取值与 hng::EventType 一一对应
+// 本期只有内核探针一种来源，统一记为 syscall；非探针来源将在将来新增取值
 enum EventType {
     EVENT_TYPE_SYSCALL = 0;
-    EVENT_TYPE_FILE    = 1;
-    EVENT_TYPE_NETWORK = 2;
-    EVENT_TYPE_IPC     = 3;
+    reserved 1, 2, 3;
 }
 
 // 命令行 -i 选项的取值；未设置的维度表示该维度不限
@@ -323,14 +321,16 @@ message filter_expr {
 
 message ReceiveEventRequest
 {
-    // 命令行选项 -t
+    // 事件来源过滤；本期只接受 EVENT_TYPE_SYSCALL 或空
     repeated EventType etype  = 1;
     // 命令行选项 -i
     optional runtimeinfo info = 2;
     // 单条响应最多携带的事件数；0 取服务端默认值 64，服务端钳制到 1..256
     uint32 batch_size = 3;
-    // 布尔过滤表达式；与 etype/info 取交
+    // 布尔过滤表达式；与 etype/subtype/info 取交
     optional filter_expr expr = 4;
+    // 命令行选项 -t：语义子类型过滤，取值 1..8，空表示不限
+    repeated Subtype subtype = 5;
 }
 
 message syscall_event_data
@@ -379,8 +379,9 @@ message eventrecord
     oneof event
     {
         syscall_event_data syscall_ev = 2;
-        file_event_data file_ev       = 3;
     }
+    reserved 3;
+    reserved "file_ev";
 }
 
 // 一次下发的事件批；队列空时发送已取到的部分批
@@ -420,14 +421,10 @@ message collector_line_stats
 // 语义聚合的累计计数
 message semantic_stats
 {
-    uint64 processed_file    = 1;
-    uint64 processed_syscall = 2;
-    uint64 raw_file_dropped     = 3;
-    uint64 raw_file_rejected    = 4;
+    reserved 1, 3, 4, 7, 8;
+    uint64 processed_syscall    = 2;
     uint64 raw_syscall_dropped  = 5;
     uint64 raw_syscall_rejected = 6;
-    uint64 out_file_dropped     = 7;
-    uint64 out_file_rejected    = 8;
     uint64 out_syscall_dropped  = 9;
     uint64 out_syscall_rejected = 10;
 }
@@ -435,12 +432,12 @@ message semantic_stats
 // 运行时引擎的累计计数
 message engine_stats
 {
+    reserved 6;
     uint64 unsettled_events = 1;
     uint64 peak_cli_streams = 2;
     uint64 queue_rejected   = 3;
     uint64 idle_waits       = 4;
     uint64 syscall_dropped  = 5;
-    uint64 file_dropped     = 6;
 }
 
 // CLI 订阅流的计数

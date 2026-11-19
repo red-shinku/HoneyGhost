@@ -1,2 +1,2 @@
-syscall 1234       1          nginx:1.25               3          execve /usr/sbin/nginx
-file    2002       1          #7                       -          /etc/nginx/nginx.conf
+syscall exec      1234       1          nginx:1.25               3          execve /usr/sbin/nginx
+syscall file      2002       1          #7                       -          openat path=/etc/nginx/nginx.conf flags=0x0 mode=00

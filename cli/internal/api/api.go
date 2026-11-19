@@ -15,7 +15,7 @@ type SubscribeOptions struct {
 	// BatchSize 是单条响应最多携带的事件数；0 表示由服务端取默认值。
 	BatchSize uint32
 
-	// Expr 是布尔过滤表达式，与 Selector、Types 取交；nil 表示不发送该字段。
+	// Expr 是布尔过滤表达式，与 Selector、Subtypes 取交；nil 表示不发送该字段。
 	Expr *model.FilterExpr
 }
 
@@ -53,7 +53,7 @@ type ProcessService interface {
 // EventService 提供运行时事件订阅。
 type EventService interface {
 	Subscribe(ctx context.Context, sel model.RuntimeSelector,
-		types []model.EventType, opts SubscribeOptions) (EventStream, error)
+		subtypes []model.Subtype, opts SubscribeOptions) (EventStream, error)
 	Stats(ctx context.Context) (model.PipelineStats, error)
 }
 

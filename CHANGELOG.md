@@ -5,7 +5,11 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
-None
+### Changed
+
+- The event stream is converged onto a single syscall source: `TYPE` has only `syscall`, an event record carries only `syscall_ev` (`file_ev` is reserved), and the file-related `semantic_stats`/`engine_stats` fields are reserved and no longer reported.
+- `hghost events -t/--type` now selects semantic subtypes (`process`, `exec`, `credential`, `namespace`, `file`, `memory`, `network`, `kernel`) instead of top-level event types. The `events` table gains a `SUBTYPE` column after `TYPE`, and JSON `head.subtype` uses the same strings.
+- `-e` renames `kind=` to `subtype=`; `type=` only accepts `syscall`. Mixing an explicit `-t` with a `subtype` predicate in `-e` is a usage error.
 
 ## [v0.1.2] - 2026-11-16
 ### Added

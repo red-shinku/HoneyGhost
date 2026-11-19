@@ -144,6 +144,15 @@ func toProtoFilterLogic(logic model.FilterLogic) (clisv.FilterLogic, error) {
 	}
 }
 
+func toProtoEventType(eventType model.EventType) (clisv.EventType, error) {
+	switch eventType {
+	case model.EventTypeSyscall:
+		return clisv.EventType_EVENT_TYPE_SYSCALL, nil
+	default:
+		return 0, fmt.Errorf("unknown event type %q", eventType)
+	}
+}
+
 func toProtoSubtype(subtype model.Subtype) (clisv.Subtype, error) {
 	switch subtype {
 	case model.SubtypeProcess:
@@ -154,11 +163,11 @@ func toProtoSubtype(subtype model.Subtype) (clisv.Subtype, error) {
 		return clisv.Subtype_SUBTYPE_CREDENTIAL, nil
 	case model.SubtypeNamespace:
 		return clisv.Subtype_SUBTYPE_NAMESPACE, nil
-	case model.SubtypeFileSyscall:
+	case model.SubtypeFile:
 		return clisv.Subtype_SUBTYPE_FILE, nil
 	case model.SubtypeMemory:
 		return clisv.Subtype_SUBTYPE_MEMORY, nil
-	case model.SubtypeNetworkSyscall:
+	case model.SubtypeNetwork:
 		return clisv.Subtype_SUBTYPE_NETWORK, nil
 	case model.SubtypeKernel:
 		return clisv.Subtype_SUBTYPE_KERNEL, nil

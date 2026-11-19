@@ -61,10 +61,8 @@ func TestParseExpr(t *testing.T) {
 		},
 		{
 			"types case insensitive and canonical",
-			[]string{"type=FILE,SYSCALL,network,ipc,syscall"},
-			typeAtom(model.FilterCompareEq,
-				model.EventTypeSyscall, model.EventTypeFile,
-				model.EventTypeNetwork, model.EventTypeIPC),
+			[]string{"type=SYSCALL,syscall"},
+			typeAtom(model.FilterCompareEq, model.EventTypeSyscall),
 		},
 		{
 			"subtypes case insensitive and canonical",
@@ -229,7 +227,10 @@ func TestParseExprErrors(t *testing.T) {
 		{"negative", []string{"pid=-1"}, "not a uint32"},
 		{"prefix on numeric field", []string{"pid~=1"}, "~= is only supported for role"},
 		{"bad type", []string{"type=bogus"}, "invalid type"},
+		{"old file type", []string{"type=file"}, "invalid type"},
 		{"bad subtype", []string{"subtype=bogus"}, "invalid subtype"},
+		{"old file_syscall subtype", []string{"subtype=file_syscall"}, "invalid subtype"},
+		{"old network_syscall subtype", []string{"subtype=network_syscall"}, "invalid subtype"},
 		{"old kind key", []string{"kind=exec"}, "unknown key"},
 		{"missing comparison", []string{"pid 1"}, "expected a comparison operator"},
 		{"missing predicate", []string{"pid=1 pid=2"}, "unexpected"},

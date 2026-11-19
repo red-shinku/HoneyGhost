@@ -5,7 +5,17 @@
 
 ## [Unreleased]
 
-None
+### Changed
+
+- 事件流收敛为单一 syscall 来源：`TYPE` 只剩 `syscall`，一条事件记录只携带
+  `syscall_ev`（`file_ev` 编号保留、不再使用），`semantic_stats`/`engine_stats`
+  的文件相关字段保留编号、不再上报。
+- `hghost events -t/--type` 改为按语义子类型过滤（`process`、`exec`、
+  `credential`、`namespace`、`file`、`memory`、`network`、`kernel`），不再是
+  顶层事件类型；`events` 表格在 `TYPE` 后新增 `SUBTYPE` 列，JSON 的
+  `head.subtype` 使用同一套字符串。
+- `-e` 的 `kind=` 更名 `subtype=`；`type=` 只剩 `syscall`。显式 `-t` 与
+  `-e` 中的 `subtype` 原子互斥，混用是用法错误。
 
 ## [v0.1.2] - 2026-11-16
 

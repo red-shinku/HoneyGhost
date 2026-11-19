@@ -31,7 +31,6 @@ add_subdirectory(kernel)
 
 # ============================================================
 # 事件数据结构：proto 生成载荷 + 手写组合结构
-#   proto/file_event.proto   → ${PROTO_GEN_DIR}/file_event.pb.{h,cc}
 #   proto/syscall_event.proto → ${PROTO_GEN_DIR}/syscall_event.pb.{h,cc}
 # ============================================================
 find_package(Protobuf REQUIRED)
@@ -50,8 +49,7 @@ target_include_directories(hng_event_data PUBLIC
 )
 target_link_libraries(hng_event_data PUBLIC protobuf::libprotobuf)
 protobuf_generate(TARGET hng_event_data LANGUAGE cpp
-    PROTOS proto/file_event.proto
-          proto/syscall_event.proto
+    PROTOS proto/syscall_event.proto
     IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
     PROTOC_OUT_DIR ${PROTO_GEN_DIR}
 )

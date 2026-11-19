@@ -25,6 +25,7 @@ func testHead() *clisv.Eventhead {
 		Ppid:          1,
 		PpidStartTime: 2,
 		Type:          clisv.EventType_EVENT_TYPE_SYSCALL,
+		Subtype:       clisv.Subtype_SUBTYPE_EXEC,
 	}
 }
 
@@ -46,6 +47,7 @@ func TestConvertEventHead(t *testing.T) {
 		PPID:          1,
 		PPIDStartTime: 2,
 		Type:          model.EventTypeSyscall,
+		Subtype:       model.SubtypeExec,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("convertEventHead = %+v, want %+v", got, want)
@@ -58,9 +60,7 @@ func TestConvertEventHead(t *testing.T) {
 func TestConvertEventTypes(t *testing.T) {
 	tests := map[clisv.EventType]model.EventType{
 		clisv.EventType_EVENT_TYPE_SYSCALL: model.EventTypeSyscall,
-		clisv.EventType_EVENT_TYPE_FILE:    model.EventTypeFile,
-		clisv.EventType_EVENT_TYPE_NETWORK: model.EventTypeNetwork,
-		clisv.EventType_EVENT_TYPE_IPC:     model.EventTypeIPC,
+		clisv.EventType(1):                 "",
 		clisv.EventType(99):                "",
 	}
 	for in, want := range tests {
@@ -70,11 +70,31 @@ func TestConvertEventTypes(t *testing.T) {
 	}
 }
 
+func TestConvertEventSubtypes(t *testing.T) {
+	tests := map[clisv.Subtype]model.Subtype{
+		clisv.Subtype_SUBTYPE_PROCESS:     model.SubtypeProcess,
+		clisv.Subtype_SUBTYPE_EXEC:        model.SubtypeExec,
+		clisv.Subtype_SUBTYPE_CREDENTIAL:  model.SubtypeCredential,
+		clisv.Subtype_SUBTYPE_NAMESPACE:   model.SubtypeNamespace,
+		clisv.Subtype_SUBTYPE_FILE:        model.SubtypeFile,
+		clisv.Subtype_SUBTYPE_MEMORY:      model.SubtypeMemory,
+		clisv.Subtype_SUBTYPE_NETWORK:     model.SubtypeNetwork,
+		clisv.Subtype_SUBTYPE_KERNEL:      model.SubtypeKernel,
+		clisv.Subtype_SUBTYPE_UNSPECIFIED: "",
+		clisv.Subtype(99):                 "",
+	}
+	for in, want := range tests {
+		if got := subtypeFromProto(in); got != want {
+			t.Errorf("subtypeFromProto(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestConvertSyscallPayloads(t *testing.T) {
 	tests := []struct {
 		name   string
 		data   *clisv.SyscallEventData
-		kind   string
+		kind   model.Subtype
 		fields map[string]any
 	}{
 		{
@@ -82,7 +102,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_ProcessData{
 				ProcessData: &hng.ProcessSemanticData{ExitCode: -9, SyscallName: "exit_group"},
 			}},
-			kind:   model.PayloadProcess,
+			kind:   model.SubtypeProcess,
 			fields: map[string]any{"exit_code": int32(-9), "syscall_name": "exit_group"},
 		},
 		{
@@ -96,7 +116,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SyscallName:      "execve",
 				},
 			}},
-			kind: model.PayloadExec,
+			kind: model.SubtypeExec,
 			fields: map[string]any{
 				"semantic_filename": "/usr/sbin/nginx",
 				"argv0":             "nginx",
@@ -113,7 +133,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SyscallName: "setuid",
 				},
 			}},
-			kind:   model.PayloadCredential,
+			kind:   model.SubtypeCredential,
 			fields: map[string]any{"setuid_uid": uint32(1000), "syscall_name": "setuid"},
 		},
 		{
@@ -128,7 +148,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SyscallName: "capset",
 				},
 			}},
-			kind: model.PayloadCredential,
+			kind: model.SubtypeCredential,
 			fields: map[string]any{
 				"capset": map[string]any{
 					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
@@ -141,7 +161,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NamespaceData{
 				NamespaceData: &hng.NamespaceSemanticData{NsType: 1, Flags: 2, SyscallName: "unshare"},
 			}},
-			kind: model.PayloadNamespace,
+			kind: model.SubtypeNamespace,
 			fields: map[string]any{
 				"ns_type": uint32(1), "flags": uint64(2), "syscall_name": "unshare",
 			},
@@ -154,7 +174,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SyscallName: "openat",
 				},
 			}},
-			kind: model.PayloadFileSyscall,
+			kind: model.SubtypeFile,
 			fields: map[string]any{
 				"flags": uint32(3), "mode": uint32(420), "path": "/tmp/x",
 				"is_innamespace": true, "syscall_name": "openat",
@@ -165,7 +185,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_MemoryData{
 				MemoryData: &hng.MemorySemanticData{Prot: 4, Flags: 5, SyscallName: "mmap"},
 			}},
-			kind: model.PayloadMemory,
+			kind: model.SubtypeMemory,
 			fields: map[string]any{
 				"prot": uint64(4), "flags": uint64(5), "syscall_name": "mmap",
 			},
@@ -179,7 +199,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					SyscallName: "connect",
 				},
 			}},
-			kind: model.PayloadNetworkSyscall,
+			kind: model.SubtypeNetwork,
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
 				"dst_ip":   []uint32{0x0a01a8c0, 0, 0, 0},
@@ -194,7 +214,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					Family: 2, Type: 1, Protocol: 6, SyscallName: "socket",
 				},
 			}},
-			kind: model.PayloadNetworkSyscall,
+			kind: model.SubtypeNetwork,
 			fields: map[string]any{
 				"family": uint32(2), "type": uint32(1), "protocol": uint32(6),
 				"dst_ip": []uint32{}, "dst_port": uint32(0), "src_port": uint32(0),
@@ -206,7 +226,7 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_KernelData{
 				KernelData: &hng.KernelSemanticData{Command: 7, Arg: 8, SyscallName: "ptrace"},
 			}},
-			kind: model.PayloadKernel,
+			kind: model.SubtypeKernel,
 			fields: map[string]any{
 				"command": uint32(7), "arg": uint64(8), "syscall_name": "ptrace",
 			},
@@ -226,34 +246,6 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				t.Errorf("Fields = %#v, want %#v", event.Payload.Fields, tt.fields)
 			}
 		})
-	}
-}
-
-func TestConvertFileEvent(t *testing.T) {
-	record := &clisv.Eventrecord{
-		Head: testHead(),
-		Event: &clisv.Eventrecord_FileEv{FileEv: &hng.FileEventData{
-			SemanticFilename: "/etc/nginx/nginx.conf",
-			Flags:            1,
-			IsInnamespace:    true,
-			Comm:             "nginx",
-		}},
-	}
-	event, err := convertEventRecord(record)
-	if err != nil {
-		t.Fatalf("convertEventRecord: %v", err)
-	}
-	if event.Payload.Kind != model.PayloadFile {
-		t.Errorf("Kind = %q, want file", event.Payload.Kind)
-	}
-	want := map[string]any{
-		"semantic_filename": "/etc/nginx/nginx.conf",
-		"flags":             uint32(1),
-		"is_innamespace":    true,
-		"comm":              "nginx",
-	}
-	if !reflect.DeepEqual(event.Payload.Fields, want) {
-		t.Errorf("Fields = %#v, want %#v", event.Payload.Fields, want)
 	}
 }
 
@@ -310,12 +302,9 @@ func TestConvertBatch(t *testing.T) {
 				syscallRecord(&clisv.SyscallEventData{SData: &clisv.SyscallEventData_ProcessData{
 					ProcessData: &hng.ProcessSemanticData{SyscallName: "fork"},
 				}}),
-				{
-					Head: testHead(),
-					Event: &clisv.Eventrecord_FileEv{FileEv: &hng.FileEventData{
-						SemanticFilename: "/tmp/a",
-					}},
-				},
+				syscallRecord(&clisv.SyscallEventData{SData: &clisv.SyscallEventData_ExecData{
+					ExecData: &hng.ExecSemanticData{SyscallName: "execve"},
+				}}),
 			},
 		}},
 	}
@@ -326,11 +315,11 @@ func TestConvertBatch(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("len(items) = %d, want 2", len(items))
 	}
-	if items[0].Event == nil || items[0].Event.Payload.Kind != model.PayloadProcess {
+	if items[0].Event == nil || items[0].Event.Payload.Kind != model.SubtypeProcess {
 		t.Errorf("items[0] = %+v, want process payload", items[0])
 	}
-	if items[1].Event == nil || items[1].Event.Payload.Kind != model.PayloadFile {
-		t.Errorf("items[1] = %+v, want file payload", items[1])
+	if items[1].Event == nil || items[1].Event.Payload.Kind != model.SubtypeExec {
+		t.Errorf("items[1] = %+v, want exec payload", items[1])
 	}
 }
 

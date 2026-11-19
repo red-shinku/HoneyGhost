@@ -35,18 +35,18 @@ const (
 	FilterLogicNot
 )
 
-// Subtype 是事件的语义子类型，与输出 payload 的变体名同名。
+// Subtype 是事件的语义子类型，与输出 payload 的 kind 同值。
 type Subtype string
 
 const (
-	SubtypeProcess        Subtype = "process"
-	SubtypeExec           Subtype = "exec"
-	SubtypeCredential     Subtype = "credential"
-	SubtypeNamespace      Subtype = "namespace"
-	SubtypeFileSyscall    Subtype = "file_syscall"
-	SubtypeMemory         Subtype = "memory"
-	SubtypeNetworkSyscall Subtype = "network_syscall"
-	SubtypeKernel         Subtype = "kernel"
+	SubtypeProcess    Subtype = "process"
+	SubtypeExec       Subtype = "exec"
+	SubtypeCredential Subtype = "credential"
+	SubtypeNamespace  Subtype = "namespace"
+	SubtypeFile       Subtype = "file"
+	SubtypeMemory     Subtype = "memory"
+	SubtypeNetwork    Subtype = "network"
+	SubtypeKernel     Subtype = "kernel"
 )
 
 // FilterAtom 是单个谓词。

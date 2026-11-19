@@ -4,7 +4,7 @@
  * @details
  * 纯值对象，无 IO / 无协程。覆盖：
  *  - 空请求为全选；
- *  - -t 单值与多值：维度之内取并集；
+ *  - -t（语义子类型）单值与多值：维度之内取并集；
  *  - -i 的各维度：角色 / 上下文 / 进程同样是并集；
  *  - 角色维度含 roleID 与 roleLabel 两组，两组之间取并集；
  *  - 维度之间取交集；
@@ -77,12 +77,12 @@ struct InvalidCase {
     std::function<void(ReceiveEventRequest&)> build;
 };
 
-/// -t 的取值：类型集合原样落进过滤器
-void add_types(ReceiveEventRequest& request,
-               std::initializer_list<hng::clisv::EventType> types)
+/// -t 的取值：语义子类型集合原样落进过滤器
+void add_subtypes(ReceiveEventRequest& request,
+                  std::initializer_list<hng::clisv::Subtype> subtypes)
 {
-    for (const hng::clisv::EventType type : types) {
-        request.add_etype(type);
+    for (const hng::clisv::Subtype subtype : subtypes) {
+        request.add_subtype(subtype);
     }
 }
 
@@ -191,30 +191,34 @@ const std::vector<Case>& cases()
 {
     static const std::vector<Case> table{
         {"空请求为全选", [](ReceiveEventRequest&) {},
-         make_info(1, hng::EventType::IPC_EVENT, 9, 9), true},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 9, 9), true},
 
-        {"-t 单值命中该类型",
+        {"-t 单值命中该子类型",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_FILE});
+             add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
          },
-         make_info(1, hng::EventType::FILE_EVENT, 0, 0), true},
-        {"-t 单值不命中其他类型",
+         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, FILE_EVENT),
+         true},
+        {"-t 单值不命中其他子类型",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_FILE});
+             add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
          },
-         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0), false},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, PROCESS_EVENT),
+         false},
         {"-t 多值取并集（命中之一）",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_FILE,
-                           hng::clisv::EVENT_TYPE_SYSCALL});
+             add_subtypes(r,
+                          {hng::clisv::SUBTYPE_FILE, hng::clisv::SUBTYPE_KERNEL});
          },
-         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0), true},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, FILE_EVENT),
+         true},
         {"-t 多值取并集（都不命中）",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_FILE,
-                           hng::clisv::EVENT_TYPE_SYSCALL});
+             add_subtypes(r,
+                          {hng::clisv::SUBTYPE_FILE, hng::clisv::SUBTYPE_KERNEL});
          },
-         make_info(1, hng::EventType::IPC_EVENT, 0, 0), false},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, PROCESS_EVENT),
+         false},
 
         {"-i roleID 多值取并集（命中之一）",
          [](ReceiveEventRequest& r) { add_roles(r, {7, 8}); },
@@ -267,22 +271,25 @@ const std::vector<Case>& cases()
 
         {"维度之间取交集：两者全中",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_SYSCALL});
+             add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
              add_roles(r, {7});
          },
-         make_info(1, hng::EventType::SYSCALL_EVENT, 7, 0), true},
-        {"维度之间取交集：仅事件类型不符",
+         make_info(1, hng::EventType::SYSCALL_EVENT, 7, 0, {}, 0, FILE_EVENT),
+         true},
+        {"维度之间取交集：仅语义子类型不符",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_SYSCALL});
+             add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
              add_roles(r, {7});
          },
-         make_info(1, hng::EventType::FILE_EVENT, 7, 0), false},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 7, 0, {}, 0, PROCESS_EVENT),
+         false},
         {"维度之间取交集：仅角色不符",
          [](ReceiveEventRequest& r) {
-             add_types(r, {hng::clisv::EVENT_TYPE_SYSCALL});
+             add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
              add_roles(r, {7});
          },
-         make_info(1, hng::EventType::SYSCALL_EVENT, 8, 0), false},
+         make_info(1, hng::EventType::SYSCALL_EVENT, 8, 0, {}, 0, FILE_EVENT),
+         false},
     };
     return table;
 }
@@ -342,8 +349,6 @@ const std::vector<Case>& expression_cases()
         return std::vector<Case>{
             {"表达式 atom：type 命中", set(type_syscall),
              make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0), true},
-            {"表达式 atom：type 不命中", set(type_syscall),
-             make_info(1, hng::EventType::FILE_EVENT, 0, 0), false},
 
             {"表达式 atom：subtype 命中", set(subtype_exec),
              make_info(1, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0, EXEC_EVENT),
@@ -454,16 +459,20 @@ const std::vector<Case>& expression_cases()
 
             {"表达式与 -t 取交：均命中",
              [pid_1001](ReceiveEventRequest& r) {
-                 add_types(r, {hng::clisv::EVENT_TYPE_SYSCALL});
+                 add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
                  *r.mutable_expr() = pid_1001;
              },
-             make_info(1001, hng::EventType::SYSCALL_EVENT, 0, 0), true},
+             make_info(1001, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
+                       FILE_EVENT),
+             true},
             {"表达式与 -t 取交：仅 -t 不命中",
              [pid_1001](ReceiveEventRequest& r) {
-                 add_types(r, {hng::clisv::EVENT_TYPE_SYSCALL});
+                 add_subtypes(r, {hng::clisv::SUBTYPE_FILE});
                  *r.mutable_expr() = pid_1001;
              },
-             make_info(1001, hng::EventType::FILE_EVENT, 0, 0), false},
+             make_info(1001, hng::EventType::SYSCALL_EVENT, 0, 0, {}, 0,
+                       PROCESS_EVENT),
+             false},
         };
     }();
     return table;
@@ -578,10 +587,22 @@ const std::vector<InvalidCase>& invalid_cases()
                                          hng::clisv::FILTER_COMPARE_EQ, {0});
                          }});
 
-        cases.push_back({"非法：type 取值为 4", [](ReceiveEventRequest& r) {
+        cases.push_back({"非法：type 取值为 1", [](ReceiveEventRequest& r) {
                              *r.mutable_expr() =
                                  numeric(hng::clisv::FILTER_FIELD_TYPE,
-                                         hng::clisv::FILTER_COMPARE_EQ, {4});
+                                         hng::clisv::FILTER_COMPARE_EQ, {1});
+                         }});
+
+        cases.push_back({"非法：etype 取值为 1", [](ReceiveEventRequest& r) {
+                             r.add_etype(static_cast<hng::clisv::EventType>(1));
+                         }});
+
+        cases.push_back({"非法：-t 子类型取值为 0", [](ReceiveEventRequest& r) {
+                             r.add_subtype(hng::clisv::SUBTYPE_UNSPECIFIED);
+                         }});
+
+        cases.push_back({"非法：-t 子类型取值为 9", [](ReceiveEventRequest& r) {
+                             r.add_subtype(static_cast<hng::clisv::Subtype>(9));
                          }});
 
         cases.push_back({"非法：subtype 取值为 0", [](ReceiveEventRequest& r) {
@@ -621,7 +642,7 @@ const std::vector<InvalidCase>& invalid_cases()
                              atom.set_field(hng::clisv::FILTER_FIELD_TYPE);
                              atom.set_compare(hng::clisv::FILTER_COMPARE_EQ);
                              for (uint32_t i = 0; i < 4097u; ++i) {
-                                 atom.add_numbers(i % 4);
+                                 atom.add_numbers(0);
                              }
                              *r.mutable_expr() = atom_expr(std::move(atom));
                          }});

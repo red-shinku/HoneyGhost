@@ -7,7 +7,7 @@
  *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
  *    其余取自事件头；
  *  - 归属未落定时 roleLabel 留空；
- *  - 事件类型的双边映射可往返。
+ *  - 事件来源的双边映射可往返，非法报文取值返回 std::nullopt。
  * @author red-shinku
  * @date 2026.10.16
  */
@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -237,14 +238,18 @@ void run_subtype_mapping()
 
 void run_event_type_round_trip()
 {
-    const hng::EventType all[] = {
-        hng::EventType::SYSCALL_EVENT, hng::EventType::FILE_EVENT,
-        hng::EventType::NETWORK_EVENT, hng::EventType::IPC_EVENT};
-    for (const hng::EventType type : all) {
-        CHECK(hng::cli::FromProtoEventType(hng::cli::ToProtoEventType(type)) ==
-                  type,
-              "事件类型的双边映射应可往返");
-    }
+    const hng::EventType type = hng::EventType::SYSCALL_EVENT;
+    const std::optional<hng::EventType> round_trip =
+        hng::cli::FromProtoEventType(hng::cli::ToProtoEventType(type));
+    CHECK(round_trip.has_value() && *round_trip == type,
+          "事件来源的双边映射应可往返");
+
+    CHECK(!hng::cli::FromProtoEventType(static_cast<hng::clisv::EventType>(1))
+               .has_value(),
+          "已保留的事件来源取值应被拒绝");
+    CHECK(!hng::cli::FromProtoEventType(static_cast<hng::clisv::EventType>(-1))
+               .has_value(),
+          "非法的事件来源取值应被拒绝");
 }
 
 }  // namespace
