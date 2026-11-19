@@ -4,7 +4,7 @@
  * @details
  * 按 hdr.type 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
- * filename 路径语义化与 credential 的 union→oneof 归位。
+ * filename 路径语义化、credential 的 union→oneof 归位与通用事件头字段搬运。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -57,8 +57,14 @@ void fill_head(struct syscall_event& raw, enum syscall_event_name name,
     raw.hdr.head.pid_start_time  = 111;
     raw.hdr.head.ppid            = 100;
     raw.hdr.head.ppid_start_time = 222;
-    raw.hdr.name                 = name;
-    raw.hdr.type                 = type;
+    raw.hdr.head.uid             = 1000;
+    raw.hdr.head.euid            = 0;
+    raw.hdr.head.mnt_ns          = 4026532222;
+    raw.hdr.head.ret             = 0;
+    std::memset(raw.hdr.head.comm, 0, sizeof(raw.hdr.head.comm));
+    std::strncpy(raw.hdr.head.comm, "bash", sizeof(raw.hdr.head.comm) - 1);
+    raw.hdr.name = name;
+    raw.hdr.type = type;
 }
 
 /**
@@ -73,6 +79,11 @@ void check_head(const struct syscall_event& raw,
     CHECK(out.head.ppid_start_time == 222, "head ppid_start_time");
     CHECK(out.head.type == hng::EventType::SYSCALL_EVENT, "head type");
     CHECK(out.head.subtype == raw.hdr.type, "head subtype");
+    CHECK(out.head.uid == 1000, "head uid");
+    CHECK(out.head.euid == 0, "head euid");
+    CHECK(out.head.mnt_ns == 4026532222, "head mnt_ns");
+    CHECK(out.head.ret == 0, "head ret");
+    CHECK(out.head.comm == "bash", "head comm");
 }
 
 // ---- 进程生命周期 ----
@@ -271,17 +282,16 @@ struct FileCase {
     const char* path;
     __u32 flags;
     __u32 mode;
-    __u8 is_innamespace;
     const char* expect_path;
     const char* name_str;
 };
 
 constexpr FileCase kFileCases[] = {
     {SYSCALL_EVENT_OPEN, "/tmp/../etc/./passwd", O_CREAT | O_WRONLY | O_TRUNC,
-     0644, 1, "/etc/passwd", "open"},
-    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, 0,
-     "/a/c", "renameat2"},
-    {SYSCALL_EVENT_UNLINK, "", 0, 0, 0, "", "unlink"},
+     0644, "/etc/passwd", "open"},
+    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, "/a/c",
+     "renameat2"},
+    {SYSCALL_EVENT_UNLINK, "", 0, 0, "", "unlink"},
 };
 
 void run_file()
@@ -291,9 +301,8 @@ void run_file()
         fill_head(raw, c.name, FILE_EVENT);
         std::strncpy(raw.file_event.path, c.path,
                      sizeof(raw.file_event.path) - 1);
-        raw.file_event.flags          = c.flags;
-        raw.file_event.mode           = c.mode;
-        raw.file_event.is_innamespace = c.is_innamespace;
+        raw.file_event.flags = c.flags;
+        raw.file_event.mode  = c.mode;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -304,8 +313,6 @@ void run_file()
             continue;
         }
         CHECK(d->path() == c.expect_path, "file path");
-        CHECK(d->is_innamespace() == (c.is_innamespace != 0),
-              "file is_innamespace");
         CHECK(d->flags() == c.flags, "file flags");
         CHECK(d->mode() == c.mode, "file mode");
         CHECK(d->syscall_name() == c.name_str, "file syscall_name");
@@ -464,6 +471,48 @@ void run_kernel()
     }
 }
 
+// ---- 通用事件头 ----
+
+/// @brief 凭据/命名空间/进程名搬运，以及 comm 定长缓冲的截断规则
+void run_head_fields()
+{
+    struct syscall_event raw = {};
+    fill_head(raw, SYSCALL_EVENT_FORK, PROCESS_EVENT);
+    raw.hdr.head.ret = -2;
+    std::memset(raw.hdr.head.comm, 'z', sizeof(raw.hdr.head.comm));
+
+    hng::syscall_semantic_data out;
+    run_one(raw, out);
+    CHECK(out.head.ret == -2, "head ret signed copy");
+    CHECK(out.head.comm == std::string(sizeof(raw.hdr.head.comm), 'z'),
+          "head comm keeps all 16 bytes without NUL");
+
+    std::memset(raw.hdr.head.comm, 0, sizeof(raw.hdr.head.comm));
+    out = hng::syscall_semantic_data{};
+    run_one(raw, out);
+    CHECK(out.head.comm.empty(), "head comm empty");
+
+    // 合法 UTF-8（中文进程名）原样保留
+    std::memset(raw.hdr.head.comm, 0, sizeof(raw.hdr.head.comm));
+    std::memcpy(raw.hdr.head.comm, "\xe4\xb8\xad\xe6\x96\x87", 6);
+    out = hng::syscall_semantic_data{};
+    run_one(raw, out);
+    CHECK(out.head.comm == "\xe4\xb8\xad\xe6\x96\x87",
+          "head comm keeps valid UTF-8");
+
+    // 非法字节逐个替换为 '?'：孤立续字节、非法首字节、被截断的多字节序列
+    std::memset(raw.hdr.head.comm, 0, sizeof(raw.hdr.head.comm));
+    raw.hdr.head.comm[0] = 'a';
+    raw.hdr.head.comm[1] = static_cast<char>(0x80);
+    raw.hdr.head.comm[2] = static_cast<char>(0xff);
+    raw.hdr.head.comm[3] = static_cast<char>(0xe4);
+    raw.hdr.head.comm[4] = static_cast<char>(0xb8);
+    std::memset(raw.hdr.head.comm + 5, 0, sizeof(raw.hdr.head.comm) - 5);
+    out = hng::syscall_semantic_data{};
+    run_one(raw, out);
+    CHECK(out.head.comm == "a????", "head comm replaces invalid UTF-8 bytes");
+}
+
 }  // namespace
 
 int main()
@@ -476,6 +525,7 @@ int main()
     run_memory();
     run_network();
     run_kernel();
+    run_head_fields();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

@@ -271,8 +271,8 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 // events 表格的固定列宽：逐行输出时无法预知后续字段宽度，
 // 固定宽度保证每一行都与表头对齐；超宽字段原样溢出，不截断。
 const (
-	eventHeaderFormat = "%-7s %-9s %-10s %-10s %-24s %-10s %s\n"
-	eventRowFormat    = "%-7s %-9s %-10d %-10d %-24s %-10s %s\n"
+	eventHeaderFormat = "%-7s %-9s %-10s %-10s %-10s %-10s %-24s %-10s %s\n"
+	eventRowFormat    = "%-7s %-9s %-10d %-10d %-10d %-10d %-24s %-10s %s\n"
 )
 
 func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
@@ -281,7 +281,8 @@ func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
 		st.headerPrinted = true
 		if !r.opts.NoHeaders {
 			if _, err := fmt.Fprintf(w, eventHeaderFormat,
-				"TYPE", "SUBTYPE", "PID", "PPID", "ROLE", "CTX", "DETAIL"); err != nil {
+				"TYPE", "SUBTYPE", "UID", "EUID", "PID", "PPID", "ROLE", "CTX",
+				"DETAIL"); err != nil {
 				return err
 			}
 		}
@@ -309,8 +310,8 @@ func (r tableRenderer) Event(w io.Writer, ev model.Event) error {
 	}
 
 	_, err := fmt.Fprintf(w, eventRowFormat,
-		eventType, subtype, ev.Head.PID, ev.Head.PPID, role, contextID,
-		eventDetail(ev.Payload))
+		eventType, subtype, ev.Head.UID, ev.Head.EUID, ev.Head.PID, ev.Head.PPID,
+		role, contextID, eventDetail(ev.Head, ev.Payload))
 	return err
 }
 
@@ -319,8 +320,28 @@ func (r tableRenderer) StreamStats(io.Writer, model.StreamStats) error {
 	return nil
 }
 
+// initMntNSInum 是初始挂载命名空间的 inode，来源为
+// kernel/include/event_head.h 的 HNG_INIT_MNT_NS_INUM；初始命名空间不呈现 MNTNS。
+const initMntNSInum uint32 = 4026531840
+
 // eventDetail 生成人读摘要；不是稳定契约，脚本应使用 JSON。
-func eventDetail(p model.Payload) string {
+//
+// 载荷摘要之后统一追加事件头字段：RET 恒输出；COMM 仅在非空时输出；MNTNS 仅在
+// 挂载命名空间已采集且不是初始命名空间时输出。
+func eventDetail(head model.Head, p model.Payload) string {
+	detail := payloadDetail(p)
+	detail += fmt.Sprintf(" RET=%d", head.Ret)
+	if head.Comm != "" {
+		detail += " COMM=" + head.Comm
+	}
+	if head.MntNS != 0 && head.MntNS != initMntNSInum {
+		detail += fmt.Sprintf(" MNTNS=%d", head.MntNS)
+	}
+	return detail
+}
+
+// payloadDetail 生成载荷部分的人读摘要。
+func payloadDetail(p model.Payload) string {
 	fields := p.Fields
 	name := stringField(fields, "syscall_name")
 	switch p.Kind {

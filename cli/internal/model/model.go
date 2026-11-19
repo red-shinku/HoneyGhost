@@ -196,6 +196,11 @@ type Head struct {
 	PPIDStartTime uint64    `json:"ppid_start_time"`
 	Type          EventType `json:"type"`
 	Subtype       Subtype   `json:"subtype"`
+	UID           uint32    `json:"uid"`
+	EUID          uint32    `json:"euid"`
+	Ret           int64     `json:"ret"`
+	Comm          string    `json:"comm"`
+	MntNS         uint32    `json:"mnt_ns"`
 }
 
 // Payload 是事件载荷。Kind 为语义子类型，Fields 的键与 proto 字段同名。

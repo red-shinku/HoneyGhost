@@ -63,7 +63,6 @@ struct file_event {
     char path[MAX_PATH_LEN];  ///< open/openat/openat2/creat 携带的文件路径
     __u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
     __u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
-    __u8 is_innamespace;  ///< 路径是否在非初始 mount 命名空间中解释：1 是，0 否
 };
 
 struct memory_event {

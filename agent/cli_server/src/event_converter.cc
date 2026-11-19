@@ -153,6 +153,11 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
     head->set_ppid_start_time(syscall.head.ppid_start_time);
     head->set_type(ToProtoEventType(syscall.head.type));
     head->set_subtype(ToProtoSubtype(syscall.head.subtype));
+    head->set_uid(syscall.head.uid);
+    head->set_euid(syscall.head.euid);
+    head->set_ret(syscall.head.ret);
+    head->set_comm(syscall.head.comm);
+    head->set_mnt_ns(syscall.head.mnt_ns);
     MoveSyscallPayload(syscall, *out.mutable_syscall_ev());
 }
 

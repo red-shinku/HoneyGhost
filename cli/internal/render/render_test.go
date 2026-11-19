@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"honeyghost/cli/internal/model"
@@ -298,6 +299,11 @@ func testEvents() []model.Event {
 				PPID:      1,
 				Type:      model.EventTypeSyscall,
 				Subtype:   model.SubtypeExec,
+				UID:       0,
+				EUID:      1000,
+				Ret:       0,
+				Comm:      "nginx",
+				MntNS:     initMntNSInum,
 			},
 			Payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
 				"semantic_filename": "/usr/sbin/nginx",
@@ -314,13 +320,17 @@ func testEvents() []model.Event {
 				PPID:    1,
 				Type:    model.EventTypeSyscall,
 				Subtype: model.SubtypeFile,
+				UID:     1000,
+				EUID:    0,
+				Ret:     0,
+				Comm:    "nginx",
+				MntNS:   4026532222,
 			},
 			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
-				"path":           "/etc/nginx/nginx.conf",
-				"flags":          uint32(0),
-				"mode":           uint32(0),
-				"is_innamespace": false,
-				"syscall_name":   "openat",
+				"path":         "/etc/nginx/nginx.conf",
+				"flags":        uint32(0),
+				"mode":         uint32(0),
+				"syscall_name": "openat",
 			}},
 		},
 	}
@@ -393,7 +403,7 @@ func TestEventDetail(t *testing.T) {
 			name: "file_syscall",
 			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
-				"path": "/tmp/x", "is_innamespace": true,
+				"path": "/tmp/x",
 			}},
 			want: "openat path=/tmp/x flags=0x3 mode=0644",
 		},
@@ -451,7 +461,42 @@ func TestEventDetail(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := eventDetail(tt.payload); got != tt.want {
+			// 事件头字段由 TestEventDetailHeadFields 单独覆盖
+			got := strings.TrimSuffix(eventDetail(model.Head{}, tt.payload), " RET=0")
+			if got != tt.want {
+				t.Errorf("eventDetail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEventDetailHeadFields(t *testing.T) {
+	payload := model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+		"syscall_name": "openat", "path": "/tmp/x", "flags": uint32(3),
+		"mode": uint32(420),
+	}}
+	const detail = "openat path=/tmp/x flags=0x3 mode=0644"
+
+	tests := []struct {
+		name string
+		head model.Head
+		want string
+	}{
+		{"zero head", model.Head{}, detail + " RET=0"},
+		{"comm", model.Head{Comm: "bash"}, detail + " RET=0 COMM=bash"},
+		{"ret", model.Head{Ret: 3}, detail + " RET=3"},
+		{"non-initial mnt_ns", model.Head{MntNS: 4026532222},
+			detail + " RET=0 MNTNS=4026532222"},
+		{"initial mnt_ns hidden", model.Head{MntNS: initMntNSInum},
+			detail + " RET=0"},
+		{"unknown mnt_ns hidden", model.Head{MntNS: 0}, detail + " RET=0"},
+		{"all", model.Head{Comm: "bash", Ret: -2, MntNS: 4026532222},
+			detail + " RET=-2 COMM=bash MNTNS=4026532222"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := eventDetail(tt.head, payload); got != tt.want {
 				t.Errorf("eventDetail = %q, want %q", got, tt.want)
 			}
 		})

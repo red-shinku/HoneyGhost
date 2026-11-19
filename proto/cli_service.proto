@@ -364,6 +364,12 @@ message eventhead
     uint64 ppid_start_time = 7;
     EventType type         = 8;
     Subtype subtype        = 9;
+
+    uint32 uid             = 10;  // 真实 UID
+    uint32 euid            = 11;  // 有效 UID
+    int64 ret              = 12;  // 系统调用返回值；非系统调用来源为 0
+    string comm            = 13;  // 事件主体进程名
+    uint32 mnt_ns          = 14;  // 挂载命名空间 inode；初始命名空间为 4026531840
 }
 
 // 本流丢弃事件的累计计数，可多次上报

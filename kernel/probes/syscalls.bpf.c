@@ -172,9 +172,8 @@ static __always_inline struct syscall_event *init_file_event(
     }
     init_syscall_event_head(&event->hdr, name);
     __builtin_memset(event->file_event.path, 0, sizeof(event->file_event.path));
-    event->file_event.flags          = 0;
-    event->file_event.mode           = 0;
-    event->file_event.is_innamespace = 0;
+    event->file_event.flags = 0;
+    event->file_event.mode  = 0;
     return event;
 }
 
@@ -256,35 +255,6 @@ static __always_inline struct syscall_event *init_kernel_event(
  * @name 事件字段采集辅助
  * @{
  */
-
-/**
- * @brief 判定当前进程是否处于非初始 mount 命名空间
- * @details
- * 路径参数是在调用进程的挂载命名空间视图中解释的，容器内与宿主机对同一路径的
- * 语义不同。通过 task->nsproxy->mnt_ns->ns.inum 读取当前挂载命名空间的 inode：
- * 初始挂载命名空间的 inode 恒为 0xF0000000（4026531840，宿主根命名空间，各内核
- * 版本稳定），其余为容器 / 自定义命名空间（inode
- * 或大于或小于该值，故用精确比较）。
- * @return 非初始挂载命名空间返回 1，否则返回 0。
- * @note 任一环节读取失败按“不在命名空间中”保守处理。
- */
-static __always_inline __u8 current_is_innamespace(void)
-{
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    if (!task) {
-        return 0;
-    }
-    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
-    if (!nsproxy) {
-        return 0;
-    }
-    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
-    if (!mnt_ns) {
-        return 0;
-    }
-    unsigned int inum = BPF_CORE_READ(mnt_ns, ns.inum);
-    return inum == 4026531840 ? 0 : 1;
-}
 
 /**
  * @brief 解析用户态 sockaddr 地址，提取地址族、IP 与端口
@@ -752,9 +722,8 @@ int trace_syscall_open(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&event->file_event.path,
                             sizeof(event->file_event.path), (void *)ctx->args[0]);
     //! @note args[1]: int flags, args[2]: umode_t mode
-    event->file_event.flags          = (u32)ctx->args[1];
-    event->file_event.mode           = (u32)ctx->args[2];
-    event->file_event.is_innamespace = current_is_innamespace();
+    event->file_event.flags = (u32)ctx->args[1];
+    event->file_event.mode  = (u32)ctx->args[2];
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -775,9 +744,8 @@ int trace_syscall_openat(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&event->file_event.path,
                             sizeof(event->file_event.path), (void *)ctx->args[1]);
     //! @note args[2]: int flags, args[3]: umode_t mode
-    event->file_event.flags          = (u32)ctx->args[2];
-    event->file_event.mode           = (u32)ctx->args[3];
-    event->file_event.is_innamespace = current_is_innamespace();
+    event->file_event.flags = (u32)ctx->args[2];
+    event->file_event.mode  = (u32)ctx->args[3];
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -803,7 +771,6 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
         event->file_event.flags = (u32)how.flags;
         event->file_event.mode  = (u32)how.mode;
     }
-    event->file_event.is_innamespace = current_is_innamespace();
 
     bpf_ringbuf_submit(event, 0);
     return 0;
@@ -824,10 +791,9 @@ int trace_syscall_creat(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read_user_str(&event->file_event.path,
                             sizeof(event->file_event.path), (void *)ctx->args[0]);
     //! @note creat() 隐含了 O_CREAT | O_WRONLY | O_TRUNC
-    event->file_event.flags          = O_CREAT | O_WRONLY | O_TRUNC;
+    event->file_event.flags = O_CREAT | O_WRONLY | O_TRUNC;
     //! @note args[1]: umode_t mode
-    event->file_event.mode           = (u32)ctx->args[1];
-    event->file_event.is_innamespace = current_is_innamespace();
+    event->file_event.mode  = (u32)ctx->args[1];
 
     bpf_ringbuf_submit(event, 0);
     return 0;

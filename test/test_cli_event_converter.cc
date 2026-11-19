@@ -5,7 +5,7 @@
  * 纯转换，无 IO / 无协程。覆盖：
  *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
  *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
- *    其余取自事件头；
+ *    其余取自事件头（含 uid/euid/ret/comm/mnt_ns）；
  *  - 归属未落定时 roleLabel 留空；
  *  - 事件来源的双边映射可往返，非法报文取值返回 std::nullopt。
  * @author red-shinku
@@ -42,6 +42,11 @@ constexpr uint64_t kPpidStart = 84;
 constexpr uint32_t kRoleID    = 7;
 constexpr uint32_t kContextID = 9;
 constexpr char kRoleLabel[]   = "nginx:1.25";
+constexpr uint32_t kUid       = 1000;
+constexpr uint32_t kEuid      = 0;
+constexpr int64_t kRet        = 3;
+constexpr uint32_t kMntNS     = 4026532222;
+constexpr char kComm[]        = "bash";
 
 /// 一条归属已落定的 syscall 事件，事件头填齐
 hng::RuntimeEvent make_syscall()
@@ -59,6 +64,11 @@ hng::RuntimeEvent make_syscall()
     event.data.head.ppid_start_time = kPpidStart;
     event.data.head.type            = hng::EventType::SYSCALL_EVENT;
     event.data.head.subtype         = EXEC_EVENT;
+    event.data.head.uid             = kUid;
+    event.data.head.euid            = kEuid;
+    event.data.head.ret             = kRet;
+    event.data.head.comm            = kComm;
+    event.data.head.mnt_ns          = kMntNS;
     return event;
 }
 
@@ -205,6 +215,11 @@ void run_head_fields()
     CHECK(msg.head().subtype() == hng::clisv::SUBTYPE_EXEC,
           "语义子类型取自事件头");
     CHECK(msg.head().rolelabel() == kRoleLabel, "roleLabel 直传");
+    CHECK(msg.head().uid() == kUid, "uid 取自事件头");
+    CHECK(msg.head().euid() == kEuid, "euid 取自事件头");
+    CHECK(msg.head().ret() == kRet, "ret 取自事件头");
+    CHECK(msg.head().comm() == kComm, "comm 取自事件头");
+    CHECK(msg.head().mnt_ns() == kMntNS, "mnt_ns 取自事件头");
 }
 
 /// 内核枚举的每个取值都应落到同数值的 Subtype

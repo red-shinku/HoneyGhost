@@ -26,6 +26,11 @@ func testHead() *clisv.Eventhead {
 		PpidStartTime: 2,
 		Type:          clisv.EventType_EVENT_TYPE_SYSCALL,
 		Subtype:       clisv.Subtype_SUBTYPE_EXEC,
+		Uid:           1000,
+		Euid:          0,
+		Ret:           3,
+		Comm:          "bash",
+		MntNs:         4026532222,
 	}
 }
 
@@ -48,6 +53,11 @@ func TestConvertEventHead(t *testing.T) {
 		PPIDStartTime: 2,
 		Type:          model.EventTypeSyscall,
 		Subtype:       model.SubtypeExec,
+		UID:           1000,
+		EUID:          0,
+		Ret:           3,
+		Comm:          "bash",
+		MntNS:         4026532222,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("convertEventHead = %+v, want %+v", got, want)
@@ -170,14 +180,14 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			name: "file_syscall",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_FileData{
 				FileData: &hng.FileSyscallSemanticData{
-					Flags: 3, Mode: 420, Path: "/tmp/x", IsInnamespace: true,
+					Flags: 3, Mode: 420, Path: "/tmp/x",
 					SyscallName: "openat",
 				},
 			}},
 			kind: model.SubtypeFile,
 			fields: map[string]any{
 				"flags": uint32(3), "mode": uint32(420), "path": "/tmp/x",
-				"is_innamespace": true, "syscall_name": "openat",
+				"syscall_name": "openat",
 			},
 		},
 		{

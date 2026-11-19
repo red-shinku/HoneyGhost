@@ -186,6 +186,11 @@ func convertEventHead(in *clisv.Eventhead) model.Head {
 		PPIDStartTime: in.GetPpidStartTime(),
 		Type:          eventTypeFromProto(in.GetType()),
 		Subtype:       subtypeFromProto(in.GetSubtype()),
+		UID:           in.GetUid(),
+		EUID:          in.GetEuid(),
+		Ret:           in.GetRet(),
+		Comm:          in.GetComm(),
+		MntNS:         in.GetMntNs(),
 	}
 }
 
@@ -222,11 +227,10 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 	case *clisv.SyscallEventData_FileData:
 		value := data.FileData
 		return payload(model.SubtypeFile, map[string]any{
-			"flags":          value.GetFlags(),
-			"mode":           value.GetMode(),
-			"path":           value.GetPath(),
-			"is_innamespace": value.GetIsInnamespace(),
-			"syscall_name":   value.GetSyscallName(),
+			"flags":        value.GetFlags(),
+			"mode":         value.GetMode(),
+			"path":         value.GetPath(),
+			"syscall_name": value.GetSyscallName(),
 		}), nil
 
 	case *clisv.SyscallEventData_MemoryData:

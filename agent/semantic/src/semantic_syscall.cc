@@ -23,6 +23,91 @@
 namespace {
 
 /**
+ * @brief 判断从 pos 起是否为一段合法 UTF-8，返回其长度
+ * @param text 待检查的字节串
+ * @param pos 起始位置
+ * @return 合法序列的字节数（1..4）；非法或越界返回 0
+ * @details 排除 overlong 编码、代理区编码与超出 U+10FFFF 的取值，
+ *          与 protobuf 对 string 字段的 UTF-8 要求一致。
+ */
+size_t utf8_sequence_length(std::string_view text, size_t pos)
+{
+    const unsigned char lead = static_cast<unsigned char>(text[pos]);
+    if (lead < 0x80) {
+        return 1;
+    }
+    size_t length      = 0;
+    unsigned char low  = 0x80;
+    unsigned char high = 0xBF;
+    if (lead >= 0xC2 && lead <= 0xDF) {
+        length = 2;
+    }
+    else if (lead >= 0xE0 && lead <= 0xEF) {
+        length = 3;
+        if (lead == 0xE0) {
+            low = 0xA0;  // overlong
+        }
+        if (lead == 0xED) {
+            high = 0x9F;  // 代理区
+        }
+    }
+    else if (lead >= 0xF0 && lead <= 0xF4) {
+        length = 4;
+        if (lead == 0xF0) {
+            low = 0x90;
+        }
+        if (lead == 0xF4) {
+            high = 0x8F;
+        }
+    }
+    else {
+        return 0;
+    }
+    if (pos + length > text.size()) {
+        return 0;
+    }
+    const unsigned char second = static_cast<unsigned char>(text[pos + 1]);
+    if (second < low || second > high) {
+        return 0;
+    }
+    for (size_t i = 2; i < length; ++i) {
+        const unsigned char next = static_cast<unsigned char>(text[pos + i]);
+        if (next < 0x80 || next > 0xBF) {
+            return 0;
+        }
+    }
+    return length;
+}
+
+/**
+ * @brief 把内核的进程名缓冲转成合法 UTF-8
+ * @param raw 定长缓冲
+ * @param size 缓冲容量
+ * @return 截到首个 NUL 的副本；非法 UTF-8 序列的每个字节替换为 '?'
+ * @note 内核 comm 允许任意非 NUL 字节，直接放进 proto 的 string 会让
+ *       客户端解析失败，故在此收敛为合法 UTF-8。
+ */
+std::string sanitize_comm(const char* raw, size_t size)
+{
+    const std::string_view text(raw, size);
+    const std::string_view trimmed = text.substr(0, text.find('\0'));
+    std::string out;
+    out.reserve(trimmed.size());
+    size_t pos = 0;
+    while (pos < trimmed.size()) {
+        const size_t length = utf8_sequence_length(trimmed, pos);
+        if (length == 0) {
+            out += '?';
+            ++pos;
+            continue;
+        }
+        out.append(trimmed.substr(pos, length));
+        pos += length;
+    }
+    return out;
+}
+
+/**
  * @brief syscall_event_name 枚举 → 系统调用名字符串
  * @details 下游按名字符串识别具体系统调用；枚举顺序不保证稳定，故用 switch
  * 显式映射，-Wswitch 可保证新枚举值被覆盖。未知值兜底返回 "unknown"。
@@ -172,7 +257,7 @@ void namespace_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 文件系统调用事件 → file_syscall_semantic_data
  * @details 路径经 hng::path::normalize 消除拼写差异后作为原始路径输出，尚不做
- * 绝对化（相对路径保持原样）；flags/mode 与 is_innamespace 原样搬运。
+ * 绝对化（相对路径保持原样）；flags/mode 原样搬运。
  */
 void file_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
@@ -181,7 +266,6 @@ void file_to_semantic(const struct syscall_event& raw,
     std::string norm;
     hng::path::normalize(raw.file_event.path, norm);
     d.set_path(norm);
-    d.set_is_innamespace(raw.file_event.is_innamespace != 0);
     d.set_flags(raw.file_event.flags);
     d.set_mode(raw.file_event.mode);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
@@ -237,9 +321,9 @@ void kernel_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 原始事件 → 语义事件纯转换
- * @details 输入事件头（进程身份上下文）原样拷贝为语义事件头部；载荷按
- * hdr.type 分派到对应 helper。hdr.type 由内核侧 init_syscall_event_head 归类，
- * 此处不做重新推断。
+ * @details 输入事件头（进程身份、凭据、挂载命名空间与进程名）原样拷贝为语义
+ * 事件头部；载荷按 hdr.type 分派到对应 helper。hdr.type 由内核侧
+ * init_syscall_event_head 归类，此处不做重新推断。
  */
 void Semantic_syscall::transform_one(const struct syscall_event& raw,
                                      hng::syscall_semantic_data& out) const
@@ -249,11 +333,17 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
     out.head.ppid            = raw.hdr.head.ppid;
     out.head.ppid_start_time = raw.hdr.head.ppid_start_time;
 
+    out.head.uid             = raw.hdr.head.uid;
+    out.head.euid            = raw.hdr.head.euid;
+    out.head.mnt_ns          = raw.hdr.head.mnt_ns;
+    out.head.ret             = raw.hdr.head.ret;
+    out.head.comm = sanitize_comm(raw.hdr.head.comm, sizeof(raw.hdr.head.comm));
+
     // head.type 为顶层事件流类别（hng::EventType，scoped 枚举），与 raw.hdr.type
     // （syscall_event_type 的八类细分）不同义；本流恒为 syscall 语义流，故固定。
-    out.head.type            = hng::EventType::SYSCALL_EVENT;
+    out.head.type = hng::EventType::SYSCALL_EVENT;
     // 语义子类型由内核头原样携带，不再由载荷 variant 下标反推
-    out.head.subtype         = raw.hdr.type;
+    out.head.subtype = raw.hdr.type;
 
     switch (raw.hdr.type) {
         case UNKNOWN_EVENT:

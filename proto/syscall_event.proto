@@ -68,7 +68,8 @@ message file_syscall_semantic_data
     uint32 mode         = 2;  // creat()/open(O_CREAT) 创建权限
     string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
     string path         = 4;  // 系统调用携带的文件路径；未采集时为空
-    bool is_innamespace = 5;  // 路径是否在非初始 mount 命名空间中解释
+    reserved 5;
+    reserved "is_innamespace";
 }
 
 // 内存事件（mmap / mprotect）。
