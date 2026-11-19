@@ -194,6 +194,7 @@ func convertEventHead(in *clisv.Eventhead) model.Head {
 		Ret:           in.GetRet(),
 		Comm:          in.GetComm(),
 		MntNS:         in.GetMntNs(),
+		Exe:           in.GetExe(),
 	}
 }
 
@@ -213,6 +214,9 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"argv0":             value.GetArgv0(),
 			"argv1":             value.GetArgv1(),
 			"flags":             value.GetFlags(),
+			"invoked":           value.GetInvoked(),
+			"image":             value.GetImage(),
+			"image_flags":       value.GetImageFlags(),
 			"syscall_name":      value.GetSyscallName(),
 		}), nil
 

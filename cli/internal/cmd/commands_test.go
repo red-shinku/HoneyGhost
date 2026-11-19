@@ -983,7 +983,7 @@ func TestEventsJSON(t *testing.T) {
 	}
 	want := `{"kind":"event","head":{"role_label":"nginx","role_id":7,"context_id":0,` +
 		`"pid":1234,"pid_start_time":0,"ppid":1,"ppid_start_time":0,"type":"syscall",` +
-		`"subtype":"file","uid":0,"euid":0,"ret":0,"comm":"","mnt_ns":0},` +
+		`"subtype":"file","uid":0,"euid":0,"ret":0,"comm":"","mnt_ns":0,"exe":""},` +
 		`"payload":{"kind":"file","fields":{"path":"/x","syscall_name":"openat"}}}` + "\n" +
 		`{"kind":"stats","dropped_events":2}` + "\n"
 	if out != want {

@@ -22,12 +22,19 @@ message process_semantic_data
 // 执行事件（execve / execveat）。
 message exec_semantic_data
 {
-    string semantic_filename =
-        1;                    // 语义化后的可执行文件路径；不保留原始 filename
-    string argv0        = 2;  // argv[0]（程序名或启动命令）
-    string argv1        = 5;  // argv[1]（第一个参数；无参数时为空）
-    uint32 flags        = 3;  // execveat 有效，AT_* 标志
-    string syscall_name = 4;  // 系统调用名（如 "execve"、"execveat"）
+    // 供规则与基线使用的语义化镜像路径；实例性片段已替换
+    string semantic_filename = 1;
+    string argv0             = 2;  // argv[0]（程序名或启动命令）
+    string argv1             = 5;  // argv[1]（第一个参数；无参数时为空）
+    uint32 flags             = 3;  // execveat 有效，AT_* 标志
+    string syscall_name      = 4;  // 系统调用名（如 "execve"、"execveat"）
+    // 用户给出的原始路径，原样搬运（可相对、可裸名、可为空）
+    string invoked           = 6;
+    // 事件时刻进程镜像的真实绝对路径，供取证；不做实例语义化
+    string image             = 7;
+    // image 的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致：bit0 路径被截断，bit1 无法解析
+    uint32 image_flags       = 8;
 }
 
 // 权限变更事件（setuid / setgid / capset）。

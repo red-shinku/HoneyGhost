@@ -28,6 +28,11 @@ struct RuntimeInformation {
     /// @note 与 roleID 同属角色维度，取同一个归属快照
     hng::role_label_t roleLabel;
     uint32_t contextID;  ///< 0 表示此刻未落定
+    /// 事件时刻的进程镜像绝对路径；未知时为空
+    /// @note 归属快照语义：EXEC 事件取本事件刚换上的镜像，其余事件取当刻
+    /// 已落库的镜像（进程自身优先，未落库时回退父进程）；它不随后续 exec
+    /// 改变，也不保证与 ProcessManager 的当前值一致。
+    std::string exe;
 };
 
 struct RuntimeEvent {

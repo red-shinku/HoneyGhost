@@ -157,11 +157,13 @@ static __always_inline struct syscall_event *init_exec_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    __builtin_memset(event->exec_event.filename, 0,
-                     sizeof(event->exec_event.filename));
+    __builtin_memset(event->exec_event.invoked, 0,
+                     sizeof(event->exec_event.invoked));
+    __builtin_memset(event->exec_event.image, 0, sizeof(event->exec_event.image));
     __builtin_memset(event->exec_event.argv0, 0, sizeof(event->exec_event.argv0));
     __builtin_memset(event->exec_event.argv1, 0, sizeof(event->exec_event.argv1));
-    event->exec_event.flags = 0;
+    event->exec_event.flags       = 0;
+    event->exec_event.image_flags = 0;
     return event;
 }
 
@@ -321,10 +323,21 @@ static __always_inline void hng_stash_pending(struct syscall_event *event)
 static __always_inline void hng_copy_exec_event(struct exec_event *dst,
                                                 const struct exec_event *src)
 {
-    __builtin_memcpy(dst->filename, src->filename, sizeof(dst->filename));
+    __builtin_memcpy(dst->invoked, src->invoked, sizeof(dst->invoked));
+    __builtin_memcpy(dst->image, src->image, sizeof(dst->image));
     __builtin_memcpy(dst->argv0, src->argv0, sizeof(dst->argv0));
     __builtin_memcpy(dst->argv1, src->argv1, sizeof(dst->argv1));
-    dst->flags = src->flags;
+    dst->flags       = src->flags;
+    dst->image_flags = src->image_flags;
+}
+
+/**
+ * @brief 提交前的空操作钩子：除 EXEC 外的子类型无需补填字段。
+ * @param pending 即将提交的暂存事件；本函数不读也不写
+ */
+static __always_inline void hng_prepare_none(struct syscall_event *pending)
+{
+    (void)pending;
 }
 
 /// @brief 复制 credential_event 载荷。
@@ -384,19 +397,23 @@ static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
  * @brief 生成一个按 subtype 定长提交的 exit 侧函数。
  * @param[in] subtype_id 该分支处理的子类型，同时构成函数名后缀。
  * @param[in] payload 该子类型的载荷结构体名；记录长度 = 头 + 该结构体。
+ * @param[in] prepare 提交前的补填钩子，写暂存条目的 map value；
+ *                    无需补填的子类型传 hng_prepare_none。
  * @details 预留长度是编译期常量，分支内只访问自己的载荷类型。不能用运行期
  *          变量当预留长度跨分支写：verifier 对变长 PTR_TO_MEM 的越界判定会
  *          变保守，且分支与长度不匹配时是运行期越界。记录头里的 subtype 取
  *          本分支的参数，保证长度前缀与载荷布局一致。
  * @note 暂存条目的名字与 name 不符时按残留条目丢弃，不提交；ringbuf 预留
  *       失败时删除条目并计入 reserve_failures，避免污染下一次 exit。
+ * @note prepare 在名字校验通过之后、ringbuf 预留之前调用，此时条目确定属于
+ *       本次 exit；它直接写 map value，避免 exit 探针为路径结果再开栈缓冲。
  */
-#define HNG_DEFINE_COMMIT(subtype_id, payload)                                \
+#define HNG_DEFINE_COMMIT(subtype_id, payload, prepare)                       \
     static __always_inline int hng_commit_##subtype_id(                       \
         __s64 ret, enum syscall_event_name name, int count_lost)              \
     {                                                                         \
         __u64 pid_tgid = bpf_get_current_pid_tgid();                          \
-        const struct syscall_event *pending =                                 \
+        struct syscall_event *pending =                                       \
             bpf_map_lookup_elem(&hng_pending, &pid_tgid);                     \
         if (!pending) {                                                       \
             if (count_lost && hng_should_collect()) {                         \
@@ -411,6 +428,7 @@ static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
             }                                                                 \
             return 0;                                                         \
         }                                                                     \
+        prepare(pending);                                                     \
         char *record = bpf_ringbuf_reserve(                                   \
             &syscall_events,                                                  \
             sizeof(struct syscall_event_head) + sizeof(struct payload), 0);   \
@@ -431,13 +449,13 @@ static __always_inline void hng_copy_kernel_event(struct kernel_event *dst,
         return 0;                                                             \
     }
 
-HNG_DEFINE_COMMIT(EXEC_EVENT, exec_event)
-HNG_DEFINE_COMMIT(CREDENTIAL_EVENT, credential_event)
-HNG_DEFINE_COMMIT(NAMESPACE_EVENT, namespace_event)
-HNG_DEFINE_COMMIT(FILE_EVENT, file_event)
-HNG_DEFINE_COMMIT(MEMORY_EVENT, memory_event)
-HNG_DEFINE_COMMIT(NETWORK_EVENT, network_event)
-HNG_DEFINE_COMMIT(KERNEL_EVENT, kernel_event)
+HNG_DEFINE_COMMIT(EXEC_EVENT, exec_event, hng_fill_exec_image)
+HNG_DEFINE_COMMIT(CREDENTIAL_EVENT, credential_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(NAMESPACE_EVENT, namespace_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(FILE_EVENT, file_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(MEMORY_EVENT, memory_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(NETWORK_EVENT, network_event, hng_prepare_none)
+HNG_DEFINE_COMMIT(KERNEL_EVENT, kernel_event, hng_prepare_none)
 
 /** @} */
 
@@ -657,9 +675,9 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_exec_event(SYSCALL_EVENT_EXECVE);
     if (!event) return 0;
 
-    //! @note args[0]: const char *filename
-    bpf_probe_read_user_str(&event->exec_event.filename,
-                            sizeof(event->exec_event.filename),
+    //! @note args[0]: const char *filename — 用户原始输入，原样存入 invoked
+    bpf_probe_read_user_str(&event->exec_event.invoked,
+                            sizeof(event->exec_event.invoked),
                             (void *)ctx->args[0]);
 
     //! @note args[1]: char *const argv[] — 读取 argv[0]/argv[1]
@@ -694,9 +712,9 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_exec_event(SYSCALL_EVENT_EXECVEAT);
     if (!event) return 0;
 
-    //! @note args[1]: const char *filename
-    bpf_probe_read_user_str(&event->exec_event.filename,
-                            sizeof(event->exec_event.filename),
+    //! @note args[1]: const char *filename — 用户原始输入，原样存入 invoked
+    bpf_probe_read_user_str(&event->exec_event.invoked,
+                            sizeof(event->exec_event.invoked),
                             (void *)ctx->args[1]);
 
     //! @note args[2]: char *const argv[] — 读取 argv[0]/argv[1]

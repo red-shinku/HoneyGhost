@@ -204,6 +204,8 @@ type Head struct {
 	Ret           int64     `json:"ret"`
 	Comm          string    `json:"comm"`
 	MntNS         uint32    `json:"mnt_ns"`
+	// Exe 是事件时刻的进程镜像绝对路径；未知时为空。
+	Exe string `json:"exe"`
 }
 
 // Payload 是事件载荷。Kind 为语义子类型，Fields 的键与 proto 字段同名。

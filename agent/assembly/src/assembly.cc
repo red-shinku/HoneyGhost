@@ -176,6 +176,7 @@ void Assembly::Impl::build_pipeline()
         RuntimeEngineFactory::create({&semantic_syscall_ch.reader(), &maintainer,
                                       &control_plane->process().join_service(),
                                       &control_plane->process().update_service(),
+                                      &control_plane->process().lookup_service(),
                                       &control_plane->role().join_service(),
                                       &control_plane->role().lookup_service()});
 }

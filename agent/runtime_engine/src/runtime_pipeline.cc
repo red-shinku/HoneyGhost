@@ -23,12 +23,13 @@ constexpr char kExitGroupName[] = "exit_group";
 RuntimePipeline::RuntimePipeline(
     hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-    ProcessUpdateService* process_update, RoleJoinService* role_join,
-    RoleLookupService* role_lookup)
+    ProcessUpdateService* process_update, ProcessLookupService* process_lookup,
+    RoleJoinService* role_join, RoleLookupService* role_lookup)
     : syscall_input_(syscall_input),
       ctx_maintainer_(ctx_maintainer),
       process_join_(process_join),
       process_update_(process_update),
+      process_lookup_(process_lookup),
       role_join_(role_join),
       role_lookup_(role_lookup)
 {
@@ -86,7 +87,8 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
         case kExecPayload: {
             const hng::exec_semantic_data& payload =
                 std::get<hng::exec_semantic_data>(src.data);
-            process_update_->update_exe_image(self, payload.semantic_filename());
+            // 进程镜像落库真实绝对路径；语义化路径只供规则与基线
+            process_update_->update_exe_image(self, payload.image());
             decision = ctx_maintainer_->should_derive_context(
                 self, parent, payload.semantic_filename());
             break;
@@ -98,9 +100,43 @@ void RuntimePipeline::handle_syscall(hng::syscall_semantic_data src,
     }
 
     RoleSnapshot role = role_of(self, parent);
-    out.event         = RuntimePackaging::pack(
-        std::move(src), role.id, std::move(role.label), context_id_of(self));
+    std::string exe   = exe_of(src, self, parent);
+    out.event =
+        RuntimePackaging::pack(std::move(src), role.id, std::move(role.label),
+                               context_id_of(self), std::move(exe));
     out.decision = decision;
+}
+
+std::string RuntimePipeline::exe_of(const hng::syscall_semantic_data& src,
+                                    const hng::Process& self,
+                                    const hng::Process& parent) const
+{
+    // 1. EXEC 事件自身刚换上的镜像：不等 update_exe_image 异步落库
+    if (src.data.index() == kExecPayload) {
+        const hng::exec_semantic_data& payload =
+            std::get<hng::exec_semantic_data>(src.data);
+        if (!payload.image().empty()) {
+            return payload.image();
+        }
+    }
+    if (process_lookup_ == nullptr) {
+        return {};
+    }
+    // 2. 事件主体已落库的镜像
+    const std::optional<hng::ProcessMessage> own = process_lookup_->lookup(self);
+    if (own.has_value() && !own->exe.empty()) {
+        return own->exe;
+    }
+    // 3. fork 的子进程与父同镜像，覆盖新进程尚未落库的窗口
+    if (parent.pid == 0 || parent.pid_start_time == 0 || parent == self) {
+        return {};
+    }
+    const std::optional<hng::ProcessMessage> up = process_lookup_->lookup(parent);
+    if (up.has_value() && !up->exe.empty()) {
+        return up->exe;
+    }
+    // 4. 都未知：DETAIL 不呈现
+    return {};
 }
 
 RuntimePipeline::RoleSnapshot RuntimePipeline::role_of(

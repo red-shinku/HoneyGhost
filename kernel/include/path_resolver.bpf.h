@@ -13,6 +13,7 @@
 #ifndef HNG_PATH_RESOLVER_BPF_H_
 #define HNG_PATH_RESOLVER_BPF_H_
 
+#include "kernel/include/syscall_event_type.h"
 #include "kernel/include/uapi_const.h"
 
 #include <bpf/bpf_core_read.h>
@@ -366,6 +367,62 @@ static __always_inline long hng_resolve_user_path(char *dst, __u32 sz,
         return -2;
     }
     return hng_trim_trailing_slash(dst, off + (__u32)m, sz);
+}
+
+/**
+ * @brief 把当前任务的进程镜像写入 EXEC 事件的 image 字段。
+ * @param pending 暂存中的 EXEC 事件；image 与 image_flags 由本函数填写
+ * @note 镜像取 task->mm->exe_file 的 f_path，解析边界取 task->fs->root。
+ * @note mm、exe_file、fs 任一为空，或路径解析失败时置 PATH_UNRESOLVED，
+ *       image 为空串；解析被截断时置 PATH_TRUNCATED 并保留绝对前缀。
+ * @note exec 失败时同样调用：此时 mm->exe_file 仍是旧镜像，由事件的 ret
+ *       区分成功与失败。
+ * @note 结果直接写入 map value，不在栈上另开路径缓冲；本函数自身只用
+ *       hng_path_str 的固定栈占用。
+ */
+static __always_inline void hng_fill_exec_image(struct syscall_event *pending)
+{
+    if (!pending) {
+        return;
+    }
+    pending->exec_event.image[0]    = '\0';
+    pending->exec_event.image_flags = PATH_UNRESOLVED;
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return;
+    }
+    struct mm_struct *mm = BPF_CORE_READ(task, mm);
+    if (!mm) {
+        return;
+    }
+    struct file *exe_file = BPF_CORE_READ(mm, exe_file);
+    if (!exe_file) {
+        return;
+    }
+    struct fs_struct *fs = BPF_CORE_READ(task, fs);
+    if (!fs) {
+        return;
+    }
+
+    struct path image_path = {};
+    BPF_CORE_READ_INTO(&image_path, exe_file, f_path);
+    struct path root = {};
+    BPF_CORE_READ_INTO(&root, fs, root);
+
+    long written =
+        hng_path_str(pending->exec_event.image, sizeof(pending->exec_event.image),
+                     &image_path, &root);
+    if (written == -1) {
+        pending->exec_event.image_flags = PATH_UNRESOLVED;
+        pending->exec_event.image[0]    = '\0';
+    }
+    else if (written == -2) {
+        pending->exec_event.image_flags = PATH_TRUNCATED;
+    }
+    else {
+        pending->exec_event.image_flags = 0;
+    }
 }
 
 #endif  // HNG_PATH_RESOLVER_BPF_H_

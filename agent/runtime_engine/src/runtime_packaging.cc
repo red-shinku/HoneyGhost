@@ -46,7 +46,7 @@ static_assert(std::is_same_v<std::variant_alternative_t<7, SemanticPayload>,
 hng::RuntimeEvent RuntimePackaging::pack(hng::syscall_semantic_data src,
                                          uint32_t roleID,
                                          hng::role_label_t roleLabel,
-                                         uint32_t contextID)
+                                         uint32_t contextID, std::string exe)
 {
     hng::RuntimeEvent event{};
     event.runtimeInfo.process =
@@ -57,6 +57,7 @@ hng::RuntimeEvent RuntimePackaging::pack(hng::syscall_semantic_data src,
     event.runtimeInfo.roleLabel = std::move(roleLabel);
     event.runtimeInfo.contextID = contextID;
     event.runtimeInfo.etype     = hng::EventType::SYSCALL_EVENT;
+    event.runtimeInfo.exe       = std::move(exe);
 
     static_assert(
         std::variant_size_v<std::decay_t<decltype(src.data)>> == 8,

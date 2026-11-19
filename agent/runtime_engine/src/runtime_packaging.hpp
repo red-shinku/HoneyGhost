@@ -8,6 +8,7 @@
 #define HNG_RUNTIME_PACKAGING_HPP_
 
 #include <cstdint>
+#include <string>
 
 #include "agent/event_data/include/runtime_event.hpp"
 
@@ -22,9 +23,10 @@ class RuntimePackaging {
     /// @brief 系统调用语义事件 → RuntimeEvent
     /// @param roleID 归属角色；未落定为 0
     /// @param roleLabel 该角色在同一快照下的标签；未落定为空
+    /// @param exe 事件时刻的进程镜像绝对路径；未知为空
     static hng::RuntimeEvent pack(hng::syscall_semantic_data src, uint32_t roleID,
-                                  hng::role_label_t roleLabel,
-                                  uint32_t contextID);
+                                  hng::role_label_t roleLabel, uint32_t contextID,
+                                  std::string exe);
 };
 
 #endif  // HNG_RUNTIME_PACKAGING_HPP_

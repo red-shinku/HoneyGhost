@@ -51,6 +51,10 @@ struct file {
     struct path f_path;
 };
 
+struct mm_struct {
+    struct file* exe_file;
+};
+
 struct fdtable {
     __u32 max_fds;
     struct file** fd;
@@ -63,6 +67,7 @@ struct files_struct {
 struct task_struct {
     struct fs_struct* fs;
     struct files_struct* files;
+    struct mm_struct* mm;
 };
 
 static struct task_struct* bpf_get_current_task();
@@ -71,7 +76,7 @@ static long bpf_probe_read_kernel_str(void* dst, __u32 size, const void* src);
 static long bpf_probe_read_user(void* dst, __u32 size, const void* src);
 static long bpf_probe_read_user_str(void* dst, __u32 size, const void* src);
 
-#define __bpf__ 1
+//! @note 不定义 __bpf__：只测路径解析与镜像快照，事件结构仅取类型定义
 #include "kernel/include/path_resolver.bpf.h"
 
 struct task_struct* current = nullptr;
@@ -192,6 +197,8 @@ struct World {
 
     fs_struct fs{};
     file log_file{};
+    file exe_file{};
+    mm_struct mm{};
     file* fd_array[8] = {};
     fdtable fdt{};
     files_struct files{};
@@ -234,6 +241,7 @@ std::unique_ptr<World> make_world()
     world->fs.pwd                    = world->fs.root;
 
     world->log_file.f_path = path{&world->root_mount.mnt, world->var_log};
+    world->exe_file.f_path = path{&world->root_mount.mnt, world->tmp_x};
     world->fd_array[3]     = &world->log_file;
     world->fdt.max_fds     = 8;
     world->fdt.fd          = world->fd_array;
@@ -241,6 +249,8 @@ std::unique_ptr<World> make_world()
 
     world->task.fs         = &world->fs;
     world->task.files      = &world->files;
+    world->task.mm         = &world->mm;
+    world->mm.exe_file     = &world->exe_file;
     current                = &world->task;
     user_read_fails        = false;
     return world;
@@ -466,6 +476,67 @@ void file_from_fd()
     require(hng_file_from_fd(3) == nullptr, "fd 数组缺失返回 NULL");
 }
 
+/// @brief hng_fill_exec_image：镜像来源缺失、正常解析、失败与截断
+void exec_image()
+{
+    auto world                     = make_world();
+
+    // 正常镜像：取 exe_file 的 f_path，按进程根解析
+    struct syscall_event pending   = {};
+    pending.exec_event.image_flags = 0xFFFF;
+    hng_fill_exec_image(&pending);
+    require(std::strcmp(pending.exec_event.image, "/tmp/x") == 0,
+            "镜像应解析为绝对路径");
+    require(pending.exec_event.image_flags == 0, "解析成功不置状态位");
+
+    // mm 缺失
+    world->task.mm = nullptr;
+    pending        = {};
+    hng_fill_exec_image(&pending);
+    require(pending.exec_event.image_flags == PATH_UNRESOLVED,
+            "mm 缺失应置 PATH_UNRESOLVED");
+    require(pending.exec_event.image[0] == '\0', "mm 缺失时镜像为空串");
+
+    // exe_file 缺失
+    world->task.mm     = &world->mm;
+    world->mm.exe_file = nullptr;
+    pending            = {};
+    hng_fill_exec_image(&pending);
+    require(pending.exec_event.image_flags == PATH_UNRESOLVED,
+            "exe_file 缺失应置 PATH_UNRESOLVED");
+
+    // fs 缺失
+    world->mm.exe_file = &world->exe_file;
+    world->task.fs     = nullptr;
+    pending            = {};
+    hng_fill_exec_image(&pending);
+    require(pending.exec_event.image_flags == PATH_UNRESOLVED,
+            "fs 缺失应置 PATH_UNRESOLVED");
+
+    // 解析失败：起点 path 为空
+    world->task.fs         = &world->fs;
+    world->exe_file.f_path = path{};
+    pending                = {};
+    hng_fill_exec_image(&pending);
+    require(pending.exec_event.image_flags == PATH_UNRESOLVED,
+            "解析失败应置 PATH_UNRESOLVED");
+    require(pending.exec_event.image[0] == '\0', "解析失败时镜像为空串");
+
+    // 截断：超长路径保留绝对前缀并置 PATH_TRUNCATED
+    const std::string long_name(300, 'a');
+    dentry* deep_name      = add_dentry(long_name.c_str());
+    deep_name->d_parent    = world->root;
+    world->exe_file.f_path = path{&world->root_mount.mnt, deep_name};
+    pending                = {};
+    hng_fill_exec_image(&pending);
+    require(pending.exec_event.image_flags == PATH_TRUNCATED,
+            "超长路径应置 PATH_TRUNCATED");
+    require(pending.exec_event.image[0] == '/', "截断结果仍以 '/' 开头");
+    require(
+        pending.exec_event.image[sizeof(pending.exec_event.image) - 1] == '\0',
+        "截断结果以 NUL 结尾");
+}
+
 }  // namespace
 
 int main()
@@ -479,6 +550,7 @@ int main()
         truncation();
         edge_cases();
         file_from_fd();
+        exec_image();
         std::printf("PASS: path resolver, %d checks (helper mocks)\n", checks);
         return 0;
     }

@@ -4,8 +4,8 @@
  * @details
  * 纯转换，无 IO / 无协程。覆盖：
  *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
- *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
- *    其余取自事件头（含 uid/euid/ret/comm/mnt_ns）；
+ *  - eventhead 的字段来源：pid、归属（含 roleLabel）与 exe 取自
+ *    RuntimeInformation，其余取自事件头（含 uid/euid/ret/comm/mnt_ns）；
  *  - 归属未落定时 roleLabel 留空；
  *  - 事件来源的双边映射可往返，非法报文取值返回 std::nullopt。
  * @author red-shinku
@@ -47,6 +47,7 @@ constexpr uint32_t kEuid      = 0;
 constexpr int64_t kRet        = 3;
 constexpr uint32_t kMntNS     = 4026532222;
 constexpr char kComm[]        = "bash";
+constexpr char kExe[]         = "/tmp/test";
 
 /// 一条归属已落定的 syscall 事件，事件头填齐
 hng::RuntimeEvent make_syscall()
@@ -57,6 +58,7 @@ hng::RuntimeEvent make_syscall()
     event.runtimeInfo.roleID        = kRoleID;
     event.runtimeInfo.roleLabel     = kRoleLabel;
     event.runtimeInfo.contextID     = kContextID;
+    event.runtimeInfo.exe           = kExe;
 
     event.data.head.pid             = kPid;
     event.data.head.pid_start_time  = kPidStart;
@@ -220,6 +222,7 @@ void run_head_fields()
     CHECK(msg.head().ret() == kRet, "ret 取自事件头");
     CHECK(msg.head().comm() == kComm, "comm 取自事件头");
     CHECK(msg.head().mnt_ns() == kMntNS, "mnt_ns 取自事件头");
+    CHECK(msg.head().exe() == kExe, "exe 取自 RuntimeInformation");
 }
 
 /// 内核枚举的每个取值都应落到同数值的 Subtype

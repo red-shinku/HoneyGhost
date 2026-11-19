@@ -9,6 +9,7 @@
  *  - 语义子类型取自事件头的 subtype（PROCESS..KERNEL），不由载荷 variant
  * 下标推导；
  *  - roleID / contextID 原样透传，0（未落定）不被改写、不视为异常；
+ *  - 事件时刻的进程镜像 exe 原样填入运行时信息；
  *  - 载荷被完整搬运：头部与内层载荷均可从产物中取回；
  *  - 源事件以右值传入时同样保留载荷。
  * @author red-shinku
@@ -59,7 +60,7 @@ void run_syscall_identity_and_type()
     src.data.emplace<hng::process_semantic_data>();
 
     const hng::RuntimeEvent event =
-        RuntimePackaging::pack(src, 7, "nginx:1.25", 33);
+        RuntimePackaging::pack(src, 7, "nginx:1.25", 33, "/usr/sbin/nginx");
 
     CHECK(event.runtimeInfo.process.pid == 1001, "进程身份应取事件头的 pid");
     CHECK(event.runtimeInfo.process.pid_start_time == 555,
@@ -71,6 +72,7 @@ void run_syscall_identity_and_type()
     CHECK(event.runtimeInfo.roleID == 7 && event.runtimeInfo.contextID == 33,
           "归属应按入参透传");
     CHECK(event.runtimeInfo.roleLabel == "nginx:1.25", "角色标签应按入参透传");
+    CHECK(event.runtimeInfo.exe == "/usr/sbin/nginx", "进程镜像应按入参透传");
     CHECK(event.data.head.pid == 1001, "头部应随载荷一并搬运");
 }
 
@@ -84,7 +86,7 @@ void run_syscall_payload_kinds()
     exec_payload.set_syscall_name("execve");
 
     const hng::RuntimeEvent event =
-        RuntimePackaging::pack(std::move(src), 0, "", 4);
+        RuntimePackaging::pack(std::move(src), 0, "", 4, "/bin/sh");
 
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "内层 exec 载荷仍应推出 SYSCALL_EVENT");
@@ -93,6 +95,7 @@ void run_syscall_payload_kinds()
     CHECK(packed.data.index() == 1, "内层载荷应保持为 exec");
     const hng::exec_semantic_data& exec_packed =
         std::get<hng::exec_semantic_data>(packed.data);
+    CHECK(event.runtimeInfo.exe == "/bin/sh", "进程镜像应随事件一并搬运");
     CHECK(exec_packed.semantic_filename() == "/bin/sh", "内层载荷内容应被搬运");
     CHECK(exec_packed.syscall_name() == "execve", "内层载荷内容应被搬运");
 }
@@ -102,11 +105,12 @@ void run_unsettled_ids()
     hng::syscall_semantic_data src = make_syscall(5, 50, 1, 10);
     src.data.emplace<hng::process_semantic_data>();
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0, "");
 
     CHECK(event.runtimeInfo.roleID == 0 && event.runtimeInfo.contextID == 0,
           "未落定（0）应原样透传");
     CHECK(event.runtimeInfo.roleLabel.empty(), "未落定时角色标签为空");
+    CHECK(event.runtimeInfo.exe.empty(), "镜像未知时为空");
 }
 
 void run_payload_carried_by_value()
@@ -117,7 +121,7 @@ void run_payload_carried_by_value()
     payload.set_syscall_name("exit_group");
 
     const hng::RuntimeEvent event =
-        RuntimePackaging::pack(std::move(src), 9, "tool:1", 9);
+        RuntimePackaging::pack(std::move(src), 9, "tool:1", 9, "/bin/tool");
 
     const hng::syscall_semantic_data& packed = syscall_of(event);
     CHECK(packed.head.pid == 6 && packed.head.pid_start_time == 60,
@@ -133,7 +137,7 @@ void run_parent_from_head()
     hng::syscall_semantic_data src = make_syscall(1001, 555, 900, 111);
     src.data.emplace<hng::process_semantic_data>();
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0, "");
 
     CHECK(event.runtimeInfo.parent.pid == 900, "父进程 pid 应取事件头的 ppid");
     CHECK(event.runtimeInfo.parent.pid_start_time == 111,
@@ -147,7 +151,7 @@ void run_parent_from_head()
 void check_syscall_subtype(const hng::syscall_semantic_data& src,
                            enum syscall_event_type expected, const char* msg)
 {
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0, "");
     CHECK(event.runtimeInfo.subtype == expected, msg);
     CHECK(event.runtimeInfo.etype == hng::EventType::SYSCALL_EVENT,
           "内层载荷变化不应影响 etype");
@@ -197,7 +201,7 @@ void run_subtype_not_derived_from_index()
     src.head.subtype               = KERNEL_EVENT;
     src.data.emplace<hng::process_semantic_data>();
 
-    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0);
+    const hng::RuntimeEvent event = RuntimePackaging::pack(src, 0, "", 0, "");
     CHECK(event.runtimeInfo.subtype == KERNEL_EVENT,
           "subtype 不应由变体下标推出");
     CHECK(event.data.data.index() == 0, "载荷本身不应被改写");

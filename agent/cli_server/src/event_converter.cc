@@ -158,6 +158,7 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
     head->set_ret(syscall.head.ret);
     head->set_comm(syscall.head.comm);
     head->set_mnt_ns(syscall.head.mnt_ns);
+    head->set_exe(info.exe);
     MoveSyscallPayload(syscall, *out.mutable_syscall_ev());
 }
 

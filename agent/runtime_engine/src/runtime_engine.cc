@@ -15,10 +15,10 @@
 RuntimeEngine::RuntimeEngine(
     hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-    ProcessUpdateService* process_update, RoleJoinService* role_join,
-    RoleLookupService* role_lookup)
+    ProcessUpdateService* process_update, ProcessLookupService* process_lookup,
+    RoleJoinService* role_join, RoleLookupService* role_lookup)
     : pipeline_(syscall_input, ctx_maintainer, process_join, process_update,
-                role_join, role_lookup)
+                process_lookup, role_join, role_lookup)
 {
 }
 

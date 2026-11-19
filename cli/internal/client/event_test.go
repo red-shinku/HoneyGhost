@@ -31,6 +31,7 @@ func testHead() *clisv.Eventhead {
 		Ret:           3,
 		Comm:          "bash",
 		MntNs:         4026532222,
+		Exe:           "/tmp/test",
 	}
 }
 
@@ -58,6 +59,7 @@ func TestConvertEventHead(t *testing.T) {
 		Ret:           3,
 		Comm:          "bash",
 		MntNS:         4026532222,
+		Exe:           "/tmp/test",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("convertEventHead = %+v, want %+v", got, want)
@@ -123,6 +125,9 @@ func TestConvertSyscallPayloads(t *testing.T) {
 					Argv0:            "nginx",
 					Argv1:            "-g",
 					Flags:            1,
+					Invoked:          "./nginx",
+					Image:            "/usr/sbin/nginx",
+					ImageFlags:       0,
 					SyscallName:      "execve",
 				},
 			}},
@@ -132,6 +137,9 @@ func TestConvertSyscallPayloads(t *testing.T) {
 				"argv0":             "nginx",
 				"argv1":             "-g",
 				"flags":             uint32(1),
+				"invoked":           "./nginx",
+				"image":             "/usr/sbin/nginx",
+				"image_flags":       uint32(0),
 				"syscall_name":      "execve",
 			},
 		},

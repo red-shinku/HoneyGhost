@@ -331,13 +331,16 @@ const pathUnresolvedFlag uint64 = 1 << 1
 
 // eventDetail 生成人读摘要；不是稳定契约，脚本应使用 JSON。
 //
-// 载荷摘要之后统一追加事件头字段：RET 恒输出；COMM 仅在非空时输出；MNTNS 仅在
-// 挂载命名空间已采集且不是初始命名空间时输出。
+// 载荷摘要之后统一追加事件头字段，顺序为 RET、COMM、EXE、MNTNS：RET 恒输出；
+// 其余仅在已采集且非空（MNTNS 还要求不是初始命名空间）时输出。
 func eventDetail(head model.Head, p model.Payload) string {
 	detail := payloadDetail(p)
 	detail += fmt.Sprintf(" RET=%d", head.Ret)
 	if head.Comm != "" {
 		detail += " COMM=" + head.Comm
+	}
+	if head.Exe != "" {
+		detail += " EXE=" + head.Exe
 	}
 	if head.MntNS != 0 && head.MntNS != initMntNSInum {
 		detail += fmt.Sprintf(" MNTNS=%d", head.MntNS)
@@ -353,7 +356,16 @@ func payloadDetail(p model.Payload) string {
 	case model.SubtypeProcess:
 		return fmt.Sprintf("%s exit=%v", name, fields["exit_code"])
 	case model.SubtypeExec:
-		return strings.TrimSpace(name + " " + stringField(fields, "semantic_filename"))
+		image := stringField(fields, "image")
+		if image == "" {
+			// 旧事件没有 image：退回语义化路径
+			return strings.TrimSpace(name + " " + stringField(fields, "semantic_filename"))
+		}
+		detail := strings.TrimSpace(name + " image=" + image)
+		if invoked := stringField(fields, "invoked"); invoked != "" && invoked != image {
+			detail += " invoked=" + invoked
+		}
+		return detail
 	case model.SubtypeCredential:
 		if uid, ok := fields["setuid_uid"]; ok {
 			return fmt.Sprintf("%s uid=%v", name, uid)

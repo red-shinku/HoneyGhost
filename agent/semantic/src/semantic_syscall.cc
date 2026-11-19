@@ -5,10 +5,10 @@
  * 按 hdr.subtype 将 union 中八种事件分别转换为对应的 proto 语义载荷，组装为
  * syscall_semantic_data。本工具不持有队列与线程状态。
  *
- * 语义化原则：去除随机性信息。除 exec 的 filename（复用 agent/semantic/path/
- * 规则引擎语义化）、file 的 path（normalize 消除拼写差异）与 credential 的
- * union→oneof 归位外，其余事件为纯字段搬运——进程身份头部原样拷贝，syscall 名
- * 由 hdr.name 枚举映射为字符串。
+ * 语义化原则：去除随机性信息。除 exec 的 image（先 normalize，再复用
+ * agent/semantic/path/ 规则引擎语义化）、file 的 path（normalize 消除拼写差异）
+ * 与 credential 的 union→oneof 归位外，其余事件为纯字段搬运——进程身份头部原样
+ * 拷贝，syscall 名由 hdr.name 枚举映射为字符串。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -196,17 +196,24 @@ void process_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 执行事件 → exec_semantic_data
- * @details filename 复用路径语义化规则引擎去除随机性，输出 semantic_filename；
- * argv0/argv1（程序名与首参数）为稳定语义，原样保留。
+ * @details image 先 normalize 消除拼写差异后原样输出（供取证，保留实例信息），
+ * 再经路径语义化规则引擎去除随机性后输出 semantic_filename（供规则与基线）；
+ * invoked 是用户原始输入，不做 normalize 直接搬运。image 为空时上述两个路径
+ * 字段均为空串。argv0/argv1 为稳定语义，原样保留；image_flags 原样透传。
  */
 void exec_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::exec_semantic_data>();
     std::string norm, sem;
-    hng::path::normalize(raw.exec_event.filename, norm);
-    hng::path::semanticize(norm, sem);
-    d.set_semantic_filename(sem);
+    hng::path::normalize(raw.exec_event.image, norm);
+    d.set_image(norm);
+    if (!norm.empty()) {
+        hng::path::semanticize(norm, sem);
+        d.set_semantic_filename(sem);
+    }
+    d.set_invoked(raw.exec_event.invoked);
+    d.set_image_flags(raw.exec_event.image_flags);
     d.set_argv0(raw.exec_event.argv0);
     d.set_argv1(raw.exec_event.argv1);
     d.set_flags(raw.exec_event.flags);

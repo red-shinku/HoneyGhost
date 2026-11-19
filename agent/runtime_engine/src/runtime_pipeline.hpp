@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/context_maintainer/include/context_maintainer_decision.hpp"
@@ -34,12 +35,14 @@ class RuntimePipeline {
     /// @param ctx_maintainer 上下文维护模块，非拥有
     /// @param process_join 控制平面进程注册接口，非拥有
     /// @param process_update 控制平面进程镜像更新接口，非拥有
+    /// @param process_lookup 控制平面进程查询接口，非拥有；空表示未接线
     /// @param role_join 控制平面角色归属接口，非拥有
     /// @param role_lookup 控制平面角色查询接口，非拥有
     RuntimePipeline(
         hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
         ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-        ProcessUpdateService* process_update, RoleJoinService* role_join,
+        ProcessUpdateService* process_update,
+        ProcessLookupService* process_lookup, RoleJoinService* role_join,
         RoleLookupService* role_lookup);
 
     /// @brief 取一轮事件并组装草稿
@@ -62,6 +65,18 @@ class RuntimePipeline {
 
     /// @brief 分派一条 syscall 语义事件并组装草稿
     void handle_syscall(hng::syscall_semantic_data src, RuntimeDraft& out);
+
+    /// @brief 取事件时刻的进程镜像快照
+    /// @param src 语义事件载荷
+    /// @param self 事件主体进程
+    /// @param parent 事件头的父进程；未知时为 pid 为 0 的值
+    /// @return 镜像绝对路径；四级取值都未命中时为空串
+    /// @note EXEC 事件优先用载荷 image（本事件刚换上的镜像，不等异步落库）；
+    ///       其余事件查已落库的进程自身，未落库时回退父进程（fork 子进程与父
+    ///       同镜像，覆盖新进程尚未落库的窗口）；仍未命中则留空。
+    std::string exe_of(const hng::syscall_semantic_data& src,
+                       const hng::Process& self,
+                       const hng::Process& parent) const;
 
     /// @brief 归属角色的快照：id 与标签取自同一条归属链
     struct RoleSnapshot {
@@ -88,6 +103,7 @@ class RuntimePipeline {
     ContextMaintainer* ctx_maintainer_                                  = nullptr;
     ProcessJoinService* process_join_                                   = nullptr;
     ProcessUpdateService* process_update_                               = nullptr;
+    ProcessLookupService* process_lookup_                               = nullptr;
     RoleJoinService* role_join_                                         = nullptr;
     RoleLookupService* role_lookup_                                     = nullptr;
 };

@@ -69,6 +69,7 @@ constexpr uint32_t kPidSyscall     = 1001;
 constexpr uint32_t kPidFile        = 2002;
 constexpr uint32_t kContextID      = 3;
 constexpr uint32_t kExtraContextID = 4;
+constexpr char kEventExe[]         = "/tmp/test";
 
 constexpr char kSocketPath[]       = "/tmp/honeyghost-cli-e2e.sock";
 
@@ -334,6 +335,7 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     event.runtimeInfo.roleID       = kRoleID;
     event.runtimeInfo.roleLabel    = kRoleLabel;
     event.runtimeInfo.contextID    = kContextID;
+    event.runtimeInfo.exe          = kEventExe;
 
     event.data.head.pid            = pid;
     event.data.head.pid_start_time = pid * 10;
@@ -1089,6 +1091,8 @@ void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
           "事件应装在批里");
     CHECK(message.batch().records(0).head().rolelabel() == kRoleLabel,
           "事件头应带角色标签");
+    CHECK(message.batch().records(0).head().exe() == kEventExe,
+          "事件头应带进程镜像");
 
     context.TryCancel();
     (void)reader->Finish();

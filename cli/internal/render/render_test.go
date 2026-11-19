@@ -304,12 +304,15 @@ func testEvents() []model.Event {
 				Ret:       0,
 				Comm:      "nginx",
 				MntNS:     initMntNSInum,
+				Exe:       "/tmp/test",
 			},
 			Payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
-				"semantic_filename": "/usr/sbin/nginx",
-				"argv0":             "nginx",
+				"semantic_filename": "/tmp/test",
+				"argv0":             "test",
 				"argv1":             "",
 				"flags":             uint32(0),
+				"invoked":           "./test",
+				"image":             "/tmp/test",
 				"syscall_name":      "execve",
 			}},
 		},
@@ -325,6 +328,7 @@ func testEvents() []model.Event {
 				Ret:     0,
 				Comm:    "nginx",
 				MntNS:   4026532222,
+				Exe:     "/usr/sbin/nginx",
 			},
 			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
 				"path":         "/etc/nginx/nginx.conf",
@@ -389,6 +393,22 @@ func TestEventDetail(t *testing.T) {
 				"syscall_name": "execve", "semantic_filename": "/usr/sbin/nginx",
 			}},
 			want: "execve /usr/sbin/nginx",
+		},
+		{
+			name: "exec_image",
+			payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
+				"syscall_name": "execve", "image": "/tmp/test",
+				"invoked": "./test",
+			}},
+			want: "execve image=/tmp/test invoked=./test",
+		},
+		{
+			name: "exec_image_same_invoked",
+			payload: model.Payload{Kind: model.SubtypeExec, Fields: map[string]any{
+				"syscall_name": "execve", "image": "/bin/sh",
+				"invoked": "/bin/sh",
+			}},
+			want: "execve image=/bin/sh",
 		},
 		{
 			name: "setuid",
@@ -523,13 +543,15 @@ func TestEventDetailHeadFields(t *testing.T) {
 		{"zero head", model.Head{}, detail + " RET=0"},
 		{"comm", model.Head{Comm: "bash"}, detail + " RET=0 COMM=bash"},
 		{"ret", model.Head{Ret: 3}, detail + " RET=3"},
+		{"exe", model.Head{Exe: "/tmp/test"}, detail + " RET=0 EXE=/tmp/test"},
 		{"non-initial mnt_ns", model.Head{MntNS: 4026532222},
 			detail + " RET=0 MNTNS=4026532222"},
 		{"initial mnt_ns hidden", model.Head{MntNS: initMntNSInum},
 			detail + " RET=0"},
 		{"unknown mnt_ns hidden", model.Head{MntNS: 0}, detail + " RET=0"},
-		{"all", model.Head{Comm: "bash", Ret: -2, MntNS: 4026532222},
-			detail + " RET=-2 COMM=bash MNTNS=4026532222"},
+		{"all", model.Head{Comm: "bash", Ret: -2, Exe: "/tmp/test",
+			MntNS: 4026532222},
+			detail + " RET=-2 COMM=bash EXE=/tmp/test MNTNS=4026532222"},
 	}
 
 	for _, tt := range tests {

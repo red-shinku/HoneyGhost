@@ -25,8 +25,8 @@ struct RuntimeEngineComponent::Impl {
     Impl(std::atomic<bool>& taken, const RuntimeEngineOptions& options)
         : guard(taken, "RuntimeEngineComponent"),
           engine(options.syscall_input, options.ctx_maintainer,
-                 options.process_join, options.process_update, options.role_join,
-                 options.role_lookup)
+                 options.process_join, options.process_update,
+                 options.process_lookup, options.role_join, options.role_lookup)
     {
     }
 

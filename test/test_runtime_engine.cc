@@ -256,8 +256,9 @@ struct Env {
     hng::EventChannel<hng::syscall_semantic_data> sys_ch{64};
 
     ContextMaintainer cm;
-    RuntimeEngine engine{&sys_ch.reader(), &cm,        &process_join,
-                         &process_update,  &role_join, &role_lookup};
+    RuntimeEngine engine{&sys_ch.reader(), &cm,     &process_join,
+                         &process_update,  nullptr, &role_join,
+                         &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -277,7 +278,7 @@ hng::syscall_semantic_data make_credential(uint32_t pid, uint64_t pstart)
 }
 
 hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart,
-                                     const char* filename)
+                                     const char* image)
 {
     hng::syscall_semantic_data ev;
     ev.head.pid             = pid;
@@ -286,7 +287,8 @@ hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart,
     ev.head.ppid_start_time = 0;
     ev.head.type            = hng::EventType::SYSCALL_EVENT;
     auto& payload           = ev.data.emplace<hng::exec_semantic_data>();
-    payload.set_semantic_filename(filename);
+    payload.set_image(image);
+    payload.set_semantic_filename(image);
     payload.set_syscall_name("execve");
     return ev;
 }
@@ -523,7 +525,7 @@ void run_exec_image_update()
         env.process_update.snapshot();
     CHECK(updates.size() == 1 && updates[0].process == mk(5005, 50) &&
               updates[0].exe == "/bin/sh",
-          "更新应携带进程身份与语义化路径");
+          "更新应携带进程身份与真实镜像路径");
 }
 
 }  // namespace

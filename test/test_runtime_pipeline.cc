@@ -7,6 +7,9 @@
  *  - 空队列与未接线队列：不取任何事件；
  *  - 生命周期分派：诞生 → 注册 + 角色继承 + 开窗，退出 → 注销 + 关窗；
  *  - exec / 其他类型各自的决策入口与缺省决策；
+ *  - 事件头 EXE 的四级取值：EXEC 自身 image → 自身已落库镜像 → 父进程镜像
+ *    → 空；
+ *  - update_exe_image 收到的是 image 而不是 semantic_filename；
  *  - 归属快照与决策值互不干扰：决策为空时快照仍照实填；
  *  - 角色归属的父进程回退：自身未落定时取父进程归属，已落定时不受影响；
  *  - 取事件纪律：每轮取至多一条；
@@ -114,6 +117,32 @@ class FakeProcessJoin final : public ProcessJoinService {
     void unregister_pid(hng::Process p) override { unregistered.push_back(p); }
 };
 
+/// 提供进程镜像查询：按 (pid, pid_start_time) 命中
+class FakeProcessLookup final : public ProcessLookupService {
+   public:
+    std::unordered_map<hng::Process, std::string> images;
+
+    void set(hng::Process p, std::string exe) { images[p] = std::move(exe); }
+
+    std::optional<hng::ProcessMessage> lookup(hng::Process p) const override
+    {
+        const auto it = images.find(p);
+        if (it == images.end()) {
+            return std::nullopt;
+        }
+        hng::ProcessMessage message;
+        message.pid            = p.pid;
+        message.pid_start_time = p.pid_start_time;
+        message.exe            = it->second;
+        return message;
+    }
+    std::optional<hng::Process> resolve(uint32_t) const override
+    {
+        return std::nullopt;
+    }
+    ProcessManagerStats stats() const override { return {}; }
+};
+
 /// 记录进程镜像更新通知
 class FakeProcessUpdate final : public ProcessUpdateService {
    public:
@@ -181,13 +210,15 @@ struct Env {
     FakeContextService ctx_svc;
     FakeProcessJoin process_join;
     FakeProcessUpdate process_update;
+    FakeProcessLookup process_lookup;
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
     hng::EventChannel<hng::syscall_semantic_data> sys_ch{16};
 
     ContextMaintainer cm;
-    RuntimePipeline pipe{&sys_ch.reader(), &cm,        &process_join,
-                         &process_update,  &role_join, &role_lookup};
+    RuntimePipeline pipe{
+        &sys_ch.reader(), &cm,        &process_join, &process_update,
+        &process_lookup,  &role_join, &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
 };
@@ -210,7 +241,8 @@ hng::syscall_semantic_data make_lifecycle(uint32_t pid, uint64_t pstart,
 }
 
 hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart, uint32_t ppid,
-                                     uint64_t ppstart, const char* filename)
+                                     uint64_t ppstart, const char* image,
+                                     const char* semantic)
 {
     hng::syscall_semantic_data ev;
     ev.head.pid             = pid;
@@ -219,7 +251,8 @@ hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart, uint32_t ppi
     ev.head.ppid_start_time = ppstart;
     ev.head.type            = hng::EventType::SYSCALL_EVENT;
     auto& payload           = ev.data.emplace<hng::exec_semantic_data>();
-    payload.set_semantic_filename(filename);
+    payload.set_image(image);
+    payload.set_semantic_filename(semantic);
     payload.set_syscall_name("execve");
     return ev;
 }
@@ -269,7 +302,7 @@ void run_empty()
 
     // 队列未接线：取轮不崩、不产出
     RuntimePipeline bare(nullptr, &env.cm, &env.process_join, &env.process_update,
-                         &env.role_join, &env.role_lookup);
+                         &env.process_lookup, &env.role_join, &env.role_lookup);
     CHECK(bare.take_round(drafts, 2) == 0, "未接线的队列不产出草稿");
 }
 
@@ -339,7 +372,10 @@ void run_exec_derive()
     env.ctx_svc.seed(parent, 100);
 
     env.sys_ch.writer().push(make_lifecycle(7000, 700, 50, 500, "fork"));
-    env.sys_ch.writer().push(make_exec(7000, 700, 50, 500, "/bin/bash"));
+    env.sys_ch.writer().push(
+        make_exec(7000, 700, 50, 500, "/tmp/test", "/tmp/*"));
+    // 已落库的镜像故意落后：EXEC 事件仍应取自身 image
+    env.process_lookup.set(mk(7000, 700), "/stale/image");
 
     RuntimeDraft drafts[2]{};
     CHECK(drain(env.pipe, drafts, 2) == 2, "诞生与 exec 分两轮各取出一条");
@@ -352,8 +388,10 @@ void run_exec_derive()
     CHECK(d.event.runtimeInfo.contextID != 0, "新 context 不应是未落定哨兵");
     CHECK(env.process_update.updates.size() == 1 &&
               env.process_update.updates[0].process == mk(7000, 700) &&
-              env.process_update.updates[0].exe == "/bin/bash",
-          "exec 应按语义化路径更新进程镜像");
+              env.process_update.updates[0].exe == "/tmp/test",
+          "exec 应按真实镜像路径更新进程镜像");
+    CHECK(d.event.runtimeInfo.exe == "/tmp/test",
+          "EXEC 事件头应取载荷 image，而非语义化路径或已落库镜像");
 }
 
 void run_exec_keep_keeps_snapshot()
@@ -363,8 +401,10 @@ void run_exec_keep_keeps_snapshot()
     env.ctx_svc.seed(parent, 100);
 
     env.sys_ch.writer().push(make_lifecycle(8000, 800, 50, 500, "fork"));
-    env.sys_ch.writer().push(make_exec(8000, 800, 50, 500, "/bin/bash"));
-    env.sys_ch.writer().push(make_exec(8000, 800, 50, 500, "/usr/bin/ls"));
+    env.sys_ch.writer().push(
+        make_exec(8000, 800, 50, 500, "/bin/bash", "/bin/bash"));
+    env.sys_ch.writer().push(
+        make_exec(8000, 800, 50, 500, "/usr/bin/ls", "/usr/bin/ls"));
 
     RuntimeDraft drafts[3]{};
     CHECK(drain(env.pipe, drafts, 3) == 3, "三次事件分三轮取出");
@@ -375,6 +415,59 @@ void run_exec_keep_keeps_snapshot()
     const RuntimeDraft& d = drafts[2];
     CHECK(is_default_decision(d.decision), "原地重 exec 不派生");
     CHECK(d.event.runtimeInfo.contextID == own, "决策为空不影响归属快照");
+    CHECK(d.event.runtimeInfo.exe == "/usr/bin/ls", "EXE 应随本次 exec 更新");
+}
+
+// ---- 事件头 EXE 的四级取值 ----
+
+/// @brief 非 EXEC：自身已落库镜像优先于父进程
+void run_exe_from_lookup()
+{
+    Env env;
+    env.process_lookup.set(mk(7001, 701), "/usr/bin/worker");
+    env.process_lookup.set(mk(50, 500), "/bin/parent");
+    env.sys_ch.writer().push(make_credential(7001, 701, 50, 500));
+
+    RuntimeDraft drafts[1]{};
+    CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
+    CHECK(drafts[0].event.runtimeInfo.exe == "/usr/bin/worker",
+          "非 EXEC 应取自身已落库镜像");
+}
+
+/// @brief 自身未落库时回退父进程；全空留空
+void run_exe_from_parent()
+{
+    {
+        Env env;
+        env.process_lookup.set(mk(50, 500), "/bin/parent");
+        env.sys_ch.writer().push(make_credential(7002, 702, 50, 500));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
+        CHECK(drafts[0].event.runtimeInfo.exe == "/bin/parent",
+              "新进程未落库时应回退父进程镜像");
+    }
+    {
+        Env env;
+        env.sys_ch.writer().push(make_credential(7003, 703, 0, 0));
+
+        RuntimeDraft drafts[1]{};
+        CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
+        CHECK(drafts[0].event.runtimeInfo.exe.empty(), "都未知时 EXE 留空");
+    }
+}
+
+/// @brief EXEC 的 image 为空时，退回已落库镜像
+void run_exe_exec_without_image()
+{
+    Env env;
+    env.process_lookup.set(mk(7004, 704), "/old/image");
+    env.sys_ch.writer().push(make_exec(7004, 704, 0, 0, "", ""));
+
+    RuntimeDraft drafts[1]{};
+    CHECK(env.pipe.take_round(drafts, 1) == 1, "取出一条");
+    CHECK(drafts[0].event.runtimeInfo.exe == "/old/image",
+          "image 缺失时应退回已落库镜像");
 }
 
 // ---- 其他类型与文件事件 ----
@@ -389,7 +482,8 @@ void run_plain_event()
     ContextMaintainer cm(2);
     cm.set_context_service(&env.ctx_svc, &env.ctx_svc, &env.ctx_svc);
     RuntimePipeline pipe(&env.sys_ch.reader(), &cm, &env.process_join,
-                         &env.process_update, &env.role_join, &env.role_lookup);
+                         &env.process_update, &env.process_lookup, &env.role_join,
+                         &env.role_lookup);
 
     const hng::Process worker = mk(9100, 910);
     cm.on_birth(worker, parent);
@@ -504,6 +598,9 @@ int main()
     run_exit();
     run_exec_derive();
     run_exec_keep_keeps_snapshot();
+    run_exe_from_lookup();
+    run_exe_from_parent();
+    run_exe_exec_without_image();
     run_plain_event();
     run_round_discipline();
     run_role_miss();

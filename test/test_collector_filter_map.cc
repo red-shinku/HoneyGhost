@@ -141,11 +141,12 @@ syscall_event sample()
     event.hdr.head.pid = 456;
     event.hdr.name     = SYSCALL_EVENT_EXECVE;
     event.hdr.subtype  = EXEC_EVENT;
-    std::memset(event.exec_event.filename, 'x',
-                sizeof(event.exec_event.filename));
+    std::memset(event.exec_event.invoked, 'x', sizeof(event.exec_event.invoked));
+    std::memset(event.exec_event.image, 'y', sizeof(event.exec_event.image));
     std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
     std::memset(event.exec_event.argv1, 'b', sizeof(event.exec_event.argv1));
-    event.exec_event.flags = 7;
+    event.exec_event.flags       = 7;
+    event.exec_event.image_flags = PATH_TRUNCATED;
     return event;
 }
 
@@ -156,8 +157,11 @@ bool same_event(const syscall_event& left, const syscall_event& right)
            left.hdr.name == right.hdr.name &&
            left.hdr.subtype == right.hdr.subtype &&
            left.exec_event.flags == right.exec_event.flags &&
-           std::memcmp(left.exec_event.filename, right.exec_event.filename,
-                       sizeof(left.exec_event.filename)) == 0 &&
+           left.exec_event.image_flags == right.exec_event.image_flags &&
+           std::memcmp(left.exec_event.invoked, right.exec_event.invoked,
+                       sizeof(left.exec_event.invoked)) == 0 &&
+           std::memcmp(left.exec_event.image, right.exec_event.image,
+                       sizeof(left.exec_event.image)) == 0 &&
            std::memcmp(left.exec_event.argv0, right.exec_event.argv0,
                        sizeof(left.exec_event.argv0)) == 0 &&
            std::memcmp(left.exec_event.argv1, right.exec_event.argv1,

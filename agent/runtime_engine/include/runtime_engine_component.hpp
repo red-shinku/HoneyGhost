@@ -17,6 +17,7 @@
 class ContextMaintainer;
 class ProcessJoinService;
 class ProcessUpdateService;
+class ProcessLookupService;
 class RoleJoinService;
 class RoleLookupService;
 
@@ -55,6 +56,8 @@ struct RuntimeEngineOptions {
     ProcessJoinService* process_join                                   = nullptr;
     /// 控制平面进程镜像更新接口
     ProcessUpdateService* process_update                               = nullptr;
+    /// 控制平面进程查询接口，用于组装事件时刻的进程镜像快照
+    ProcessLookupService* process_lookup                               = nullptr;
     /// 控制平面角色归属接口
     RoleJoinService* role_join                                         = nullptr;
     /// 控制平面角色查询接口

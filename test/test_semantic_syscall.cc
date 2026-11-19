@@ -4,7 +4,8 @@
  * @details
  * 按 hdr.subtype 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
- * filename 路径语义化、credential 的 union→oneof 归位与通用事件头字段搬运。
+ * image 归一化 / 语义化、invoked 原样搬运、credential 的 union→oneof 归位与
+ * 通用事件头字段搬运。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -125,21 +126,34 @@ void run_process()
 
 struct ExecCase {
     enum syscall_event_name name;
-    const char* filename;
+    const char* invoked;  ///< 用户原始串，期望原样搬运
+    const char* image;    ///< 内核解析出的绝对路径，期望先 normalize
     const char* argv0;
     const char* argv1;
     __u32 flags;
-    const char* expect_sem;
+    __u32 image_flags;
+    const char* expect_image;  ///< normalize 之后的 image
+    const char* expect_sem;    ///< 再语义化之后的 semantic_filename
     const char* name_str;
 };
 
 constexpr ExecCase kExecCases[] = {
-    {SYSCALL_EVENT_EXECVE, "/bin/bash", "bash", "deploy.sh", 0, "/bin/bash",
+    // 绝对路径原样保留，invoked 与 image 相同
+    {SYSCALL_EVENT_EXECVE, "/bin/bash", "/bin/bash", "bash", "deploy.sh", 0, 0,
+     "/bin/bash", "/bin/bash", "execve"},
+    // //、.、尾斜杠被 normalize；实例片段再被语义化；invoked 保留相对写法
+    {SYSCALL_EVENT_EXECVE, "bash", "/tmp//./abc123def456/", "tmpbin", "", 0, 0,
+     "/tmp/abc123def456", "/tmp/*", "execve"},
+    // execveat：AT_* 标志与 image_flags 一并透传
+    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "/proc/1234/cmdline", "p",
+     "-c", 0x100, PATH_TRUNCATED, "/proc/1234/cmdline", "/proc/{pid}/**",
+     "execveat"},
+    // .. 归一化
+    {SYSCALL_EVENT_EXECVE, "x", "/a//b/../c", "x", "", 0, 0, "/a/c", "/a/c",
      "execve"},
-    {SYSCALL_EVENT_EXECVE, "/tmp/abc123def456", "tmpbin", "", 0, "/tmp/*",
-     "execve"},
-    {SYSCALL_EVENT_EXECVEAT, "/proc/1234/cmdline", "p", "-c", 0x100,
-     "/proc/{pid}/**", "execveat"},
+    // image 为空（无法解析）：image/semantic_filename 均留空，invoked 仍然搬运
+    {SYSCALL_EVENT_EXECVE, "./run.sh", "", "run.sh", "", 0, PATH_UNRESOLVED, "",
+     "", "execve"},
 };
 
 void run_exec()
@@ -147,13 +161,16 @@ void run_exec()
     for (const ExecCase& c : kExecCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, EXEC_EVENT);
-        std::strncpy(raw.exec_event.filename, c.filename,
-                     sizeof(raw.exec_event.filename) - 1);
+        std::strncpy(raw.exec_event.invoked, c.invoked,
+                     sizeof(raw.exec_event.invoked) - 1);
+        std::strncpy(raw.exec_event.image, c.image,
+                     sizeof(raw.exec_event.image) - 1);
         std::strncpy(raw.exec_event.argv0, c.argv0,
                      sizeof(raw.exec_event.argv0) - 1);
         std::strncpy(raw.exec_event.argv1, c.argv1,
                      sizeof(raw.exec_event.argv1) - 1);
-        raw.exec_event.flags = c.flags;
+        raw.exec_event.flags       = c.flags;
+        raw.exec_event.image_flags = c.image_flags;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -163,7 +180,10 @@ void run_exec()
         if (!d) {
             continue;
         }
+        CHECK(d->image() == c.expect_image, "exec image");
         CHECK(d->semantic_filename() == c.expect_sem, "exec semantic_filename");
+        CHECK(d->invoked() == c.invoked, "exec invoked keeps raw input");
+        CHECK(d->image_flags() == c.image_flags, "exec image_flags");
         CHECK(d->argv0() == c.argv0, "exec argv0");
         CHECK(d->argv1() == c.argv1, "exec argv1");
         CHECK(d->flags() == c.flags, "exec flags");

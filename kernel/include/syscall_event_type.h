@@ -29,10 +29,12 @@ struct process_event {
 };
 
 struct exec_event {
-    char filename[MAX_PATH_LEN];  ///< 可执行文件路径
-    char argv0[MAX_ARG_LEN];      ///< argv[0]（程序名或启动命令）
-    char argv1[MAX_ARG_LEN];      ///< argv[1]（第一个参数；无参数时为空串）
-    __u32 flags;                  ///< execveat 有效，AT_* 标志
+    char invoked[MAX_PATH_LEN];  ///< 用户给出的原始路径（可相对、可裸名、可空）
+    char image[MAX_PATH_LEN];    ///< 实际执行的镜像绝对路径
+    char argv0[MAX_ARG_LEN];     ///< argv[0]（程序名或启动命令）
+    char argv1[MAX_ARG_LEN];     ///< argv[1]（第一个参数；无参数时为空串）
+    __u32 flags;                 ///< execveat 有效，AT_* 标志
+    __u32 image_flags;           ///< image 的解析状态位，见 enum path_flag
 };
 
 struct credential_event {
