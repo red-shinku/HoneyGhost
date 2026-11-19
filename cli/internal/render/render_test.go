@@ -319,6 +319,27 @@ func testEvents() []model.Event {
 		{
 			Head: model.Head{
 				RoleID:  7,
+				PID:     2004,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeNamespace,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     0,
+				Comm:    "bash",
+				MntNS:   4026532222,
+			},
+			// 一次 unshare 新建 MNT 与 USER 两个命名空间：掩码按固定顺序展开
+			Payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"flags":        uint64(0x10020000),
+				"ns_mask":      uint32(0x10020000),
+				"fd":           int32(-1),
+				"syscall_name": "unshare",
+			}},
+		},
+		{
+			Head: model.Head{
+				RoleID:  7,
 				PID:     2002,
 				PPID:    1,
 				Type:    model.EventTypeSyscall,
@@ -413,33 +434,78 @@ func TestEventDetail(t *testing.T) {
 		{
 			name: "setuid",
 			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
-				"syscall_name": "setuid", "setuid_uid": uint32(1000),
+				"syscall_name": "setuid", "kind": uint32(1),
+				"requested": []uint32{1000},
 			}},
 			want: "setuid uid=1000",
 		},
 		{
 			name: "setgid",
 			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
-				"syscall_name": "setgid", "setgid_gid": uint32(1000),
+				"syscall_name": "setgid", "kind": uint32(2),
+				"requested": []uint32{2000},
 			}},
-			want: "setgid gid=1000",
+			want: "setgid gid=2000",
+		},
+		{
+			name: "setuid_multi",
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
+				"syscall_name": "setuid", "kind": uint32(1),
+				"requested": []uint32{1000, 1001, 1002},
+			}},
+			want: "setuid uids=1000,1001,1002",
+		},
+		{
+			name: "setgid_multi",
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
+				"syscall_name": "setgid", "kind": uint32(2),
+				"requested": []uint32{2000, 2001},
+			}},
+			want: "setgid gids=2000,2001",
+		},
+		{
+			name: "credential_no_requested",
+			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
+				"syscall_name": "setuid", "kind": uint32(1),
+				"requested": []uint32{},
+			}},
+			want: "setuid",
 		},
 		{
 			name: "capset",
 			payload: model.Payload{Kind: model.SubtypeCredential, Fields: map[string]any{
-				"syscall_name": "capset",
+				"syscall_name": "capset", "kind": uint32(3),
+				"requested": []uint32{},
 				"capset": map[string]any{
-					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
+					"effective": uint64(0x1), "permitted": uint64(0x2),
+					"inheritable": uint64(0x4),
 				},
 			}},
-			want: "capset eff=1 perm=2 inh=3",
+			want: "capset capset eff=0x1 perm=0x2 inh=0x4",
 		},
 		{
-			name: "namespace",
+			name: "namespace_unshare",
 			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
-				"syscall_name": "unshare", "ns_type": uint32(1), "flags": uint64(2),
+				"syscall_name": "unshare", "flags": uint64(0x10020000),
+				"ns_mask": uint32(0x10020000), "fd": int32(-1),
 			}},
-			want: "unshare ns_type=1 flags=0x2",
+			want: "unshare ns=MNT,USER flags=0x10020000",
+		},
+		{
+			name: "namespace_setns",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "setns", "flags": uint64(0),
+				"ns_mask": uint32(0x40000000), "fd": int32(5),
+			}},
+			want: "setns ns=NET fd=5",
+		},
+		{
+			name: "namespace_no_mask",
+			payload: model.Payload{Kind: model.SubtypeNamespace, Fields: map[string]any{
+				"syscall_name": "unshare", "flags": uint64(0x2),
+				"ns_mask": uint32(0), "fd": int32(-1),
+			}},
+			want: "unshare flags=0x2",
 		},
 		{
 			name: "file_syscall",

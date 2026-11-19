@@ -7,8 +7,8 @@
  *
  * 语义化原则：去除随机性信息。除 exec 的 image（先 normalize，再复用
  * agent/semantic/path/ 规则引擎语义化）、file 的 path（normalize 消除拼写差异）
- * 与 credential 的 union→oneof 归位外，其余事件为纯字段搬运——进程身份头部原样
- * 拷贝，syscall 名由 hdr.name 枚举映射为字符串。
+ * 与 credential 按 kind 展开 requested 外，其余事件为纯字段搬运——进程身份头部
+ * 原样拷贝，syscall 名由 hdr.name 枚举映射为字符串。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -222,42 +222,38 @@ void exec_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 权限变更事件 → credential_semantic_data
- * @details 内核侧为 union，此处按 hdr.name 归位到 oneof 的具体分支。
+ * @details 内核侧用 kind 区分请求的是 UID、GID 还是 Capability 集合：按 kind
+ * 搬运，requested 逐项展开，capset 只在 kind=CAPS 时填充。
  */
 void credential_to_semantic(const struct syscall_event& raw,
                             hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::credential_semantic_data>();
-    switch (raw.hdr.name) {
-        case SYSCALL_EVENT_SETUID:
-            d.set_setuid_uid(raw.credential_event.setuid.uid);
-            break;
-        case SYSCALL_EVENT_SETGID:
-            d.set_setgid_gid(raw.credential_event.setgid.gid);
-            break;
-        case SYSCALL_EVENT_CAPSET: {
-            auto* cap = d.mutable_capset();
-            cap->set_effective(raw.credential_event.capset.effective);
-            cap->set_permitted(raw.credential_event.capset.permitted);
-            cap->set_inheritable(raw.credential_event.capset.inheritable);
-            break;
-        }
-        default:
-            break;  // 防御：credential 类仅上述三种 name，理论不可达
+    d.set_kind(raw.credential_event.kind);
+    // requested 固定 3 槽，探针保证 count 不越界，此处仍按槽数截断
+    for (__u32 i = 0; i < raw.credential_event.requested_count && i < 3; ++i) {
+        d.add_requested(raw.credential_event.requested[i]);
+    }
+    if (raw.credential_event.kind == CREDENTIAL_CAPS) {
+        auto* cap = d.mutable_capset();
+        cap->set_effective(raw.credential_event.cap_effective);
+        cap->set_permitted(raw.credential_event.cap_permitted);
+        cap->set_inheritable(raw.credential_event.cap_inheritable);
     }
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 命名空间事件 → namespace_semantic_data
- * @details 纯搬运：ns_type 与 CLONE_NEW* 标志。
+ * @details 纯搬运：CLONE_* 全量掩码、涉及的 CLONE_NEW* 位与 setns 的目标 fd。
  */
 void namespace_to_semantic(const struct syscall_event& raw,
                            hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::namespace_semantic_data>();
-    d.set_ns_type(raw.namespace_event.ns_type);
     d.set_flags(raw.namespace_event.flags);
+    d.set_ns_mask(raw.namespace_event.ns_mask);
+    d.set_fd(raw.namespace_event.fd);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 

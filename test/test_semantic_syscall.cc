@@ -4,8 +4,8 @@
  * @details
  * 按 hdr.subtype 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
- * image 归一化 / 语义化、invoked 原样搬运、credential 的 union→oneof 归位与
- * 通用事件头字段搬运。
+ * image 归一化 / 语义化、invoked 原样搬运、credential 按 kind 分派的
+ * requested / capset 展开与通用事件头字段搬运。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -195,15 +195,18 @@ void run_exec()
 
 struct CredentialCase {
     enum syscall_event_name name;
-    __u32 uid, gid;
+    __u32 kind;
+    __u32 count;
+    __u32 requested[3];
     __u64 cap_eff, cap_perm, cap_inh;
     const char* name_str;
 };
 
 constexpr CredentialCase kCredentialCases[] = {
-    {SYSCALL_EVENT_SETUID, 1000, 0, 0, 0, 0, "setuid"},
-    {SYSCALL_EVENT_SETGID, 0, 2000, 0, 0, 0, "setgid"},
-    {SYSCALL_EVENT_CAPSET, 0, 0, 0x1, 0x2, 0x4, "capset"},
+    // 三类请求：UID 单值、GID 单值、Capability 集合
+    {SYSCALL_EVENT_SETUID, CREDENTIAL_UID, 1, {1000, 0, 0}, 0, 0, 0, "setuid"},
+    {SYSCALL_EVENT_SETGID, CREDENTIAL_GID, 1, {2000, 0, 0}, 0, 0, 0, "setgid"},
+    {SYSCALL_EVENT_CAPSET, CREDENTIAL_CAPS, 0, {}, 0x1, 0x2, 0x4, "capset"},
 };
 
 void run_credential()
@@ -211,21 +214,14 @@ void run_credential()
     for (const CredentialCase& c : kCredentialCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, CREDENTIAL_EVENT);
-        switch (c.name) {
-            case SYSCALL_EVENT_SETUID:
-                raw.credential_event.setuid.uid = c.uid;
-                break;
-            case SYSCALL_EVENT_SETGID:
-                raw.credential_event.setgid.gid = c.gid;
-                break;
-            case SYSCALL_EVENT_CAPSET:
-                raw.credential_event.capset.effective   = c.cap_eff;
-                raw.credential_event.capset.permitted   = c.cap_perm;
-                raw.credential_event.capset.inheritable = c.cap_inh;
-                break;
-            default:
-                break;
+        raw.credential_event.kind            = c.kind;
+        raw.credential_event.requested_count = c.count;
+        for (__u32 i = 0; i < 3; ++i) {
+            raw.credential_event.requested[i] = c.requested[i];
         }
+        raw.credential_event.cap_effective   = c.cap_eff;
+        raw.credential_event.cap_permitted   = c.cap_perm;
+        raw.credential_event.cap_inheritable = c.cap_inh;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -236,15 +232,14 @@ void run_credential()
             continue;
         }
         CHECK(d->syscall_name() == c.name_str, "credential syscall_name");
-        if (c.name == SYSCALL_EVENT_SETUID) {
-            CHECK(d->has_setuid_uid() && d->setuid_uid() == c.uid,
-                  "credential setuid uid");
+        CHECK(d->kind() == c.kind, "credential kind");
+        CHECK(d->requested_size() == static_cast<int>(c.count),
+              "credential requested count");
+        for (__u32 i = 0; i < c.count; ++i) {
+            CHECK(d->requested(i) == c.requested[i],
+                  "credential requested value");
         }
-        else if (c.name == SYSCALL_EVENT_SETGID) {
-            CHECK(d->has_setgid_gid() && d->setgid_gid() == c.gid,
-                  "credential setgid gid");
-        }
-        else {
+        if (c.kind == CREDENTIAL_CAPS) {
             CHECK(d->has_capset(), "credential capset branch");
             if (d->has_capset()) {
                 CHECK(d->capset().effective() == c.cap_eff,
@@ -255,6 +250,9 @@ void run_credential()
                       "credential capset inheritable");
             }
         }
+        else {
+            CHECK(!d->has_capset(), "credential non-capset has no capset");
+        }
     }
 }
 
@@ -262,15 +260,18 @@ void run_credential()
 
 struct NamespaceCase {
     enum syscall_event_name name;
-    __u32 ns_type;
     __u64 flags;
+    __u32 ns_mask;
+    __s32 fd;
     const char* name_str;
 };
 
 constexpr NamespaceCase kNamespaceCases[] = {
+    // unshare 一次新建多个命名空间：0x10000000 = CLONE_NEWUSER，
     // 0x40000000 = CLONE_NEWNET
-    {SYSCALL_EVENT_UNSHARE, 0x40000000, 0x40000000, "unshare"},
-    {SYSCALL_EVENT_SETNS, 0x40000000, 0, "setns"},
+    {SYSCALL_EVENT_UNSHARE, 0x50000000, 0x50000000, -1, "unshare"},
+    // setns 只涉及单个命名空间类型，目标 fd 由 args[0] 给出
+    {SYSCALL_EVENT_SETNS, 0, 0x40000000, 5, "setns"},
 };
 
 void run_namespace()
@@ -278,8 +279,9 @@ void run_namespace()
     for (const NamespaceCase& c : kNamespaceCases) {
         struct syscall_event raw = {};
         fill_head(raw, c.name, NAMESPACE_EVENT);
-        raw.namespace_event.ns_type = c.ns_type;
         raw.namespace_event.flags   = c.flags;
+        raw.namespace_event.ns_mask = c.ns_mask;
+        raw.namespace_event.fd      = c.fd;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -289,8 +291,9 @@ void run_namespace()
         if (!d) {
             continue;
         }
-        CHECK(d->ns_type() == c.ns_type, "namespace ns_type");
+        CHECK(d->ns_mask() == c.ns_mask, "namespace ns_mask");
         CHECK(d->flags() == c.flags, "namespace flags");
+        CHECK(d->fd() == c.fd, "namespace fd");
         CHECK(d->syscall_name() == c.name_str, "namespace syscall_name");
     }
 }

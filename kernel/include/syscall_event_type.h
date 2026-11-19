@@ -37,28 +37,26 @@ struct exec_event {
     __u32 image_flags;           ///< image 的解析状态位，见 enum path_flag
 };
 
+/// @brief 请求的凭据类别；数值与 proto credential_semantic_data.kind 一致
+enum credential_kind {
+    CREDENTIAL_UID  = 1,  ///< requested 是目标 UID 序列
+    CREDENTIAL_GID  = 2,  ///< requested 是目标 GID 序列
+    CREDENTIAL_CAPS = 3,  ///< requested 无意义，看 cap_* 字段
+};
+
 struct credential_event {
-    union {
-        struct {
-            __u32 uid;  ///< setuid() 设置的新 UID
-        } setuid;
-
-        struct {
-            __u32 gid;  ///< setgid() 设置的新 GID
-        } setgid;
-
-        struct {
-            __u64 effective;    ///< Effective Capability
-            __u64 permitted;    ///< Permitted Capability
-            __u64 inheritable;  ///< Inheritable Capability
-        } capset;
-    };
+    __u32 kind;             ///< @see credential_kind
+    __u32 requested_count;  ///< requested 的有效个数（0..3）
+    __u32 requested[3];     ///< 请求的目标 UID/GID；capset 时为 0
+    __u64 cap_effective;    ///< Effective Capability
+    __u64 cap_permitted;    ///< Permitted Capability
+    __u64 cap_inheritable;  ///< Inheritable Capability
 };
 
 struct namespace_event {
-    __u32 ns_type;  ///< setns() 目标 Namespace 类型（CLONE_NEW*）；或 unshare()
-                    ///< 涉及的 Namespace
-    __u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
+    __u64 flags;    ///< unshare 的 CLONE_* 全量掩码；setns 为 0
+    __u32 ns_mask;  ///< 涉及的 CLONE_NEW* 位：unshare 为掩码，setns 为单个类型
+    __s32 fd;       ///< setns 的目标 fd；unshare 为 -1
 };
 
 /// @brief 路径字段的解析状态位

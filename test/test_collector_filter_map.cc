@@ -135,6 +135,8 @@ constexpr std::size_t kExecRecordSize =
     sizeof(struct syscall_event_head) + sizeof(struct exec_event);
 
 // 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
+// exec、credential、namespace 共用 union：按此顺序填充，后写者覆盖前者的前缀；
+// 本样本只用于验证 ringbuf 记录按字节搬运，不解释重叠区的语义。
 syscall_event sample()
 {
     syscall_event event{};
@@ -145,14 +147,28 @@ syscall_event sample()
     std::memset(event.exec_event.image, 'y', sizeof(event.exec_event.image));
     std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
     std::memset(event.exec_event.argv1, 'b', sizeof(event.exec_event.argv1));
-    event.exec_event.flags       = 7;
-    event.exec_event.image_flags = PATH_TRUNCATED;
+    event.exec_event.flags                 = 7;
+    event.exec_event.image_flags           = PATH_TRUNCATED;
+
+    event.credential_event.kind            = CREDENTIAL_CAPS;
+    event.credential_event.requested_count = 2;
+    event.credential_event.requested[0]    = 1000;
+    event.credential_event.requested[1]    = 1001;
+    event.credential_event.requested[2]    = 0;
+    event.credential_event.cap_effective   = 0x1;
+    event.credential_event.cap_permitted   = 0x2;
+    event.credential_event.cap_inheritable = 0x4;
+
+    event.namespace_event.flags            = 0x50000000;
+    event.namespace_event.ns_mask          = 0x50000000;
+    event.namespace_event.fd               = 7;
     return event;
 }
 
 bool same_event(const syscall_event& left, const syscall_event& right)
 {
-    // 比较字段，不依赖编译器是否复制结构体填充字节。
+    // 比较字段，不依赖编译器是否复制结构体填充字节。union 内三类载荷重叠，
+    // 逐字段比较仍能发现任一载荷被丢弃或按错误长度搬运。
     return left.hdr.head.pid == right.hdr.head.pid &&
            left.hdr.name == right.hdr.name &&
            left.hdr.subtype == right.hdr.subtype &&
@@ -165,7 +181,22 @@ bool same_event(const syscall_event& left, const syscall_event& right)
            std::memcmp(left.exec_event.argv0, right.exec_event.argv0,
                        sizeof(left.exec_event.argv0)) == 0 &&
            std::memcmp(left.exec_event.argv1, right.exec_event.argv1,
-                       sizeof(left.exec_event.argv1)) == 0;
+                       sizeof(left.exec_event.argv1)) == 0 &&
+           left.credential_event.kind == right.credential_event.kind &&
+           left.credential_event.requested_count ==
+               right.credential_event.requested_count &&
+           std::memcmp(left.credential_event.requested,
+                       right.credential_event.requested,
+                       sizeof(left.credential_event.requested)) == 0 &&
+           left.credential_event.cap_effective ==
+               right.credential_event.cap_effective &&
+           left.credential_event.cap_permitted ==
+               right.credential_event.cap_permitted &&
+           left.credential_event.cap_inheritable ==
+               right.credential_event.cap_inheritable &&
+           left.namespace_event.flags == right.namespace_event.flags &&
+           left.namespace_event.ns_mask == right.namespace_event.ns_mask &&
+           left.namespace_event.fd == right.namespace_event.fd;
 }
 
 void verify(const std::filesystem::path& tracefs_root)

@@ -226,8 +226,9 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 	case *clisv.SyscallEventData_NamespaceData:
 		value := data.NamespaceData
 		return payload(model.SubtypeNamespace, map[string]any{
-			"ns_type":      value.GetNsType(),
 			"flags":        value.GetFlags(),
+			"ns_mask":      value.GetNsMask(),
+			"fd":           value.GetFd(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 
@@ -279,16 +280,17 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 }
 
 func convertCredentialPayload(in *hng.CredentialSemanticData) model.Payload {
+	requested := in.GetRequested()
+	if requested == nil {
+		requested = []uint32{}
+	}
 	fields := map[string]any{
 		"syscall_name": in.GetSyscallName(),
+		"kind":         in.GetKind(),
+		"requested":    requested,
 	}
-	switch op := in.GetOp().(type) {
-	case *hng.CredentialSemanticData_SetuidUid:
-		fields["setuid_uid"] = op.SetuidUid
-	case *hng.CredentialSemanticData_SetgidGid:
-		fields["setgid_gid"] = op.SetgidGid
-	case *hng.CredentialSemanticData_Capset:
-		capset := op.Capset
+	// capset 只在 kind=CAPS 时由内核侧填充；其余 kind 不呈现该字段
+	if capset := in.GetCapset(); capset != nil {
 		fields["capset"] = map[string]any{
 			"effective":   capset.GetEffective(),
 			"permitted":   capset.GetPermitted(),

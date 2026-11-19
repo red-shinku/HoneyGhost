@@ -48,24 +48,25 @@ message credential_semantic_data
         uint64 inheritable = 3;  // Inheritable Capability
     }
 
-    // 具体权限操作，三者互斥（对应内核侧 credential_event 的 union）
-    oneof op
-    {
-        uint32 setuid_uid     = 1;  // setuid() 设置的新 UID
-        uint32 setgid_gid     = 2;  // setgid() 设置的新 GID
-        capability_set capset = 3;  // capset() 设置的 Capability 集合
-    }
+    reserved 1, 2, 3;
+    reserved "setuid_uid", "setgid_gid";
 
     string syscall_name = 4;  // 系统调用名（如 "setuid"、"setgid"、"capset"）
+    uint32 kind         = 5;  // 1=UID 2=GID 3=CAPS，与内核 enum credential_kind 同值
+    repeated uint32 requested = 6;  // 请求的目标 UID 或 GID，按 kind 解释
+    capability_set capset = 7;      // kind=CAPS 时有效
 }
 
 // 命名空间事件（unshare / setns）。
 message namespace_semantic_data
 {
-    uint32 ns_type =
-        1;  // setns() 目标 Namespace 类型（CLONE_NEW*）；unshare 涉及时亦填
-    uint64 flags        = 2;  // unshare() 的 CLONE_* 标志
-    string syscall_name = 3;  // 系统调用名（如 "unshare"、"setns"）
+    reserved 1;
+    reserved "ns_type";
+
+    uint64 flags        = 2;  // unshare 的完整 CLONE_* 掩码；setns 为 0
+    string syscall_name = 3;
+    uint32 ns_mask      = 4;  // 涉及的 CLONE_NEW* 位：unshare 为掩码，setns 为单值
+    sint32 fd           = 5;  // setns 的目标 fd；unshare 为 -1
 }
 
 // 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。

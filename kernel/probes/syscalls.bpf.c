@@ -28,6 +28,11 @@
 //! @note PF_KTHREAD（内核线程标志，include/linux/sched.h），非 UAPI，此处显式取值
 #define PF_KTHREAD 0x00200000
 
+/// @brief 七个 CLONE_NEW* 命名空间标志之并（include/uapi/linux/sched.h）
+#define HNG_CLONE_NEW_ALL                                                       \
+    (CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | \
+     CLONE_NEWNET | CLONE_NEWCGROUP)
+
 /**
  * @brief RingBuf，存储syscall事件的数据
  *       用户态程序通过该结构获取事件数据
@@ -181,10 +186,9 @@ static __always_inline struct syscall_event *init_credential_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    //! @note 联合体整体清零（capset 为最大成员，覆盖整个 union）
-    event->credential_event.capset.effective   = 0;
-    event->credential_event.capset.permitted   = 0;
-    event->credential_event.capset.inheritable = 0;
+    //! @note 载荷整体清零：各系统调用只填自己的字段，其余保持初值
+    __builtin_memset(&event->credential_event, 0,
+                     sizeof(event->credential_event));
     return event;
 }
 
@@ -202,8 +206,10 @@ static __always_inline struct syscall_event *init_namespace_event(
     struct syscall_event *event = hng_scratch_event();
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
-    event->namespace_event.ns_type = 0;
     event->namespace_event.flags   = 0;
+    event->namespace_event.ns_mask = 0;
+    //! @note 无目标 fd 时保持哨兵值，避免与合法的 fd 0 混淆
+    event->namespace_event.fd      = -1;
     return event;
 }
 
@@ -351,8 +357,9 @@ static __always_inline void hng_copy_credential_event(
 static __always_inline void hng_copy_namespace_event(
     struct namespace_event *dst, const struct namespace_event *src)
 {
-    dst->ns_type = src->ns_type;
     dst->flags   = src->flags;
+    dst->ns_mask = src->ns_mask;
+    dst->fd      = src->fd;
 }
 
 /// @brief 复制 file_event 载荷。
@@ -760,7 +767,9 @@ int trace_setuid(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     //! @note args[0]: uid_t uid
-    event->credential_event.setuid.uid = (u32)ctx->args[0];
+    event->credential_event.kind            = CREDENTIAL_UID;
+    event->credential_event.requested_count = 1;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
 
     hng_stash_pending(event);
     return 0;
@@ -778,7 +787,9 @@ int trace_setgid(struct trace_event_raw_sys_enter *ctx)
     if (!event) return 0;
 
     //! @note args[0]: gid_t gid
-    event->credential_event.setgid.gid = (u32)ctx->args[0];
+    event->credential_event.kind            = CREDENTIAL_GID;
+    event->credential_event.requested_count = 1;
+    event->credential_event.requested[0]    = (u32)ctx->args[0];
 
     hng_stash_pending(event);
     return 0;
@@ -795,6 +806,9 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_credential_event(SYSCALL_EVENT_CAPSET);
     if (!event) return 0;
 
+    //! @note requested_count 与 requested[] 保持 init 的 0，capset 无目标 ID
+    event->credential_event.kind = CREDENTIAL_CAPS;
+
     /**
      * @note args[1]: const cap_user_data_t datap — 指向 struct
      * __user_cap_data_struct[2]
@@ -804,11 +818,11 @@ int trace_capset(struct trace_event_raw_sys_enter *ctx)
     struct __user_cap_data_struct cap_data[2];
     if (bpf_probe_read_user(cap_data, sizeof(cap_data), (void *)ctx->args[1]) ==
         0) {
-        event->credential_event.capset.effective =
+        event->credential_event.cap_effective =
             ((u64)cap_data[1].effective << 32) | cap_data[0].effective;
-        event->credential_event.capset.permitted =
+        event->credential_event.cap_permitted =
             ((u64)cap_data[1].permitted << 32) | cap_data[0].permitted;
-        event->credential_event.capset.inheritable =
+        event->credential_event.cap_inheritable =
             ((u64)cap_data[1].inheritable << 32) | cap_data[0].inheritable;
     }
 
@@ -834,25 +848,11 @@ int trace_unshare(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_UNSHARE);
     if (!event) return 0;
 
-    //! @note args[0]: int unshare_flags (CLONE_NEW*)
-    u64 flags                    = ctx->args[0];
-    event->namespace_event.flags = flags;
-
-    //! @note 提取涉及的 namespace 类型
-    if (flags & CLONE_NEWNS)
-        event->namespace_event.ns_type = CLONE_NEWNS;
-    else if (flags & CLONE_NEWUTS)
-        event->namespace_event.ns_type = CLONE_NEWUTS;
-    else if (flags & CLONE_NEWIPC)
-        event->namespace_event.ns_type = CLONE_NEWIPC;
-    else if (flags & CLONE_NEWNET)
-        event->namespace_event.ns_type = CLONE_NEWNET;
-    else if (flags & CLONE_NEWUSER)
-        event->namespace_event.ns_type = CLONE_NEWUSER;
-    else if (flags & CLONE_NEWPID)
-        event->namespace_event.ns_type = CLONE_NEWPID;
-    else if (flags & CLONE_NEWCGROUP)
-        event->namespace_event.ns_type = CLONE_NEWCGROUP;
+    //! @note args[0]: int unshare_flags (CLONE_*)
+    //! @note 全量标志与命名空间掩码分开保存：一次 unshare 可新建多个命名空间
+    event->namespace_event.flags   = ctx->args[0];
+    event->namespace_event.ns_mask = (u32)(ctx->args[0] & HNG_CLONE_NEW_ALL);
+    event->namespace_event.fd      = -1;
 
     hng_stash_pending(event);
     return 0;
@@ -869,8 +869,10 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_namespace_event(SYSCALL_EVENT_SETNS);
     if (!event) return 0;
 
-    event->namespace_event.ns_type = (u32)ctx->args[1];
+    //! @note args[0]: int fd；args[1]: int nstype (CLONE_NEW*)
     event->namespace_event.flags   = 0;
+    event->namespace_event.ns_mask = (u32)ctx->args[1];
+    event->namespace_event.fd      = (s32)ctx->args[0];
 
     hng_stash_pending(event);
     return 0;

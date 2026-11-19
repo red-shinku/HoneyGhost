@@ -147,27 +147,31 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			name: "credential setuid",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_CredentialData{
 				CredentialData: &hng.CredentialSemanticData{
-					Op:          &hng.CredentialSemanticData_SetuidUid{SetuidUid: 1000},
+					Kind:        1,
+					Requested:   []uint32{1000},
 					SyscallName: "setuid",
 				},
 			}},
-			kind:   model.SubtypeCredential,
-			fields: map[string]any{"setuid_uid": uint32(1000), "syscall_name": "setuid"},
+			kind: model.SubtypeCredential,
+			fields: map[string]any{
+				"kind": uint32(1), "requested": []uint32{1000},
+				"syscall_name": "setuid",
+			},
 		},
 		{
 			name: "credential capset",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_CredentialData{
 				CredentialData: &hng.CredentialSemanticData{
-					Op: &hng.CredentialSemanticData_Capset{
-						Capset: &hng.CredentialSemanticDataCapabilitySet{
-							Effective: 1, Permitted: 2, Inheritable: 3,
-						},
+					Kind: 3,
+					Capset: &hng.CredentialSemanticDataCapabilitySet{
+						Effective: 1, Permitted: 2, Inheritable: 3,
 					},
 					SyscallName: "capset",
 				},
 			}},
 			kind: model.SubtypeCredential,
 			fields: map[string]any{
+				"kind": uint32(3), "requested": []uint32{},
 				"capset": map[string]any{
 					"effective": uint64(1), "permitted": uint64(2), "inheritable": uint64(3),
 				},
@@ -175,13 +179,29 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			},
 		},
 		{
-			name: "namespace",
+			name: "namespace unshare",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NamespaceData{
-				NamespaceData: &hng.NamespaceSemanticData{NsType: 1, Flags: 2, SyscallName: "unshare"},
+				NamespaceData: &hng.NamespaceSemanticData{
+					Flags: 0x10020000, NsMask: 0x10020000, Fd: -1, SyscallName: "unshare",
+				},
 			}},
 			kind: model.SubtypeNamespace,
 			fields: map[string]any{
-				"ns_type": uint32(1), "flags": uint64(2), "syscall_name": "unshare",
+				"flags": uint64(0x10020000), "ns_mask": uint32(0x10020000),
+				"fd": int32(-1), "syscall_name": "unshare",
+			},
+		},
+		{
+			name: "namespace setns",
+			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_NamespaceData{
+				NamespaceData: &hng.NamespaceSemanticData{
+					NsMask: 0x40000000, Fd: 5, SyscallName: "setns",
+				},
+			}},
+			kind: model.SubtypeNamespace,
+			fields: map[string]any{
+				"flags": uint64(0), "ns_mask": uint32(0x40000000),
+				"fd": int32(5), "syscall_name": "setns",
 			},
 		},
 		{

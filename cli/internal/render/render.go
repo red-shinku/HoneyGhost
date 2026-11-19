@@ -367,20 +367,9 @@ func payloadDetail(p model.Payload) string {
 		}
 		return detail
 	case model.SubtypeCredential:
-		if uid, ok := fields["setuid_uid"]; ok {
-			return fmt.Sprintf("%s uid=%v", name, uid)
-		}
-		if gid, ok := fields["setgid_gid"]; ok {
-			return fmt.Sprintf("%s gid=%v", name, gid)
-		}
-		if capset, ok := fields["capset"].(map[string]any); ok {
-			return fmt.Sprintf("%s eff=%v perm=%v inh=%v", name,
-				capset["effective"], capset["permitted"], capset["inheritable"])
-		}
-		return name
+		return credentialDetail(name, fields)
 	case model.SubtypeNamespace:
-		return fmt.Sprintf("%s ns_type=%v flags=0x%x", name,
-			fields["ns_type"], uintField(fields, "flags"))
+		return namespaceDetail(name, fields)
 	case model.SubtypeFile:
 		detail := name
 		if path := stringField(fields, "path"); path != "" {
@@ -410,6 +399,88 @@ func payloadDetail(p model.Payload) string {
 	default:
 		return string(p.Kind)
 	}
+}
+
+// 凭据类别，与 kernel/include/syscall_event_type.h 的 enum credential_kind 以及
+// proto credential_semantic_data.kind 同值。
+const (
+	credentialKindUID  uint32 = 1
+	credentialKindGID  uint32 = 2
+	credentialKindCAPS uint32 = 3
+)
+
+// 命名空间掩码位与呈现名，顺序固定为 MNT、UTS、IPC、USER、PID、NET、CGROUP；
+// 位值即内核 CLONE_NEW*。
+var namespaceMaskNames = []struct {
+	bit  uint32
+	name string
+}{
+	{0x00020000, "MNT"},    // CLONE_NEWNS
+	{0x04000000, "UTS"},    // CLONE_NEWUTS
+	{0x08000000, "IPC"},    // CLONE_NEWIPC
+	{0x10000000, "USER"},   // CLONE_NEWUSER
+	{0x20000000, "PID"},    // CLONE_NEWPID
+	{0x40000000, "NET"},    // CLONE_NEWNET
+	{0x02000000, "CGROUP"}, // CLONE_NEWCGROUP
+}
+
+// credentialDetail 生成权限变更摘要：CAPS 呈现三个十六进制能力集，UID/GID 按
+// requested 个数呈现单值或多值；requested 为空时只呈现系统调用名。
+func credentialDetail(name string, fields map[string]any) string {
+	kind := uint32(uintField(fields, "kind"))
+	requested, _ := fields["requested"].([]uint32)
+	switch kind {
+	case credentialKindCAPS:
+		capset, _ := fields["capset"].(map[string]any)
+		return fmt.Sprintf("%s capset eff=0x%x perm=0x%x inh=0x%x", name,
+			uintField(capset, "effective"), uintField(capset, "permitted"),
+			uintField(capset, "inheritable"))
+	case credentialKindUID, credentialKindGID:
+		if len(requested) == 0 {
+			return name
+		}
+		prefix := "uid"
+		if kind == credentialKindGID {
+			prefix = "gid"
+		}
+		if len(requested) == 1 {
+			return fmt.Sprintf("%s %s=%d", name, prefix, requested[0])
+		}
+		ids := make([]string, 0, len(requested))
+		for _, id := range requested {
+			ids = append(ids, strconv.FormatUint(uint64(id), 10))
+		}
+		return fmt.Sprintf("%s %ss=%s", name, prefix, strings.Join(ids, ","))
+	default:
+		return name
+	}
+}
+
+// namespaceDetail 生成命名空间摘要：ns_mask 按固定顺序展开为名字，flags 为 0 时
+// 省略，setns 的目标 fd 非负时追加。
+func namespaceDetail(name string, fields map[string]any) string {
+	detail := name
+	if names := namespaceNames(uint32(uintField(fields, "ns_mask"))); names != "" {
+		detail += " ns=" + names
+	}
+	if flags := uintField(fields, "flags"); flags != 0 {
+		detail += fmt.Sprintf(" flags=0x%x", flags)
+	}
+	if fd, ok := signedField(fields, "fd"); ok && fd >= 0 {
+		detail += fmt.Sprintf(" fd=%d", fd)
+	}
+	return detail
+}
+
+// namespaceNames 把掩码展开为逗号分隔的命名空间名；无已知位时返回空串。
+func namespaceNames(mask uint32) string {
+	names := make([]string, 0, len(namespaceMaskNames))
+	for _, ns := range namespaceMaskNames {
+		if mask&ns.bit != 0 {
+			names = append(names, ns.name)
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 // 地址族取值，与内核 <sys/socket.h> 的 AF_INET / AF_INET6 一致。
@@ -487,6 +558,23 @@ func uintField(fields map[string]any, key string) uint64 {
 		return uint64(value)
 	default:
 		return 0
+	}
+}
+
+// signedField 取有符号字段并报告字段是否存在；用于可能为负的 sint32 载荷，
+// 如 setns 的目标 fd。
+func signedField(fields map[string]any, key string) (int64, bool) {
+	switch value := fields[key].(type) {
+	case int32:
+		return int64(value), true
+	case int64:
+		return value, true
+	case uint32:
+		return int64(value), true
+	case uint64:
+		return int64(value), true
+	default:
+		return 0, false
 	}
 }
 

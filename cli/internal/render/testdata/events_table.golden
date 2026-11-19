@@ -1,4 +1,5 @@
 TYPE    SUBTYPE   UID        EUID       PID        PPID       ROLE                     CTX        DETAIL
 syscall exec      0          1000       1234       1          nginx:1.25               3          execve image=/tmp/test invoked=./test RET=0 COMM=nginx EXE=/tmp/test
+syscall namespace 1000       1000       2004       1          #7                       -          unshare ns=MNT,USER flags=0x10020000 RET=0 COMM=bash MNTNS=4026532222
 syscall file      1000       0          2002       1          #7                       -          openat path=/etc/nginx/nginx.conf flags=0x0 mode=00 RET=0 COMM=nginx EXE=/usr/sbin/nginx MNTNS=4026532222
 syscall file      1000       1000       2003       1          #7                       -          openat path=?deploy.sh flags=0x0 mode=00 RET=-2 COMM=bash
