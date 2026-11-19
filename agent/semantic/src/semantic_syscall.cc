@@ -256,8 +256,8 @@ void namespace_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 文件系统调用事件 → file_syscall_semantic_data
- * @details 路径经 hng::path::normalize 消除拼写差异后作为原始路径输出，尚不做
- * 绝对化（相对路径保持原样）；flags/mode 原样搬运。
+ * @details 路径由探针解析为绝对路径，经 normalize 消除拼写差异后输出；
+ * 未解析的事件保留原始串，path_flags 一并搬运供呈现层标记。
  */
 void file_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
@@ -268,6 +268,7 @@ void file_to_semantic(const struct syscall_event& raw,
     d.set_path(norm);
     d.set_flags(raw.file_event.flags);
     d.set_mode(raw.file_event.mode);
+    d.set_path_flags(raw.file_event.path_flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
@@ -375,3 +376,13 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
             break;
     }
 }
+
+namespace hng {
+
+bool has_unresolved_path(const struct syscall_event& raw)
+{
+    return raw.hdr.subtype == FILE_EVENT &&
+           (raw.file_event.path_flags & PATH_UNRESOLVED) != 0;
+}
+
+}  // namespace hng

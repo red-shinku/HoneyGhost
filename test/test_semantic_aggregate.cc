@@ -48,6 +48,17 @@ syscall_event make_syscall_raw(uint32_t pid, int32_t exit_code)
     return raw;
 }
 
+syscall_event make_file_raw(uint32_t pid, uint32_t path_flags)
+{
+    syscall_event raw{};
+    raw.hdr.head.pid          = pid;
+    raw.hdr.subtype           = FILE_EVENT;
+    raw.hdr.name              = SYSCALL_EVENT_OPEN;
+    raw.file_event.path_flags = path_flags;
+    std::strncpy(raw.file_event.path, "rel/x", sizeof(raw.file_event.path) - 1);
+    return raw;
+}
+
 void run_single_line()
 {
     hng::EventChannel<syscall_event> raw_syscall(256);
@@ -112,6 +123,43 @@ void drain_on_stop()
     REQUIRE(raw_syscall.empty());
 }
 
+/// @brief 未解析路径按事件计数，path_flags 一并透传到语义数据
+void count_unresolved_path()
+{
+    hng::EventChannel<syscall_event> raw_syscall(16);
+    hng::EventChannel<hng::syscall_semantic_data> out_syscall(16);
+
+    Semantic semantic(&raw_syscall.reader(), &out_syscall.writer());
+    std::thread thread([&semantic] { semantic.run(); });
+
+    REQUIRE(raw_syscall.writer().push(make_file_raw(1, PATH_UNRESOLVED)));
+    REQUIRE(raw_syscall.writer().push(make_file_raw(2, 0)));
+    REQUIRE(raw_syscall.writer().push(make_file_raw(3, PATH_TRUNCATED)));
+    REQUIRE(raw_syscall.writer().push(
+        make_file_raw(4, PATH_UNRESOLVED | PATH_TRUNCATED)));
+    REQUIRE(wait_until([&out_syscall] { return out_syscall.size() == 4; }));
+
+    const uint32_t expect_flags[] = {PATH_UNRESOLVED, 0, PATH_TRUNCATED,
+                                     PATH_UNRESOLVED | PATH_TRUNCATED};
+    for (uint32_t expect : expect_flags) {
+        hng::syscall_semantic_data event;
+        REQUIRE(out_syscall.reader().try_pop(event));
+        const auto* file =
+            std::get_if<hng::file_syscall_semantic_data>(&event.data);
+        REQUIRE(file != nullptr);
+        REQUIRE(file->path_flags() == expect);
+        REQUIRE(file->path() == "rel/x");
+    }
+
+    semantic.stop();
+    thread.join();
+    REQUIRE(semantic.state() == hng::ComponentState::STOPPED);
+
+    const hng::SemanticStats stats = semantic.stats();
+    REQUIRE(stats.processed_syscall == 4);
+    REQUIRE(stats.path_unresolved == 2);
+}
+
 void unwired_line()
 {
     Semantic semantic(nullptr, nullptr);
@@ -128,6 +176,7 @@ int main()
 {
     try {
         run_single_line();
+        count_unresolved_path();
         drain_on_stop();
         unwired_line();
         std::printf("PASS: semantic aggregate, %d checks\n", checks);

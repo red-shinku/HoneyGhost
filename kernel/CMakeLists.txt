@@ -38,6 +38,7 @@ set(HNG_EBPF_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/event_head.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/path_resolver.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_head.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/uapi_const.h

@@ -59,10 +59,18 @@ struct namespace_event {
     __u64 flags;    ///< unshare() 的 CLONE_* 标志；setns() 可扩展保存 flags
 };
 
+/// @brief 路径字段的解析状态位
+/// @details 与 proto 的 path_flags 同值，内核与用户态共用。
+enum path_flag {
+    PATH_TRUNCATED  = 1 << 0,  ///< 路径超出缓冲被截断
+    PATH_UNRESOLVED = 1 << 1,  ///< 无法解析为绝对路径，承载的是原始串
+};
+
 struct file_event {
     char path[MAX_PATH_LEN];  ///< open/openat/openat2/creat 携带的文件路径
     __u32 flags;  ///< open/openat/openat2 的 O_* 标志；renameat2 的 RENAME_* 标志
     __u32 mode;   ///< creat()/open(O_CREAT) 创建权限；openat2 可扩展保存 mode
+    __u32 path_flags;  ///< 路径解析状态位，见 enum path_flag
 };
 
 struct memory_event {

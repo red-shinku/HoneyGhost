@@ -14,6 +14,11 @@
 #ifndef __UAPI_CONST_H
 #define __UAPI_CONST_H
 
+// 目录基准 fd（include/uapi/linux/fcntl.h）
+#ifndef AT_FDCWD
+#define AT_FDCWD (-100)
+#endif
+
 // 文件打开标志（include/uapi/asm-generic/fcntl.h）
 #ifndef O_WRONLY
 #define O_WRONLY 00000001

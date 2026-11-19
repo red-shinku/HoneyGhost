@@ -239,6 +239,7 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 		fmt.Fprintf(tw, "    raw_syscall_rejected	%d\n", s.Semantic.RawSyscallRejected)
 		fmt.Fprintf(tw, "    out_syscall_dropped	%d\n", s.Semantic.OutSyscallDropped)
 		fmt.Fprintf(tw, "    out_syscall_rejected	%d\n", s.Semantic.OutSyscallRejected)
+		fmt.Fprintf(tw, "    path_unresolved	%d\n", s.Semantic.PathUnresolved)
 		if err := tw.Flush(); err != nil {
 			return err
 		}
@@ -324,6 +325,10 @@ func (r tableRenderer) StreamStats(io.Writer, model.StreamStats) error {
 // kernel/include/event_head.h 的 HNG_INIT_MNT_NS_INUM；初始命名空间不呈现 MNTNS。
 const initMntNSInum uint32 = 4026531840
 
+// 路径字段的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+// enum path_flag 一致：bit0 路径被截断，bit1 无法解析为绝对路径。
+const pathUnresolvedFlag uint64 = 1 << 1
+
 // eventDetail 生成人读摘要；不是稳定契约，脚本应使用 JSON。
 //
 // 载荷摘要之后统一追加事件头字段：RET 恒输出；COMM 仅在非空时输出；MNTNS 仅在
@@ -367,7 +372,12 @@ func payloadDetail(p model.Payload) string {
 	case model.SubtypeFile:
 		detail := name
 		if path := stringField(fields, "path"); path != "" {
-			detail += " path=" + path
+			if uintField(fields, "path_flags")&pathUnresolvedFlag != 0 {
+				// 未解析的路径是用户给出的原始串，加 ? 前缀与绝对路径区分
+				detail += " path=?" + path
+			} else {
+				detail += " path=" + path
+			}
 		}
 		return fmt.Sprintf("%s flags=0x%x mode=0%o", detail,
 			uintField(fields, "flags"), uintField(fields, "mode"))

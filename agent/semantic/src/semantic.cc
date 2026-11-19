@@ -68,6 +68,10 @@ std::size_t Semantic::drain_syscall(std::size_t budget)
         }
         hng::syscall_semantic_data out;
         syscall_tool_.transform_one(raw, out);
+        // 每条事件至多计一次；输出通道拒收不影响该计数
+        if (hng::has_unresolved_path(raw)) {
+            path_unresolved_.fetch_add(1, std::memory_order_relaxed);
+        }
         // 输出通道满或已关闭时丢弃，计数在通道内
         out_syscall_->push(std::move(out));
         ++processed;
@@ -180,6 +184,7 @@ hng::SemanticStats Semantic::stats() const
     hng::SemanticStats snapshot;
     snapshot.processed_syscall =
         processed_syscall_.load(std::memory_order_relaxed);
+    snapshot.path_unresolved = path_unresolved_.load(std::memory_order_relaxed);
     if (raw_syscall_ != nullptr) {
         snapshot.raw_syscall_dropped  = raw_syscall_->dropped();
         snapshot.raw_syscall_rejected = raw_syscall_->rejected();

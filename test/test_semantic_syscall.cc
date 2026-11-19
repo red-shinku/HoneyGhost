@@ -282,16 +282,22 @@ struct FileCase {
     const char* path;
     __u32 flags;
     __u32 mode;
+    __u32 path_flags;
     const char* expect_path;
     const char* name_str;
 };
 
 constexpr FileCase kFileCases[] = {
     {SYSCALL_EVENT_OPEN, "/tmp/../etc/./passwd", O_CREAT | O_WRONLY | O_TRUNC,
-     0644, "/etc/passwd", "open"},
-    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, "/a/c",
-     "renameat2"},
-    {SYSCALL_EVENT_UNLINK, "", 0, 0, "", "unlink"},
+     0644, 0, "/etc/passwd", "open"},
+    {SYSCALL_EVENT_RENAMEAT2, "/a//b/../c", 1 /* RENAME_NOREPLACE */, 0, 0,
+     "/a/c", "renameat2"},
+    {SYSCALL_EVENT_UNLINK, "", 0, 0, 0, "", "unlink"},
+    // 内核侧无法解析为绝对路径：path 保留原始串，未解析位透传
+    {SYSCALL_EVENT_OPENAT, "../etc/shadow", O_RDONLY, 0, PATH_UNRESOLVED,
+     "../etc/shadow", "openat"},
+    // 截断位与路径前缀一并透传
+    {SYSCALL_EVENT_OPEN, "/tmp", O_RDONLY, 0, PATH_TRUNCATED, "/tmp", "open"},
 };
 
 void run_file()
@@ -301,8 +307,9 @@ void run_file()
         fill_head(raw, c.name, FILE_EVENT);
         std::strncpy(raw.file_event.path, c.path,
                      sizeof(raw.file_event.path) - 1);
-        raw.file_event.flags = c.flags;
-        raw.file_event.mode  = c.mode;
+        raw.file_event.flags      = c.flags;
+        raw.file_event.mode       = c.mode;
+        raw.file_event.path_flags = c.path_flags;
 
         hng::syscall_semantic_data out;
         run_one(raw, out);
@@ -315,8 +322,30 @@ void run_file()
         CHECK(d->path() == c.expect_path, "file path");
         CHECK(d->flags() == c.flags, "file flags");
         CHECK(d->mode() == c.mode, "file mode");
+        CHECK(d->path_flags() == c.path_flags, "file path_flags");
+        CHECK(hng::has_unresolved_path(raw) ==
+                  ((c.path_flags & PATH_UNRESOLVED) != 0),
+              "file unresolved predicate");
         CHECK(d->syscall_name() == c.name_str, "file syscall_name");
     }
+}
+
+/// @brief path_unresolved 的计数判据：只认文件事件且只认未解析位
+void run_unresolved_predicate()
+{
+    struct syscall_event raw = {};
+    fill_head(raw, SYSCALL_EVENT_OPENAT, FILE_EVENT);
+    std::strncpy(raw.file_event.path, "rel/x", sizeof(raw.file_event.path) - 1);
+
+    raw.file_event.path_flags = PATH_UNRESOLVED | PATH_TRUNCATED;
+    CHECK(hng::has_unresolved_path(raw), "unresolved bit counts");
+    raw.file_event.path_flags = PATH_TRUNCATED;
+    CHECK(!hng::has_unresolved_path(raw), "truncated bit does not count");
+    raw.file_event.path_flags = 0;
+    CHECK(!hng::has_unresolved_path(raw), "resolved path does not count");
+    raw.file_event.path_flags = PATH_UNRESOLVED;
+    raw.hdr.subtype           = EXEC_EVENT;
+    CHECK(!hng::has_unresolved_path(raw), "non-file subtype does not count");
 }
 
 // ---- 内存操作 ----
@@ -522,6 +551,7 @@ int main()
     run_credential();
     run_namespace();
     run_file();
+    run_unresolved_predicate();
     run_memory();
     run_network();
     run_kernel();

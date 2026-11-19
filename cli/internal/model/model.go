@@ -113,6 +113,7 @@ type SemanticStats struct {
 	RawSyscallRejected uint64 `json:"raw_syscall_rejected"`
 	OutSyscallDropped  uint64 `json:"out_syscall_dropped"`
 	OutSyscallRejected uint64 `json:"out_syscall_rejected"`
+	PathUnresolved     uint64 `json:"path_unresolved"`
 }
 
 // EngineStats 是运行时引擎的累计计数。

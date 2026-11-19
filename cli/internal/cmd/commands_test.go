@@ -725,7 +725,7 @@ func TestStatus(t *testing.T) {
 						SkippedProbes: 7, AttachFailed: 8, PendingLost: 9,
 						Malformed: 10, Attached: true,
 					}},
-					Semantic: &model.SemanticStats{ProcessedSyscall: 4},
+					Semantic: &model.SemanticStats{ProcessedSyscall: 4, PathUnresolved: 2},
 					Engine:   &model.EngineStats{PeakCLIStreams: 2},
 					CLI:      &model.CLIStreamStats{Active: 1, Peak: 2, Dropped: 3},
 				}, nil
@@ -744,6 +744,7 @@ func TestStatus(t *testing.T) {
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
 		"PROCESS STATS", "pid_reused", "RUNTIME STATS", "syscall",
 		"SKIPPED", "ATTACH_FAIL", "PENDING_LOST", "MALFORMED", "SEMANTIC",
+		"path_unresolved",
 		"ENGINE",
 		"CLI STREAMS",
 	} {
@@ -765,6 +766,7 @@ func TestStatus(t *testing.T) {
 		"\"process_stats\"",
 		"\"runtime_stats\"",
 		"\"malformed\": 10",
+		"\"path_unresolved\": 2",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)

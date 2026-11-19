@@ -309,6 +309,7 @@ class StatsStub final : public hng::PipelineStatsService {
         hng::SemanticStats semantic;
         semantic.processed_syscall   = 7;
         semantic.raw_syscall_dropped = 2;
+        semantic.path_unresolved     = 8;
         stats.semantic               = semantic;
 
         hng::PipelineEngineStats engine;
@@ -801,7 +802,8 @@ void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
               stats.collector(0).attached() && !stats.collector(0).polling(),
           "collector 字段应逐一映射");
     CHECK(stats.has_semantic() && stats.semantic().processed_syscall() == 7 &&
-              stats.semantic().raw_syscall_dropped() == 2,
+              stats.semantic().raw_syscall_dropped() == 2 &&
+              stats.semantic().path_unresolved() == 8,
           "semantic 字段应逐一映射");
     CHECK(stats.has_engine() && stats.engine().peak_cli_streams() == 5 &&
               stats.engine().syscall_dropped() == 6,

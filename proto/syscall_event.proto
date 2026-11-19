@@ -70,6 +70,10 @@ message file_syscall_semantic_data
     string path         = 4;  // 系统调用携带的文件路径；未采集时为空
     reserved 5;
     reserved "is_innamespace";
+    // 路径字段的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致：bit0 路径被截断，bit1 无法解析为绝对路径（此时
+    // path 承载的是用户给出的原始串）
+    uint32 path_flags   = 6;
 }
 
 // 内存事件（mmap / mprotect）。

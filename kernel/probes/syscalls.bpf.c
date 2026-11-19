@@ -15,6 +15,7 @@
  */
 
 #include "kernel/include/vmlinux.h"
+#include "kernel/include/path_resolver.bpf.h"
 #include "kernel/include/role_filter.bpf.h"
 #include "kernel/include/syscall_event_type.h"
 #include "kernel/include/uapi_const.h"
@@ -219,8 +220,9 @@ static __always_inline struct syscall_event *init_file_event(
     if (!event) return NULL;
     init_syscall_event_head(&event->hdr, name);
     __builtin_memset(event->file_event.path, 0, sizeof(event->file_event.path));
-    event->file_event.flags = 0;
-    event->file_event.mode  = 0;
+    event->file_event.flags      = 0;
+    event->file_event.mode       = 0;
+    event->file_event.path_flags = 0;
     return event;
 }
 
@@ -345,8 +347,9 @@ static __always_inline void hng_copy_file_event(struct file_event *dst,
                                                 const struct file_event *src)
 {
     __builtin_memcpy(dst->path, src->path, sizeof(dst->path));
-    dst->flags = src->flags;
-    dst->mode  = src->mode;
+    dst->flags      = src->flags;
+    dst->mode       = src->mode;
+    dst->path_flags = src->path_flags;
 }
 
 /// @brief 复制 memory_event 载荷。
@@ -497,43 +500,16 @@ static __always_inline bool parse_sockaddr(const void *addr, u32 addrlen,
 
 /**
  * @brief 通过当前进程的 fd 获取套接字指针
- * @details 从 task_struct 的文件描述符表逐层读取（CO-RE），返回 fd 对应的
+ * @details 复用 fd → struct file 的通用读取，再取 file 的 private_data 为
  *          struct sock *，任一环节读取失败均返回 NULL。
  * @param[in] fd 文件描述符
  * @return 内核持有的套接字指针，失败返回 NULL。
  * @note 返回值仅用于本次探针中的读取，不转移所有权。
+ * @see hng_file_from_fd
  */
 static __always_inline struct sock *get_socket_sk(u32 fd)
 {
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    if (!task) {
-        return NULL;
-    }
-
-    struct files_struct *files = BPF_CORE_READ(task, files);
-    if (!files) {
-        return NULL;
-    }
-
-    struct fdtable *fdt = BPF_CORE_READ(files, fdt);
-    if (!fdt) {
-        return NULL;
-    }
-
-    u32 max_fds = BPF_CORE_READ(fdt, max_fds);
-    if (fd >= max_fds) {
-        return NULL;
-    }
-
-    struct file **fd_array = BPF_CORE_READ(fdt, fd);
-    if (!fd_array) {
-        return NULL;
-    }
-
-    struct file *file = NULL;
-    if (bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd])) {
-        return NULL;
-    }
+    struct file *file = hng_file_from_fd((int)fd);
     if (!file) {
         return NULL;
     }
@@ -890,6 +866,28 @@ int trace_setns(struct trace_event_raw_sys_enter *ctx)
  */
 
 /**
+ * @brief 解析文件事件的路径并记录解析状态位。
+ * @param[out] file 目标文件事件载荷，path 与 path_flags 由本函数填写
+ * @param[in] user_path 用户态路径串
+ * @param[in] dirfd 基准目录 fd；AT_FDCWD 表示当前工作目录
+ * @note 返回 -1 置 PATH_UNRESOLVED、返回 -2 置 PATH_TRUNCATED，成功不置位。
+ * @note path_flags 由 init_file_event 预先清零。
+ * @see hng_resolve_user_path
+ */
+static __always_inline void hng_fill_file_path(struct file_event *file,
+                                               const void *user_path, int dirfd)
+{
+    long written =
+        hng_resolve_user_path(file->path, sizeof(file->path), user_path, dirfd);
+    if (written == -1) {
+        file->path_flags |= PATH_UNRESOLVED;
+    }
+    else if (written == -2) {
+        file->path_flags |= PATH_TRUNCATED;
+    }
+}
+
+/**
  * @brief 处理 sys_enter_open 事件并暂存采集结果。
  * @param[in] ctx 系统调用入口的 tracepoint 上下文。
  * @return 始终返回 0；未命中采集条件或无法构造事件时跳过暂存。
@@ -900,9 +898,8 @@ int trace_syscall_open(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPEN);
     if (!event) return 0;
 
-    //! @note args[0]: const char *filename
-    bpf_probe_read_user_str(&event->file_event.path,
-                            sizeof(event->file_event.path), (void *)ctx->args[0]);
+    //! @note args[0]: const char *filename；open 没有 dirfd，基准为当前工作目录
+    hng_fill_file_path(&event->file_event, (const void *)ctx->args[0], AT_FDCWD);
     //! @note args[1]: int flags, args[2]: umode_t mode
     event->file_event.flags = (u32)ctx->args[1];
     event->file_event.mode  = (u32)ctx->args[2];
@@ -922,9 +919,9 @@ int trace_syscall_openat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPENAT);
     if (!event) return 0;
 
-    //! @note args[1]: const char *filename
-    bpf_probe_read_user_str(&event->file_event.path,
-                            sizeof(event->file_event.path), (void *)ctx->args[1]);
+    //! @note args[0]: int dirfd, args[1]: const char *filename
+    hng_fill_file_path(&event->file_event, (const void *)ctx->args[1],
+                       (int)ctx->args[0]);
     //! @note args[2]: int flags, args[3]: umode_t mode
     event->file_event.flags = (u32)ctx->args[2];
     event->file_event.mode  = (u32)ctx->args[3];
@@ -944,9 +941,9 @@ int trace_syscall_openat2(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_OPENAT2);
     if (!event) return 0;
 
-    //! @note args[1]: const char *filename
-    bpf_probe_read_user_str(&event->file_event.path,
-                            sizeof(event->file_event.path), (void *)ctx->args[1]);
+    //! @note args[0]: int dirfd, args[1]: const char *filename
+    hng_fill_file_path(&event->file_event, (const void *)ctx->args[1],
+                       (int)ctx->args[0]);
     //! @note args[2]: struct open_how *
     struct open_how how;
     if (bpf_probe_read_user(&how, sizeof(how), (void *)ctx->args[2]) == 0) {
@@ -969,9 +966,8 @@ int trace_syscall_creat(struct trace_event_raw_sys_enter *ctx)
     struct syscall_event *event = init_file_event(SYSCALL_EVENT_CREAT);
     if (!event) return 0;
 
-    //! @note args[0]: const char *filename
-    bpf_probe_read_user_str(&event->file_event.path,
-                            sizeof(event->file_event.path), (void *)ctx->args[0]);
+    //! @note args[0]: const char *filename；creat 没有 dirfd，基准为当前工作目录
+    hng_fill_file_path(&event->file_event, (const void *)ctx->args[0], AT_FDCWD);
     //! @note creat() 隐含了 O_CREAT | O_WRONLY | O_TRUNC
     event->file_event.flags = O_CREAT | O_WRONLY | O_TRUNC;
     //! @note args[1]: umode_t mode

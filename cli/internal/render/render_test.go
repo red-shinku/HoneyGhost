@@ -333,6 +333,28 @@ func testEvents() []model.Event {
 				"syscall_name": "openat",
 			}},
 		},
+		{
+			Head: model.Head{
+				RoleID:  7,
+				PID:     2003,
+				PPID:    1,
+				Type:    model.EventTypeSyscall,
+				Subtype: model.SubtypeFile,
+				UID:     1000,
+				EUID:    1000,
+				Ret:     -2,
+				Comm:    "bash",
+				MntNS:   initMntNSInum,
+			},
+			// 内核未能解析为绝对路径：path 是原始串，渲染时加 ? 前缀
+			Payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"path":         "deploy.sh",
+				"path_flags":   uint32(2),
+				"flags":        uint32(0),
+				"mode":         uint32(0),
+				"syscall_name": "openat",
+			}},
+		},
 	}
 }
 
@@ -414,6 +436,22 @@ func TestEventDetail(t *testing.T) {
 				"path": "",
 			}},
 			want: "unlink flags=0x0 mode=00",
+		},
+		{
+			name: "file_syscall_unresolved",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
+				"path": "deploy.sh", "path_flags": uint32(2),
+			}},
+			want: "openat path=?deploy.sh flags=0x3 mode=0644",
+		},
+		{
+			name: "file_syscall_truncated_only",
+			payload: model.Payload{Kind: model.SubtypeFile, Fields: map[string]any{
+				"syscall_name": "openat", "flags": uint32(3), "mode": uint32(420),
+				"path": "/tmp/x", "path_flags": uint32(1),
+			}},
+			want: "openat path=/tmp/x flags=0x3 mode=0644",
 		},
 		{
 			name: "memory",

@@ -180,14 +180,14 @@ func TestConvertSyscallPayloads(t *testing.T) {
 			name: "file_syscall",
 			data: &clisv.SyscallEventData{SData: &clisv.SyscallEventData_FileData{
 				FileData: &hng.FileSyscallSemanticData{
-					Flags: 3, Mode: 420, Path: "/tmp/x",
+					Flags: 3, Mode: 420, Path: "../x", PathFlags: 2,
 					SyscallName: "openat",
 				},
 			}},
 			kind: model.SubtypeFile,
 			fields: map[string]any{
-				"flags": uint32(3), "mode": uint32(420), "path": "/tmp/x",
-				"syscall_name": "openat",
+				"flags": uint32(3), "mode": uint32(420), "path": "../x",
+				"path_flags": uint32(2), "syscall_name": "openat",
 			},
 		},
 		{
@@ -289,7 +289,9 @@ func TestConvertPipelineStats(t *testing.T) {
 		Malformed:       8,
 		Attached:        true,
 		Polling:         true,
-	}}}
+	}}, Semantic: &clisv.SemanticStats{
+		ProcessedSyscall: 9, PathUnresolved: 10,
+	}}
 	want := model.PipelineStats{Collector: []model.CollectorLineStats{{
 		Line:            "file",
 		Consumed:        10,
@@ -303,7 +305,9 @@ func TestConvertPipelineStats(t *testing.T) {
 		Malformed:       8,
 		Attached:        true,
 		Polling:         true,
-	}}}
+	}}, Semantic: &model.SemanticStats{
+		ProcessedSyscall: 9, PathUnresolved: 10,
+	}}
 	if got := convertPipelineStats(in); !reflect.DeepEqual(got, want) {
 		t.Errorf("convertPipelineStats = %#v, want %#v", got, want)
 	}

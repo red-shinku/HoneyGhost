@@ -43,6 +43,7 @@ struct SemanticStats {
     std::uint64_t raw_syscall_rejected = 0;
     std::uint64_t out_syscall_dropped  = 0;
     std::uint64_t out_syscall_rejected = 0;
+    std::uint64_t path_unresolved = 0;  ///< 路径无法解析为绝对路径的文件事件数
 };
 
 /// @brief 运行时引擎的累计计数，与 RuntimeEngineStats 的字段一一对应

@@ -12,6 +12,19 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace hng {
+
+/**
+ * @brief 原始事件是否承载未解析路径。
+ * @param raw 系统调用原始事件
+ * @return 文件事件且 path_flags 含 PATH_UNRESOLVED 时为 true。
+ * @note 语义层据此按事件累计 path_unresolved，每条事件至多计一次。
+ * @see Semantic_syscall::transform_one, hng::SemanticStats
+ */
+bool has_unresolved_path(const struct syscall_event& raw);
+
+}  // namespace hng
+
 /**
  * @brief 系统调用事件语义化工具。
  * @details 按 hdr.subtype 分派到八种语义载荷；无状态、无队列。
@@ -99,6 +112,7 @@ class Semantic final : public hng::Component {
     std::atomic<hng::ComponentState> lifecycle_{hng::ComponentState::READY};
     std::atomic<bool> stopped_{false};
     std::atomic<std::uint64_t> processed_syscall_{0};
+    std::atomic<std::uint64_t> path_unresolved_{0};
 };
 
 #endif  // SEMANTIC_HPP

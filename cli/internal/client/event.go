@@ -84,6 +84,7 @@ func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
 			RawSyscallRejected: semantic.GetRawSyscallRejected(),
 			OutSyscallDropped:  semantic.GetOutSyscallDropped(),
 			OutSyscallRejected: semantic.GetOutSyscallRejected(),
+			PathUnresolved:     semantic.GetPathUnresolved(),
 		}
 	}
 	if engine := in.GetEngine(); engine != nil {
@@ -232,6 +233,7 @@ func convertSyscallPayload(in *clisv.SyscallEventData) (model.Payload, error) {
 			"flags":        value.GetFlags(),
 			"mode":         value.GetMode(),
 			"path":         value.GetPath(),
+			"path_flags":   value.GetPathFlags(),
 			"syscall_name": value.GetSyscallName(),
 		}), nil
 

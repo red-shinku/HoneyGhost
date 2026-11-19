@@ -435,6 +435,8 @@ message semantic_stats
     uint64 raw_syscall_rejected = 6;
     uint64 out_syscall_dropped  = 9;
     uint64 out_syscall_rejected = 10;
+    // 累计：文件事件中路径无法解析为绝对路径的条数，每条事件至多计一次
+    uint64 path_unresolved      = 11;
 }
 
 // 运行时引擎的累计计数

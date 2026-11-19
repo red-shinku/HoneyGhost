@@ -114,6 +114,7 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         target->set_raw_syscall_rejected(source.raw_syscall_rejected);
         target->set_out_syscall_dropped(source.out_syscall_dropped);
         target->set_out_syscall_rejected(source.out_syscall_rejected);
+        target->set_path_unresolved(source.path_unresolved);
     }
     if (stats.engine) {
         const hng::PipelineEngineStats& source = *stats.engine;

@@ -289,6 +289,12 @@ target_include_directories(test_kernel_role_filter PRIVATE
     ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_filter)
 add_test(NAME test_kernel_role_filter COMMAND test_kernel_role_filter)
 
+# 内核侧路径解析：包含真实解析头，主机模拟 CO-RE 宏与读取 helper
+add_executable(test_path_resolver test_path_resolver.cc)
+target_include_directories(test_path_resolver PRIVATE
+    ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_path)
+add_test(NAME test_path_resolver COMMAND test_path_resolver)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)
