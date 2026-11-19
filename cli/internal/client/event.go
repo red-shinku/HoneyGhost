@@ -72,6 +72,7 @@ func convertPipelineStats(in *clisv.PipelineStats) model.PipelineStats {
 			SkippedProbes:   line.GetSkippedProbes(),
 			AttachFailed:    line.GetAttachFailed(),
 			PendingLost:     line.GetPendingLost(),
+			Malformed:       line.GetMalformed(),
 			Attached:        line.GetAttached(),
 			Polling:         line.GetPolling(),
 		})

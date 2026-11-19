@@ -49,21 +49,41 @@ SyscallEventCollector::SyscallEventCollector(
 SyscallEventCollector::~SyscallEventCollector() = default;
 
 /**
- * @brief 将借用的载荷按已知 ABI 大小复制入队，不保留 ringbuf 指针。
- * @note memcpy 不要求载荷地址满足事件类型的对齐要求，也不假定字符数组以
- * NUL 结束。通道满时沿用原有丢弃行为，丢弃计数在通道内；返回 0 让 libbpf
- * 继续消费后续事件。
+ * @brief 按 subtype 解析一条 ringbuf 记录并放入输出通道。
+ * @param[in] ctx 采集器自身。
+ * @param[in] data ringbuf 记录：事件头 + 该 subtype 的定长载荷。
+ * @param[in] data_sz 记录长度。
+ * @return 头或长度非法时也返回 0，让 libbpf 继续消费后续记录；仅参数为空
+ *         指针时返回 -EINVAL。
+ * @note 记录长度必须恰好等于头加该 subtype 的载荷；未知 subtype、长度不符
+ *       或不足一个头都计入 malformed 并丢弃。
+ * @note 载荷按字节复制进清零后的本地 syscall_event，不保留 ringbuf 指针，
+ *       也不假定字符数组以 NUL 结束。通道满时丢弃计数由通道累计。
  */
 int SyscallEventCollector::handle_rb_event(void* ctx, void* data,
                                            std::size_t data_sz) noexcept
 {
     static_assert(std::is_trivially_copyable_v<syscall_event>);
-    if (!ctx || !data || data_sz < sizeof(syscall_event)) {
+    if (!ctx || !data) {
         return -EINVAL;
     }
-    syscall_event event;
-    std::memcpy(&event, data, sizeof(event));
     auto* self = static_cast<SyscallEventCollector*>(ctx);
+    if (data_sz < sizeof(struct syscall_event_head)) {
+        self->mark_malformed();
+        return 0;
+    }
+    struct syscall_event_head head;
+    std::memcpy(&head, data, sizeof(head));
+    const std::size_t record_size = hng::detail::SyscallRecordSize(head.subtype);
+    if (record_size == 0 || data_sz != record_size) {
+        self->mark_malformed();
+        return 0;
+    }
+    const std::size_t payload_size = record_size - sizeof(head);
+    syscall_event event{};
+    std::memcpy(&event.hdr, data, sizeof(event.hdr));
+    std::memcpy(reinterpret_cast<char*>(&event) + sizeof(event.hdr),
+                static_cast<const char*>(data) + sizeof(event.hdr), payload_size);
     self->syscall_sink.push(event);
     self->mark_consumed();
     return 0;
@@ -206,6 +226,7 @@ hng::CollectorLineStats SyscallEventCollector::stats() const
     snapshot.line             = name();
     snapshot.consumed         = consumed();
     snapshot.consume_errors   = consume_errors();
+    snapshot.malformed        = malformed();
     snapshot.channel_dropped  = syscall_sink.dropped();
     snapshot.channel_rejected = syscall_sink.rejected();
     snapshot.skipped_probes   = skipped_probes();

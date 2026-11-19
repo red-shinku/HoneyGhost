@@ -301,6 +301,7 @@ class StatsStub final : public hng::PipelineStatsService {
         line.skipped_probes   = 5;
         line.attach_failed    = 6;
         line.pending_lost     = 9;
+        line.malformed        = 10;
         line.attached         = true;
         line.polling          = false;
         stats.collector.push_back(line);
@@ -796,6 +797,7 @@ void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
               stats.collector(0).skipped_probes() == 5 &&
               stats.collector(0).attach_failed() == 6 &&
               stats.collector(0).pending_lost() == 9 &&
+              stats.collector(0).malformed() == 10 &&
               stats.collector(0).attached() && !stats.collector(0).polling(),
           "collector 字段应逐一映射");
     CHECK(stats.has_semantic() && stats.semantic().processed_syscall() == 7 &&

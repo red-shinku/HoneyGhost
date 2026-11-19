@@ -87,7 +87,6 @@ struct kernel_event {
 /**
  * @brief 通用 syscall 事件结构
  * @details 通过 union 统一八种事件类型，hdr 位于结构体开头。
- * 内核态以该结构提交至 ringbuf，用户态依据 hdr.type 解析 union。
  */
 struct syscall_event {
     struct syscall_event_head hdr;

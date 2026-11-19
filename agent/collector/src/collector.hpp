@@ -23,6 +23,66 @@ struct SyscallCollectorState;
 
 /// @brief 读取单键 per-CPU u64 计数并求和；fd 无效或读取失败返回 0
 std::uint64_t ReadPercpuCounter(int fd) noexcept;
+
+/**
+ * @brief 该 subtype 的 ringbuf 记录精确长度：事件头 + 定长载荷。
+ * @param subtype 内核事件头里的 syscall 子类型。
+ * @return 记录字节数；未知 subtype 返回 0。
+ * @note 这是内核预留长度与采集器解析长度的唯一映射，两侧都取内核头的
+ *       sizeof，故不会各自漂移。
+ */
+constexpr std::size_t SyscallRecordSize(enum syscall_event_type subtype) noexcept
+{
+    switch (subtype) {
+        case PROCESS_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct process_event);
+        case EXEC_EVENT:
+            return sizeof(struct syscall_event_head) + sizeof(struct exec_event);
+        case CREDENTIAL_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct credential_event);
+        case NAMESPACE_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct namespace_event);
+        case FILE_EVENT:
+            return sizeof(struct syscall_event_head) + sizeof(struct file_event);
+        case MEMORY_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct memory_event);
+        case NETWORK_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct network_event);
+        case KERNEL_EVENT:
+            return sizeof(struct syscall_event_head) +
+                   sizeof(struct kernel_event);
+        case UNKNOWN_EVENT:
+            break;
+    }
+    return 0;
+}
+
+// ringbuf 记录格式与通道元素尺寸是跨内核/用户态的 ABI，锁定在编译期。
+static_assert(sizeof(struct syscall_event_head) == 80,
+              "ringbuf 记录头尺寸变化会破坏按 subtype 解析的载荷偏移");
+static_assert(sizeof(syscall_event) == 472,
+              "用户态通道元素保持为 union 最大者的定长");
+static_assert(offsetof(syscall_event, process_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, exec_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, credential_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, namespace_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, file_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, memory_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, network_event) ==
+              sizeof(struct syscall_event_head));
+static_assert(offsetof(syscall_event, kernel_event) ==
+              sizeof(struct syscall_event_head));
 }  // namespace hng::detail
 
 /**
@@ -176,6 +236,18 @@ class CollectorType {
         return consume_errors_.load(std::memory_order_relaxed);
     }
 
+    /// @brief 累计因记录头或长度非法而丢弃的记录数
+    void mark_malformed(std::uint64_t count = 1) noexcept
+    {
+        malformed_.fetch_add(count, std::memory_order_relaxed);
+    }
+
+    /// @brief 非法记录数
+    std::uint64_t malformed() const noexcept
+    {
+        return malformed_.load(std::memory_order_relaxed);
+    }
+
    protected:
     std::atomic<bool> polling_{false};
     std::atomic<bool> attached_{false};
@@ -183,6 +255,7 @@ class CollectorType {
     std::atomic<std::uint64_t> attach_failed_{0};
     std::atomic<std::uint64_t> consumed_{0};
     std::atomic<std::uint64_t> consume_errors_{0};
+    std::atomic<std::uint64_t> malformed_{0};
 };
 
 /**

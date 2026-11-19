@@ -723,7 +723,7 @@ func TestStatus(t *testing.T) {
 					Collector: []model.CollectorLineStats{{
 						Line: "syscall", Consumed: 5, ChannelDropped: 1,
 						SkippedProbes: 7, AttachFailed: 8, PendingLost: 9,
-						Attached: true,
+						Malformed: 10, Attached: true,
 					}},
 					Semantic: &model.SemanticStats{ProcessedSyscall: 4},
 					Engine:   &model.EngineStats{PeakCLIStreams: 2},
@@ -743,7 +743,8 @@ func TestStatus(t *testing.T) {
 		"SUPERVISED ROLES", "2", "EXCEPTION CONTEXTS", "1", "EXTRA CONTEXTS",
 		"ROLE STATS", "CONTEXT STATS", "unknown_unregister",
 		"PROCESS STATS", "pid_reused", "RUNTIME STATS", "syscall",
-		"SKIPPED", "ATTACH_FAIL", "PENDING_LOST", "SEMANTIC", "ENGINE",
+		"SKIPPED", "ATTACH_FAIL", "PENDING_LOST", "MALFORMED", "SEMANTIC",
+		"ENGINE",
 		"CLI STREAMS",
 	} {
 		if !strings.Contains(out, line) {
@@ -763,6 +764,7 @@ func TestStatus(t *testing.T) {
 		"\"context_stats\"",
 		"\"process_stats\"",
 		"\"runtime_stats\"",
+		"\"malformed\": 10",
 	} {
 		if !strings.Contains(jsonOut, field) {
 			t.Errorf("json missing %q:\n%s", field, jsonOut)

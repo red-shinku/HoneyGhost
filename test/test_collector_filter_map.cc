@@ -130,13 +130,17 @@ void reset_attach_controls()
     hng_test_attach_failure_sections.clear();
 }
 
+/// @brief EXEC 子类型的 ringbuf 记录长度：事件头 + exec 载荷。
+constexpr std::size_t kExecRecordSize =
+    sizeof(struct syscall_event_head) + sizeof(struct exec_event);
+
 // 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
 syscall_event sample()
 {
     syscall_event event{};
     event.hdr.head.pid = 456;
     event.hdr.name     = SYSCALL_EVENT_EXECVE;
-    event.hdr.type     = EXEC_EVENT;
+    event.hdr.subtype  = EXEC_EVENT;
     std::memset(event.exec_event.filename, 'x',
                 sizeof(event.exec_event.filename));
     std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
@@ -149,7 +153,8 @@ bool same_event(const syscall_event& left, const syscall_event& right)
 {
     // 比较字段，不依赖编译器是否复制结构体填充字节。
     return left.hdr.head.pid == right.hdr.head.pid &&
-           left.hdr.name == right.hdr.name && left.hdr.type == right.hdr.type &&
+           left.hdr.name == right.hdr.name &&
+           left.hdr.subtype == right.hdr.subtype &&
            left.exec_event.flags == right.exec_event.flags &&
            std::memcmp(left.exec_event.filename, right.exec_event.filename,
                        sizeof(left.exec_event.filename)) == 0 &&
@@ -321,21 +326,30 @@ void verify(const std::filesystem::path& tracefs_root)
 
         auto* ring          = hng_test_last_ring;
         syscall_event event = sample();
-        REQUIRE(ring->callback(nullptr, &event, sizeof(event)) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, nullptr, sizeof(event)) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, &event, 0) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, &event, sizeof(event) - 1) ==
+        REQUIRE(ring->callback(nullptr, &event, kExecRecordSize) == -EINVAL);
+        REQUIRE(ring->callback(ring->context, nullptr, kExecRecordSize) ==
                 -EINVAL);
         REQUIRE(channel.empty());
 
-        alignas(syscall_event)
-            std::array<unsigned char, sizeof(syscall_event) + 9>
-                payload{};
-        std::memcpy(payload.data() + 1, &event, sizeof(event));
+        // 不足一个头、只有头、长度多/少 1B 都按 malformed 丢弃，不向 libbpf
+        // 报错。
+        const std::uint64_t malformed_before = collector.stats().malformed;
+        REQUIRE(ring->callback(ring->context, &event, 0) == 0);
+        REQUIRE(ring->callback(ring->context, &event,
+                               sizeof(struct syscall_event_head)) == 0);
+        REQUIRE(ring->callback(ring->context, &event, kExecRecordSize - 1) == 0);
+        REQUIRE(ring->callback(ring->context, &event, kExecRecordSize + 1) == 0);
+        REQUIRE(channel.empty());
+        REQUIRE(collector.stats().malformed == malformed_before + 4);
+        REQUIRE(collector.stats().consumed == 0);
+
+        alignas(syscall_event) std::array<unsigned char, kExecRecordSize + 2>
+            payload{};
+        std::memcpy(payload.data() + 1, &event, kExecRecordSize);
         reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = payload.data() + 1;
-        hng_test_payload_size    = sizeof(event);
+        hng_test_payload_size    = kExecRecordSize;
         REQUIRE(collector.consume(1) == 1);
         REQUIRE(hng_test_callback_result == 0 && hng_test_consume_calls == 1);
         // 回调后覆写 ringbuf 借用内存，队列仍须持有独立事件值。
@@ -345,19 +359,18 @@ void verify(const std::filesystem::path& tracefs_root)
                 same_event(received, event));
         REQUIRE(channel.empty());
 
-        // 对更长载荷只复制已知 ABI 前缀。
-        std::memcpy(payload.data() + 1, &event, sizeof(event));
+        // 长度必须恰好相等：多 1B 不再按 ABI 前缀截断，按 malformed 丢弃。
+        std::memcpy(payload.data() + 1, &event, kExecRecordSize);
         REQUIRE(ring->callback(ring->context, payload.data() + 1,
-                               payload.size() - 1) == 0);
-        REQUIRE(channel.reader().try_pop(received) &&
-                same_event(received, event));
+                               kExecRecordSize + 1) == 0);
+        REQUIRE(channel.empty());
 
         // 满队列不覆写已有元素，也不向 libbpf 报错。
         for (int i = 0; i < 4; ++i)
-            REQUIRE(ring->callback(ring->context, &event, sizeof(event)) == 0);
+            REQUIRE(ring->callback(ring->context, &event, kExecRecordSize) == 0);
         syscall_event different{};
-        REQUIRE(ring->callback(ring->context, &different, sizeof(different)) ==
-                0);
+        different.hdr.subtype = EXEC_EVENT;
+        REQUIRE(ring->callback(ring->context, &different, kExecRecordSize) == 0);
         REQUIRE(channel.size() == 4);
         for (int i = 0; i < 4; ++i)
             REQUIRE(channel.reader().try_pop(received) &&
@@ -372,9 +385,9 @@ void verify(const std::filesystem::path& tracefs_root)
         reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = &event;
-        hng_test_payload_size    = sizeof(event) - 1;
-        REQUIRE(collector.consume(1) == -EINVAL);
-        REQUIRE(hng_test_callback_result == -EINVAL);
+        hng_test_payload_size    = kExecRecordSize - 1;
+        REQUIRE(collector.consume(1) == 1);
+        REQUIRE(hng_test_callback_result == 0);
         REQUIRE(hng_test_consume_calls == 1);
         REQUIRE(channel.empty());
         reset_consume();
@@ -408,6 +421,90 @@ void verify(const std::filesystem::path& tracefs_root)
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
     REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
+}
+
+/// @brief 逐 subtype 验证记录长度：合法记录入队，非法长度与未知 subtype 计
+/// malformed
+void verify_record_framing(const std::filesystem::path& tracefs_root)
+{
+    reset_attach_controls();
+    reset_consume();
+    hng::EventChannel<syscall_event> channel(16);
+    SyscallEventCollector collector(channel.writer(), tracefs_root);
+    REQUIRE(collector.init());
+    auto* ring = hng_test_last_ring;
+
+    struct Case {
+        enum syscall_event_type subtype;
+        std::size_t payload_size;
+    };
+    const Case cases[] = {
+        {PROCESS_EVENT, sizeof(struct process_event)},
+        {EXEC_EVENT, sizeof(struct exec_event)},
+        {CREDENTIAL_EVENT, sizeof(struct credential_event)},
+        {NAMESPACE_EVENT, sizeof(struct namespace_event)},
+        {FILE_EVENT, sizeof(struct file_event)},
+        {MEMORY_EVENT, sizeof(struct memory_event)},
+        {NETWORK_EVENT, sizeof(struct network_event)},
+        {KERNEL_EVENT, sizeof(struct kernel_event)},
+    };
+    const std::size_t head = sizeof(struct syscall_event_head);
+    REQUIRE(head == 80);
+    alignas(syscall_event) std::array<unsigned char, head + sizeof(syscall_event)>
+        record{};
+
+    std::uint64_t malformed = 0;
+    for (const Case& c : cases) {
+        const std::size_t record_size = head + c.payload_size;
+        REQUIRE(hng::detail::SyscallRecordSize(c.subtype) == record_size);
+
+        syscall_event source{};
+        source.hdr.subtype  = c.subtype;
+        source.hdr.head.pid = 456;
+        std::memset(record.data(), 0, record.size());
+        std::memcpy(record.data(), &source, record_size);
+        std::memset(record.data() + head, 0x5A, c.payload_size);
+
+        REQUIRE(ring->callback(ring->context, record.data(), record_size) == 0);
+        syscall_event received{};
+        REQUIRE(channel.reader().try_pop(received));
+        REQUIRE(received.hdr.subtype == c.subtype);
+        REQUIRE(received.hdr.head.pid == 456);
+        REQUIRE(std::memcmp(reinterpret_cast<const char*>(&received) + head,
+                            record.data() + head, c.payload_size) == 0);
+        // 载荷之后到 union 末尾不在记录内，必须由本地事件清零。
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&received);
+        for (std::size_t i = head + c.payload_size; i < sizeof(syscall_event);
+             ++i) {
+            REQUIRE(bytes[i] == 0);
+        }
+        REQUIRE(channel.empty());
+
+        // 长度必须恰好相等：多 1B、少 1B 都拒绝。
+        REQUIRE(ring->callback(ring->context, record.data(), record_size + 1) ==
+                0);
+        REQUIRE(ring->callback(ring->context, record.data(), record_size - 1) ==
+                0);
+        malformed += 2;
+        REQUIRE(collector.stats().malformed == malformed);
+    }
+
+    // 未知 subtype（0 与枚举外）与只有头的记录都拒绝。
+    syscall_event unknown{};
+    unknown.hdr.subtype = UNKNOWN_EVENT;
+    REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
+    unknown.hdr.subtype = static_cast<enum syscall_event_type>(9);
+    REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
+    syscall_event head_only{};
+    head_only.hdr.subtype = EXEC_EVENT;
+    REQUIRE(ring->callback(ring->context, &head_only, head) == 0);
+    malformed += 3;
+    REQUIRE(collector.stats().malformed == malformed);
+    REQUIRE(collector.stats().consumed == 8);
+    REQUIRE(channel.empty());
+    REQUIRE(hng::detail::SyscallRecordSize(UNKNOWN_EVENT) == 0);
+    REQUIRE(hng::detail::SyscallRecordSize(
+                static_cast<enum syscall_event_type>(9)) == 0);
 }
 
 /// @brief tracepoint 缺失的程序不 autoload，也不参与 attach
@@ -563,6 +660,7 @@ int main()
         REQUIRE(!tracefs.root.empty());
         add_syscall_programs(tracefs);
         verify(tracefs.root);
+        verify_record_framing(tracefs.root);
         verify_skips_missing_tracepoint();
         verify_all_tracepoints_skipped();
         verify_partial_attach_failure();

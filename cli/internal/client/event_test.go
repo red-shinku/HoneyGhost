@@ -286,6 +286,7 @@ func TestConvertPipelineStats(t *testing.T) {
 		SkippedProbes:   5,
 		AttachFailed:    6,
 		PendingLost:     7,
+		Malformed:       8,
 		Attached:        true,
 		Polling:         true,
 	}}}
@@ -299,6 +300,7 @@ func TestConvertPipelineStats(t *testing.T) {
 		SkippedProbes:   5,
 		AttachFailed:    6,
 		PendingLost:     7,
+		Malformed:       8,
 		Attached:        true,
 		Polling:         true,
 	}}}

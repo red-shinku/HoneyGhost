@@ -2,7 +2,7 @@
  * @file test_semantic_syscall.cc
  * @brief 系统调用语义化表驱动单元测试
  * @details
- * 按 hdr.type 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
+ * 按 hdr.subtype 的八类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
  * filename 路径语义化、credential 的 union→oneof 归位与通用事件头字段搬运。
  *
@@ -63,8 +63,8 @@ void fill_head(struct syscall_event& raw, enum syscall_event_name name,
     raw.hdr.head.ret             = 0;
     std::memset(raw.hdr.head.comm, 0, sizeof(raw.hdr.head.comm));
     std::strncpy(raw.hdr.head.comm, "bash", sizeof(raw.hdr.head.comm) - 1);
-    raw.hdr.name = name;
-    raw.hdr.type = type;
+    raw.hdr.name    = name;
+    raw.hdr.subtype = type;
 }
 
 /**
@@ -78,7 +78,7 @@ void check_head(const struct syscall_event& raw,
     CHECK(out.head.ppid == 100, "head ppid");
     CHECK(out.head.ppid_start_time == 222, "head ppid_start_time");
     CHECK(out.head.type == hng::EventType::SYSCALL_EVENT, "head type");
-    CHECK(out.head.subtype == raw.hdr.type, "head subtype");
+    CHECK(out.head.subtype == raw.hdr.subtype, "head subtype");
     CHECK(out.head.uid == 1000, "head uid");
     CHECK(out.head.euid == 0, "head euid");
     CHECK(out.head.mnt_ns == 4026532222, "head mnt_ns");

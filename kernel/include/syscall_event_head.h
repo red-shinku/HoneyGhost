@@ -74,7 +74,8 @@ enum syscall_event_type {
 struct syscall_event_head {
     struct event_head head;
     enum syscall_event_name name;
-    enum syscall_event_type type;
+    /// 系统调用类别；与用户态 event_head.subtype 同义
+    enum syscall_event_type subtype;
 };
 
 // 初始化函数依赖 init_event_head，仅内核态探针程序使用
@@ -92,20 +93,20 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_CLONE:
         case SYSCALL_EVENT_VFORK:
         case SYSCALL_EVENT_EXIT_GROUP:
-            s_head->type = PROCESS_EVENT;
+            s_head->subtype = PROCESS_EVENT;
             break;
         case SYSCALL_EVENT_EXECVE:
         case SYSCALL_EVENT_EXECVEAT:
-            s_head->type = EXEC_EVENT;
+            s_head->subtype = EXEC_EVENT;
             break;
         case SYSCALL_EVENT_SETUID:
         case SYSCALL_EVENT_SETGID:
         case SYSCALL_EVENT_CAPSET:
-            s_head->type = CREDENTIAL_EVENT;
+            s_head->subtype = CREDENTIAL_EVENT;
             break;
         case SYSCALL_EVENT_UNSHARE:
         case SYSCALL_EVENT_SETNS:
-            s_head->type = NAMESPACE_EVENT;
+            s_head->subtype = NAMESPACE_EVENT;
             break;
         case SYSCALL_EVENT_OPEN:
         case SYSCALL_EVENT_OPENAT:
@@ -116,26 +117,26 @@ static __always_inline void init_syscall_event_head(
         case SYSCALL_EVENT_RENAME:
         case SYSCALL_EVENT_RENAMEAT:
         case SYSCALL_EVENT_RENAMEAT2:
-            s_head->type = FILE_EVENT;
+            s_head->subtype = FILE_EVENT;
             break;
         case SYSCALL_EVENT_MMAP:
         case SYSCALL_EVENT_MPROTECT:
-            s_head->type = MEMORY_EVENT;
+            s_head->subtype = MEMORY_EVENT;
             break;
         case SYSCALL_EVENT_CONNECT:
         case SYSCALL_EVENT_SOCKET:
         case SYSCALL_EVENT_BIND:
         case SYSCALL_EVENT_SENDTO:
         case SYSCALL_EVENT_SENDMSG:
-            s_head->type = NETWORK_EVENT;
+            s_head->subtype = NETWORK_EVENT;
             break;
         case SYSCALL_EVENT_PTRACE:
         case SYSCALL_EVENT_BPF:
-            s_head->type = KERNEL_EVENT;
+            s_head->subtype = KERNEL_EVENT;
             break;
         default:
             // 新增 name 尚未归类时落到 0，避免沿用上一条事件的取值
-            s_head->type = UNKNOWN_EVENT;
+            s_head->subtype = UNKNOWN_EVENT;
             break;
     }
 }

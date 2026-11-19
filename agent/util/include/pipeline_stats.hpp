@@ -17,13 +17,15 @@ namespace hng {
 
 /**
  * @brief 单条采集线的累计计数
- * @note consumed 是已从 ringbuf 搬出的记录数，包含随后因通道满被丢弃的记录；
+ * @note consumed 是成功解析的记录数，包含随后因通道满被丢弃的记录；
+ *       malformed 是解析失败直接丢弃的记录数，不计入 consumed。
  *       channel_dropped/channel_rejected 是输出通道的拒收次数。
  */
 struct CollectorLineStats {
     std::string line;                        ///< 线名，取自采集线的 name()
     std::uint64_t consumed         = 0;      ///< 已从 ringbuf 消费的记录数
     std::uint64_t consume_errors   = 0;      ///< ring_buffer 消费返回错误的次数
+    std::uint64_t malformed        = 0;      ///< 记录头或长度非法被丢弃的记录数
     std::uint64_t channel_dropped  = 0;      ///< 输出通道满导致的拒收
     std::uint64_t channel_rejected = 0;      ///< 输出通道关闭导致的拒收
     std::uint64_t reserve_failures = 0;      ///< 内核 ringbuf 预留失败次数

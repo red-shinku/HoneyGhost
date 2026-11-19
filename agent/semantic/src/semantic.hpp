@@ -14,7 +14,7 @@
 
 /**
  * @brief 系统调用事件语义化工具。
- * @details 按 hdr.type 分派到八种语义载荷；无状态、无队列。
+ * @details 按 hdr.subtype 分派到八种语义载荷；无状态、无队列。
  * @note 同一实例可被单线程重复调用。
  */
 class Semantic_syscall {
@@ -24,7 +24,7 @@ class Semantic_syscall {
     /**
      * @brief 单条系统调用原始事件 → 语义事件（纯转换）。
      * @param raw 系统调用原始事件
-     * @param[out] out 语义事件；头部按 raw 填充，载荷按 hdr.type 构造
+     * @param[out] out 语义事件；头部按 raw 填充，载荷按 hdr.subtype 构造
      */
     void transform_one(const struct syscall_event& raw,
                        hng::syscall_semantic_data& out) const;

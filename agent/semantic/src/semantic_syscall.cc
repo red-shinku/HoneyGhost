@@ -2,7 +2,7 @@
  * @file semantic_syscall.cc
  * @brief 系统调用事件语义化工具实现
  * @details
- * 按 hdr.type 将 union 中八种事件分别转换为对应的 proto 语义载荷，组装为
+ * 按 hdr.subtype 将 union 中八种事件分别转换为对应的 proto 语义载荷，组装为
  * syscall_semantic_data。本工具不持有队列与线程状态。
  *
  * 语义化原则：去除随机性信息。除 exec 的 filename（复用 agent/semantic/path/
@@ -178,8 +178,8 @@ const char* syscall_name_str(enum syscall_event_name name)
     }
 }
 
-// 以下八个 helper 对应 hdr.type 的八种事件，各构造一种 proto 载荷填入 variant。
-// 语义化原则：去除随机性；除 exec/credential 外均为纯字段搬运。
+// 以下八个 helper 对应 hdr.subtype 的八种事件，各构造一种 proto 载荷填入
+// variant。 语义化原则：去除随机性；除 exec/credential 外均为纯字段搬运。
 
 /**
  * @brief 进程生命周期事件 → process_semantic_data
@@ -322,7 +322,7 @@ void kernel_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 原始事件 → 语义事件纯转换
  * @details 输入事件头（进程身份、凭据、挂载命名空间与进程名）原样拷贝为语义
- * 事件头部；载荷按 hdr.type 分派到对应 helper。hdr.type 由内核侧
+ * 事件头部；载荷按 hdr.subtype 分派到对应 helper。hdr.subtype 由内核侧
  * init_syscall_event_head 归类，此处不做重新推断。
  */
 void Semantic_syscall::transform_one(const struct syscall_event& raw,
@@ -339,13 +339,14 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
     out.head.ret             = raw.hdr.head.ret;
     out.head.comm = sanitize_comm(raw.hdr.head.comm, sizeof(raw.hdr.head.comm));
 
-    // head.type 为顶层事件流类别（hng::EventType，scoped 枚举），与 raw.hdr.type
-    // （syscall_event_type 的八类细分）不同义；本流恒为 syscall 语义流，故固定。
+    // head.type 为顶层事件流类别（hng::EventType，scoped 枚举），与
+    // raw.hdr.subtype （syscall_event_type 的八类细分）不同义；本流恒为 syscall
+    // 语义流，故固定。
     out.head.type = hng::EventType::SYSCALL_EVENT;
     // 语义子类型由内核头原样携带，不再由载荷 variant 下标反推
-    out.head.subtype = raw.hdr.type;
+    out.head.subtype = raw.hdr.subtype;
 
-    switch (raw.hdr.type) {
+    switch (raw.hdr.subtype) {
         case UNKNOWN_EVENT:
             break;
         case PROCESS_EVENT:

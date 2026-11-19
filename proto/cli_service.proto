@@ -423,6 +423,7 @@ message collector_line_stats
     uint64 skipped_probes  = 9;
     uint64 attach_failed   = 10;
     uint64 pending_lost    = 11;
+    uint64 malformed       = 12;  // 记录头/长度非法被丢弃的记录数
 }
 
 // 语义聚合的累计计数

@@ -42,7 +42,7 @@ syscall_event make_syscall_raw(uint32_t pid, int32_t exit_code)
 {
     syscall_event raw{};
     raw.hdr.head.pid            = pid;
-    raw.hdr.type                = PROCESS_EVENT;
+    raw.hdr.subtype             = PROCESS_EVENT;
     raw.hdr.name                = SYSCALL_EVENT_EXIT_GROUP;
     raw.process_event.exit_code = exit_code;
     return raw;
