@@ -100,6 +100,7 @@ type CollectorLineStats struct {
 	ReserveFailures uint64 `json:"reserve_failures"`
 	SkippedProbes   uint64 `json:"skipped_probes"`
 	AttachFailed    uint64 `json:"attach_failed"`
+	PendingLost     uint64 `json:"pending_lost"`
 	Attached        bool   `json:"attached"`
 	Polling         bool   `json:"polling"`
 }

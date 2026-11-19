@@ -212,7 +212,7 @@ func (r tableRenderer) Status(w io.Writer, s model.Status) error {
 func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 	if len(s.Collector) > 0 {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "  LINE	CONSUMED	DROP	REJECT	RESERVE	ERRORS	SKIPPED	ATTACH_FAIL	STATE")
+		fmt.Fprintln(tw, "  LINE	CONSUMED	DROP	REJECT	RESERVE	ERRORS	SKIPPED	ATTACH_FAIL	PENDING_LOST	STATE")
 		for _, line := range s.Collector {
 			state := "attached"
 			if !line.Attached {
@@ -221,11 +221,11 @@ func writePipelineStats(w io.Writer, s model.PipelineStats) error {
 			if line.Polling {
 				state += "+polling"
 			}
-			fmt.Fprintf(tw, "  %s	%d	%d	%d	%d	%d	%d	%d	%s\n",
+			fmt.Fprintf(tw, "  %s	%d	%d	%d	%d	%d	%d	%d	%d	%s\n",
 				line.Line, line.Consumed, line.ChannelDropped,
 				line.ChannelRejected, line.ReserveFailures,
 				line.ConsumeErrors, line.SkippedProbes, line.AttachFailed,
-				state)
+				line.PendingLost, state)
 		}
 		if err := tw.Flush(); err != nil {
 			return err

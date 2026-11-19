@@ -100,6 +100,10 @@ class CollectorType {
     /// @brief 内核预留失败计数 map 的 fd；未准备时返回 -1
     virtual int reserve_failures_fd() const noexcept = 0;
 
+    /// @brief 内核暂存条目丢失计数 map 的 fd；未准备时返回 -1
+    /// @note 供聚合层读取后填入 stats().pending_lost
+    virtual int pending_lost_fd() const noexcept     = 0;
+
     /// @brief 标记本线已退回超时轮询
     void mark_polling() noexcept
     {
@@ -277,6 +281,7 @@ class SyscallEventCollector : public CollectorType {
     const char* name() const noexcept override;
     hng::CollectorLineStats stats() const override;
     int reserve_failures_fd() const noexcept override;
+    int pending_lost_fd() const noexcept override;
 
    private:
     hng::EventChannelWriter<syscall_event>& syscall_sink;

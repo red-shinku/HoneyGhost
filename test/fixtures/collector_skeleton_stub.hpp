@@ -26,19 +26,21 @@ struct ring_buffer {
     void* context;
 };
 
-inline bool hng_test_open_failure      = false;
-inline bool hng_test_load_failure      = false;
-inline bool hng_test_attach_failure    = false;
-inline bool hng_test_ring_failure      = false;
-inline bool hng_test_bad_cleanup_order = false;
-inline int hng_test_live_skeletons     = 0;
-inline int hng_test_live_rings         = 0;
-inline int hng_test_live_links         = 0;
-inline int hng_test_next_fd            = 100;
-inline int hng_test_last_filter_fd     = -1;
-inline int hng_test_last_event_fd      = -1;
+inline bool hng_test_open_failure        = false;
+inline bool hng_test_load_failure        = false;
+inline bool hng_test_attach_failure      = false;
+inline bool hng_test_ring_failure        = false;
+inline bool hng_test_bad_cleanup_order   = false;
+inline int hng_test_live_skeletons       = 0;
+inline int hng_test_live_rings           = 0;
+inline int hng_test_live_links           = 0;
+inline int hng_test_next_fd              = 100;
+inline int hng_test_last_filter_fd       = -1;
+inline int hng_test_last_event_fd        = -1;
+inline int hng_test_last_pending_lost_fd = -1;
 inline std::optional<int> hng_test_event_fd_override;
 inline std::optional<int> hng_test_filter_fd_override;
+inline std::optional<int> hng_test_pending_lost_fd_override;
 inline int hng_test_open_calls             = 0;
 inline int hng_test_load_calls             = 0;
 inline int hng_test_attach_calls           = 0;
@@ -226,10 +228,37 @@ inline const std::vector<std::string>& hng_test_program_sections(
         "tracepoint/syscalls/sys_enter_mmap",
         "tracepoint/syscalls/sys_enter_mprotect",
         "tracepoint/syscalls/sys_enter_connect",
+        "tracepoint/syscalls/sys_enter_sendto",
+        "tracepoint/syscalls/sys_enter_sendmsg",
         "tracepoint/syscalls/sys_enter_socket",
         "tracepoint/syscalls/sys_enter_bind",
         "tracepoint/syscalls/sys_enter_ptrace",
         "tracepoint/syscalls/sys_enter_bpf",
+        "tracepoint/syscalls/sys_exit_execve",
+        "tracepoint/syscalls/sys_exit_execveat",
+        "tracepoint/syscalls/sys_exit_setuid",
+        "tracepoint/syscalls/sys_exit_setgid",
+        "tracepoint/syscalls/sys_exit_capset",
+        "tracepoint/syscalls/sys_exit_unshare",
+        "tracepoint/syscalls/sys_exit_setns",
+        "tracepoint/syscalls/sys_exit_open",
+        "tracepoint/syscalls/sys_exit_openat",
+        "tracepoint/syscalls/sys_exit_openat2",
+        "tracepoint/syscalls/sys_exit_creat",
+        "tracepoint/syscalls/sys_exit_unlink",
+        "tracepoint/syscalls/sys_exit_link",
+        "tracepoint/syscalls/sys_exit_rename",
+        "tracepoint/syscalls/sys_exit_renameat",
+        "tracepoint/syscalls/sys_exit_renameat2",
+        "tracepoint/syscalls/sys_exit_mmap",
+        "tracepoint/syscalls/sys_exit_mprotect",
+        "tracepoint/syscalls/sys_exit_connect",
+        "tracepoint/syscalls/sys_exit_sendto",
+        "tracepoint/syscalls/sys_exit_sendmsg",
+        "tracepoint/syscalls/sys_exit_socket",
+        "tracepoint/syscalls/sys_exit_bind",
+        "tracepoint/syscalls/sys_exit_ptrace",
+        "tracepoint/syscalls/sys_exit_bpf",
     };
     if (skeleton == "syscalls_collector") return syscalls;
     static const std::vector<std::string> empty;
@@ -253,16 +282,22 @@ inline std::vector<bpf_program> hng_test_make_programs(std::string_view skeleton
         bpf_map filter_storage{                                                   \
             hng_test_filter_fd_override.value_or(hng_test_next_fd++)};            \
         bpf_map failures_storage{hng_test_next_fd++};                             \
+        bpf_map pending_lost_storage{                                             \
+            hng_test_pending_lost_fd_override.value_or(hng_test_next_fd++)};      \
         struct {                                                                  \
             bpf_map* ring;                                                        \
             bpf_map* hng_role_filter;                                             \
             bpf_map* reserve_failures;                                            \
+            bpf_map* pending_lost;                                                \
         } maps;                                                                   \
         bpf_object* obj = nullptr;                                                \
-        name() : maps{&ring##_storage, &filter_storage, &failures_storage}        \
+        name()                                                                    \
+            : maps{&ring##_storage, &filter_storage, &failures_storage,           \
+                   &pending_lost_storage}                                         \
         {                                                                         \
-            hng_test_last_event_fd  = ring##_storage.fd;                          \
-            hng_test_last_filter_fd = filter_storage.fd;                          \
+            hng_test_last_event_fd        = ring##_storage.fd;                    \
+            hng_test_last_filter_fd       = filter_storage.fd;                    \
+            hng_test_last_pending_lost_fd = pending_lost_storage.fd;              \
             obj                  = new bpf_object{hng_test_make_programs(#name)}; \
             hng_test_last_object = obj;                                           \
         }                                                                         \

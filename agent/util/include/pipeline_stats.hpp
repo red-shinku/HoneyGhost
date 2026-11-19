@@ -27,6 +27,7 @@ struct CollectorLineStats {
     std::uint64_t channel_dropped  = 0;      ///< 输出通道满导致的拒收
     std::uint64_t channel_rejected = 0;      ///< 输出通道关闭导致的拒收
     std::uint64_t reserve_failures = 0;      ///< 内核 ringbuf 预留失败次数
+    std::uint64_t pending_lost     = 0;      ///< enter 暂存后未等到 exit 的事件数
     std::uint64_t skipped_probes   = 0;      ///< 缺失 tracepoint 被跳过的探针数
     std::uint64_t attach_failed    = 0;      ///< 探针挂载失败次数
     bool attached                  = false;  ///< 探针当前是否已挂载

@@ -168,6 +168,8 @@ void verify(const std::filesystem::path& tracefs_root)
     {
         SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.role_filter_map_fd() == -1);
+        REQUIRE(collector.reserve_failures_fd() == -1);
+        REQUIRE(collector.pending_lost_fd() == -1);
         REQUIRE(collector.epoll_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
@@ -188,6 +190,8 @@ void verify(const std::filesystem::path& tracefs_root)
             static_cast<int>(hng_test_last_object->programs.size());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd && fd >= 0);
+        REQUIRE(collector.reserve_failures_fd() >= 0);
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         REQUIRE(hng_test_attach_calls == attaches_before);
         REQUIRE(collector.epoll_fd() == -1);
@@ -286,6 +290,12 @@ void verify(const std::filesystem::path& tracefs_root)
         REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
         REQUIRE(collector.role_filter_map_fd() == -1);
         hng_test_filter_fd_override.reset();
+        hng_test_pending_lost_fd_override = -EBADF;
+        REQUIRE(!collector.init());
+        REQUIRE(hng_test_attach_calls == attaches_before);
+        REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+        REQUIRE(collector.pending_lost_fd() == -1);
+        hng_test_pending_lost_fd_override.reset();
 
         hng_test_attach_failure = true;
         REQUIRE(!collector.init());
@@ -301,6 +311,7 @@ void verify(const std::filesystem::path& tracefs_root)
         REQUIRE(collector.init());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
         REQUIRE(hng_test_last_ring->map_fd == hng_test_last_event_fd);
         const int opens_before = hng_test_open_calls;
         REQUIRE(!collector.init());
@@ -371,6 +382,13 @@ void verify(const std::filesystem::path& tracefs_root)
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
     REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
+
+    {
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
+        REQUIRE(collector.init());
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
+    }
+    REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
 
     // 0 是有效 fd，不能按布尔值判断有效性。
     hng_test_filter_fd_override = 0;

@@ -28,6 +28,7 @@ struct SyscallCollectorState {
     bool attached           = false;  ///< attach() 已成功挂载探针
     bool ready              = false;  ///< ringbuf 已可被 consume() 消费
     int reserve_failures_fd = -1;     ///< 内核 ringbuf 预留失败计数 map
+    int pending_lost_fd     = -1;     ///< 内核暂存条目丢失计数 map
 
     ~SyscallCollectorState()
     {
@@ -93,11 +94,14 @@ bool SyscallEventCollector::prepare()
     const int events_fd = bpf_map__fd(candidate->skeleton->maps.syscall_events);
     const int failures_fd =
         bpf_map__fd(candidate->skeleton->maps.reserve_failures);
-    if (events_fd < 0 || failures_fd < 0 ||
+    const int pending_lost_fd =
+        bpf_map__fd(candidate->skeleton->maps.pending_lost);
+    if (events_fd < 0 || failures_fd < 0 || pending_lost_fd < 0 ||
         bpf_map__fd(candidate->skeleton->maps.hng_role_filter) < 0) {
         return false;
     }
     candidate->reserve_failures_fd = failures_fd;
+    candidate->pending_lost_fd     = pending_lost_fd;
     candidate->buffer.reset(
         ring_buffer__new(events_fd, handle_rb_event, this, nullptr));
     if (!candidate->buffer) {
@@ -187,6 +191,11 @@ int SyscallEventCollector::role_filter_map_fd() const noexcept
 int SyscallEventCollector::reserve_failures_fd() const noexcept
 {
     return state_ ? state_->reserve_failures_fd : -1;
+}
+
+int SyscallEventCollector::pending_lost_fd() const noexcept
+{
+    return state_ ? state_->pending_lost_fd : -1;
 }
 
 const char* SyscallEventCollector::name() const noexcept { return "syscall"; }
