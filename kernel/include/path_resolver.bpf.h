@@ -92,7 +92,7 @@ static __always_inline struct vfsmount *hng_mount_vfsmount(
  * @param root 停止边界；通常为进程的 fs->root
  * @return 写入长度（含 NUL）；-1 表示无法解析，-2 表示结果超出 sz
  * @note 逐级上溯 dentry，遇 mnt->mnt_root 经 mnt_parent/mnt_mountpoint 跨挂载点，
- *       最多 HNG_PATH_MAX_DEPTH 级；结果以 '/' 开头且无尾斜杠。
+ *       最多 HNG_PATH_MAX_DEPTH 级；结果以 '/' 开头，各段之间只有一个 '/'。
  * @note path 与 root 指向可直接读取的 struct path 副本；内核字段的 CO-RE 读取由
  *       调用者完成。上溯阶段的 dentry 指针全部落在栈上，占用
  *       HNG_PATH_MAX_DEPTH * sizeof(void *) 字节。
@@ -201,37 +201,20 @@ static __always_inline long hng_path_str(char *dst, __u32 sz,
             dst[sz - 1] = '\0';
             return -2;
         }
-        off += (__u32)n - 1;
+        /**
+         * @note 掩码不能省，且 next 必须先过 barrier_var：没有屏障时编译器能据
+         *       上面的截断检查推出 next < sz，把掩码当成无操作删掉；而 verifier
+         *       不跟踪跨轮相关性，只按寄存器范围算长度参数 sz - off，会得到含
+         *       负值的范围并以 "R2 min value is negative" 拒绝加载。
+         * @note 掩码要求 sz 是 2 的幂（调用点恒为 MAX_PATH_LEN=256）。截断检查
+         *       已保证 next ≤ sz-1，这里的掩码在语义上是无操作。
+         */
+        __u32 next = off + (__u32)n - 1;
+        barrier_var(next);
+        off = next & (sz - 1);
     }
     dst[off] = '\0';
     return (long)off + 1;
-}
-
-/**
- * @brief 收敛路径末尾的 '/'，根 "/" 保持不变。
- * @param dst 以 NUL 结尾的路径
- * @param len 含 NUL 的长度
- * @param sz dst 的容量，同时作为回退次数的上界
- * @return 收敛后的长度（含 NUL）
- * @note 只把尾斜杠改写为 NUL，不改变有效字符；len 超出 [2, sz] 时原样返回。
- */
-static __always_inline long hng_trim_trailing_slash(char *dst, __u32 len,
-                                                    __u32 sz)
-{
-    if (len < 2 || len > sz) {
-        return (long)len;
-    }
-#ifdef __clang__
-#pragma clang loop unroll(disable)
-#endif
-    for (__u32 i = 0; i < sz; ++i) {
-        if (len <= 2 || dst[len - 2] != '/') {
-            break;
-        }
-        dst[len - 2] = '\0';
-        --len;
-    }
-    return (long)len;
 }
 
 /**
@@ -257,7 +240,7 @@ static __always_inline long hng_keep_raw_path(char *dst, __u32 sz,
 }
 
 /**
- * @brief 绝对用户串直接写入 dst 并收敛尾斜杠。
+ * @brief 绝对用户串直接写入 dst。
  * @param dst 目标缓冲
  * @param sz 容量
  * @param user_path 用户态绝对路径串
@@ -275,7 +258,7 @@ static __always_inline long hng_copy_absolute(char *dst, __u32 sz,
         dst[sz - 1] = '\0';
         return -2;
     }
-    return hng_trim_trailing_slash(dst, (__u32)n, sz);
+    return n;
 }
 
 /**
@@ -286,8 +269,8 @@ static __always_inline long hng_copy_absolute(char *dst, __u32 sz,
  * @param dirfd 基准目录 fd；AT_FDCWD 表示当前工作目录
  * @return 写入长度（含 NUL）；-1 无法解析（dst 保留用户原始串，读不到时为空）、
  *         -2 截断（dst 为已写入的绝对前缀）
- * @note 绝对路径只做尾斜杠收敛，不做词法归一（//、.、.. 由用户态 path::normalize
- *       处理）；相对路径以基准目录为前缀拼接，基准目录取不到时按无法解析处理。
+ * @note 词法归一（尾斜杠、//、.、..）都由用户态完成，内核只保证结果以 '/'
+ *       开头；相对路径以基准目录为前缀拼接，取不到基准时按无法解析处理。
  * @note 空的用户串（AT_EMPTY_PATH）返回 1，即写入的只有 NUL。
  */
 static __always_inline long hng_resolve_user_path(char *dst, __u32 sz,
@@ -366,7 +349,7 @@ static __always_inline long hng_resolve_user_path(char *dst, __u32 sz,
         dst[sz - 1] = '\0';
         return -2;
     }
-    return hng_trim_trailing_slash(dst, off + (__u32)m, sz);
+    return (long)(off + (__u32)m);
 }
 
 /**

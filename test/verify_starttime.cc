@@ -169,7 +169,9 @@ void check_site(Checker *c, int bit, uint32_t expect_pid, uint64_t expect_start,
 int on_event(void *ctx, void *data, size_t size)
 {
     auto *c = static_cast<Checker *>(ctx);
-    if (size < sizeof(struct syscall_event)) {
+    //! @note 记录已按 subtype 定长（头 + 该 subtype 的载荷），长度不再是
+    //!       sizeof(syscall_event)：只要够读事件头即可，其余字段按需访问。
+    if (size < sizeof(struct syscall_event_head)) {
         return 0;
     }
     auto *ev                   = static_cast<struct syscall_event *>(data);

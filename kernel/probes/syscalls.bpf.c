@@ -149,8 +149,7 @@ int trace_process_exit(void *ctx)
     if (!event) return 0;
 
     init_event_head_self(&event->hdr.head, task);
-    init_event_head_parent(&event->hdr.head,
-                           BPF_CORE_READ(task, group_leader, real_parent));
+    init_event_head_parent(&event->hdr.head, BPF_CORE_READ(task, real_parent));
 
     //! @note 低 7 位非零表示被信号终止，否则高位是退出状态码
     s32 code                         = BPF_CORE_READ(task, exit_code);
@@ -1635,10 +1634,12 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
     /**
      * @note 按用户给出的 size 截断读取（上限 16 字节）：短属性的命令不会因为
      *       多读越界而在页边界失败。size 本身留在 arg 里，可用于区分命令版本。
+     * @note 分支两条路径都给出可证的上界（掩码 0x0f 对应 sizeof-1，16 是 2 的
+     *       幂）：helper 的长度参数必须非负且有界，否则 verifier 拒绝加载。
      */
-    __u32 attr_size             = (__u32)ctx->args[2];
-    if (attr_size > sizeof(event->kernel_event.bpf_attr)) {
-        attr_size = sizeof(event->kernel_event.bpf_attr);
+    __u32 attr_size             = sizeof(event->kernel_event.bpf_attr);
+    if ((__u32)ctx->args[2] < sizeof(event->kernel_event.bpf_attr)) {
+        attr_size = (__u32)ctx->args[2] & 0x0fu;
     }
     event->kernel_event.arg = attr_size;
     if (attr_size != 0 &&

@@ -292,16 +292,17 @@ void expect_path_str(const struct path& start, const struct path& root,
 
 // ---- 用例 ----
 
-/// @brief 绝对路径直通、尾斜杠收敛，且不依赖当前任务
+/// @brief 绝对路径直通，且不依赖当前任务
 void absolute_paths()
 {
     auto world = make_world();
 
     expect_resolve("/etc/passwd", AT_FDCWD, "/etc/passwd");
     expect_resolve("/", AT_FDCWD, "/");
-    expect_resolve("///", AT_FDCWD, "/");
-    expect_resolve("/tmp/x///", AT_FDCWD, "/tmp/x");
-    //! @note 内核侧只收敛尾斜杠，不折叠内部的 "//" 与 "."
+    //! @note 词法归一（尾斜杠、//、.、..）全部交给用户态 path::normalize，
+    //!       内核只保证结果是绝对路径
+    expect_resolve("///", AT_FDCWD, "///");
+    expect_resolve("/tmp/x///", AT_FDCWD, "/tmp/x///");
     expect_resolve("/tmp//x", AT_FDCWD, "/tmp//x");
 
     current = nullptr;
@@ -320,8 +321,8 @@ void relative_against_cwd()
     world->fs.pwd = path{&world->root_mount.mnt, world->tmp};
     expect_resolve("foo", AT_FDCWD, "/tmp/foo");
     expect_resolve("foo/bar", AT_FDCWD, "/tmp/foo/bar");
-    expect_resolve("foo/", AT_FDCWD, "/tmp/foo");
-    expect_resolve("foo/bar///", AT_FDCWD, "/tmp/foo/bar");
+    expect_resolve("foo/", AT_FDCWD, "/tmp/foo/");
+    expect_resolve("foo/bar///", AT_FDCWD, "/tmp/foo/bar///");
     //! @note 相对串的 "." 由用户态归一，内核侧原样拼接
     expect_resolve("./foo", AT_FDCWD, "/tmp/./foo");
 }

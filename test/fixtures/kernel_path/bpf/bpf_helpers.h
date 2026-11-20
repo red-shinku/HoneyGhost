@@ -14,4 +14,10 @@
 #define __always_inline inline __attribute__((always_inline))
 #endif
 
+//! @note 与 libbpf 同定义：阻止编译器据上下文推断变量取值，保留 verifier 需要的
+//!       边界检查。主机侧只是空操作，不影响被测逻辑。
+#ifndef barrier_var
+#define barrier_var(var) asm volatile("" : "+r"(var))
+#endif
+
 #endif  // HNG_TEST_KERNEL_PATH_BPF_HELPERS_H_
