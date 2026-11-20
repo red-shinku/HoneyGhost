@@ -61,6 +61,14 @@ RuntimeInfoFilter& RuntimeInfoFilter::set_etype(
     return *this;
 }
 
+RuntimeInfoFilter& RuntimeInfoFilter::set_subtype(
+    std::vector<syscall_event_type> subtypes)
+{
+    subtypes_ = std::move(subtypes);
+    sort_unique(subtypes_);
+    return *this;
+}
+
 RuntimeInfoFilter& RuntimeInfoFilter::add_expression(hng::FilterExpr expr)
 {
     expressions_.push_back(std::move(expr));
@@ -70,6 +78,9 @@ RuntimeInfoFilter& RuntimeInfoFilter::add_expression(hng::FilterExpr expr)
 bool RuntimeInfoFilter::should_take(const hng::RuntimeInformation& info) const
 {
     if (!etypes_.empty() && !contains(etypes_, info.etype)) {
+        return false;
+    }
+    if (!subtypes_.empty() && !contains(subtypes_, info.subtype)) {
         return false;
     }
     if (!pids_.empty() && !contains(pids_, info.process.pid)) {

@@ -98,22 +98,22 @@ type CollectorLineStats struct {
 	ChannelDropped  uint64 `json:"channel_dropped"`
 	ChannelRejected uint64 `json:"channel_rejected"`
 	ReserveFailures uint64 `json:"reserve_failures"`
+	SkippedProbes   uint64 `json:"skipped_probes"`
+	AttachFailed    uint64 `json:"attach_failed"`
+	PendingLost     uint64 `json:"pending_lost"`
+	Malformed       uint64 `json:"malformed"`
 	Attached        bool   `json:"attached"`
 	Polling         bool   `json:"polling"`
 }
 
 // SemanticStats 是语义聚合的累计计数。
 type SemanticStats struct {
-	ProcessedFile      uint64 `json:"processed_file"`
 	ProcessedSyscall   uint64 `json:"processed_syscall"`
-	RawFileDropped     uint64 `json:"raw_file_dropped"`
-	RawFileRejected    uint64 `json:"raw_file_rejected"`
 	RawSyscallDropped  uint64 `json:"raw_syscall_dropped"`
 	RawSyscallRejected uint64 `json:"raw_syscall_rejected"`
-	OutFileDropped     uint64 `json:"out_file_dropped"`
-	OutFileRejected    uint64 `json:"out_file_rejected"`
 	OutSyscallDropped  uint64 `json:"out_syscall_dropped"`
 	OutSyscallRejected uint64 `json:"out_syscall_rejected"`
+	PathUnresolved     uint64 `json:"path_unresolved"`
 }
 
 // EngineStats 是运行时引擎的累计计数。
@@ -123,7 +123,6 @@ type EngineStats struct {
 	QueueRejected   uint64 `json:"queue_rejected"`
 	IdleWaits       uint64 `json:"idle_waits"`
 	SyscallDropped  uint64 `json:"syscall_dropped"`
-	FileDropped     uint64 `json:"file_dropped"`
 }
 
 // CLIStreamStats 是 CLI 订阅流的累计计数。
@@ -182,14 +181,11 @@ func (s RuntimeSelector) IsZero() bool {
 		len(s.ContextIDs) == 0 && len(s.PIDs) == 0
 }
 
-// EventType 是事件的大类。
+// EventType 是事件的来源。
 type EventType string
 
 const (
 	EventTypeSyscall EventType = "syscall"
-	EventTypeFile    EventType = "file"
-	EventTypeNetwork EventType = "network"
-	EventTypeIPC     EventType = "ipc"
 )
 
 // Head 是事件头。proto 没有事件时间戳，故本类型不含时间字段。
@@ -202,24 +198,19 @@ type Head struct {
 	PPID          uint32    `json:"ppid"`
 	PPIDStartTime uint64    `json:"ppid_start_time"`
 	Type          EventType `json:"type"`
+	Subtype       Subtype   `json:"subtype"`
+	UID           uint32    `json:"uid"`
+	EUID          uint32    `json:"euid"`
+	Ret           int64     `json:"ret"`
+	Comm          string    `json:"comm"`
+	MntNS         uint32    `json:"mnt_ns"`
+	// Exe 是事件时刻的进程镜像绝对路径；未知时为空。
+	Exe string `json:"exe"`
 }
 
-// 事件载荷的变体名，与 proto 的 oneof 分支一一对应。
-const (
-	PayloadProcess        = "process"
-	PayloadExec           = "exec"
-	PayloadCredential     = "credential"
-	PayloadNamespace      = "namespace"
-	PayloadFileSyscall    = "file_syscall"
-	PayloadMemory         = "memory"
-	PayloadNetworkSyscall = "network_syscall"
-	PayloadKernel         = "kernel"
-	PayloadFile           = "file"
-)
-
-// Payload 是事件载荷。Kind 为变体名，Fields 的键与 proto 字段同名。
+// Payload 是事件载荷。Kind 为语义子类型，Fields 的键与 proto 字段同名。
 type Payload struct {
-	Kind   string         `json:"kind"`
+	Kind   Subtype        `json:"kind"`
 	Fields map[string]any `json:"fields"`
 }
 

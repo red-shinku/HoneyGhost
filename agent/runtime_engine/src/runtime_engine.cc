@@ -14,12 +14,11 @@
 
 RuntimeEngine::RuntimeEngine(
     hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
-    hng::EventChannelReader<hng::file_semantic_data>* file_input,
     ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-    ProcessUpdateService* process_update, RoleJoinService* role_join,
-    RoleLookupService* role_lookup)
-    : pipeline_(syscall_input, file_input, ctx_maintainer, process_join,
-                process_update, role_join, role_lookup)
+    ProcessUpdateService* process_update, ProcessLookupService* process_lookup,
+    RoleJoinService* role_join, RoleLookupService* role_lookup)
+    : pipeline_(syscall_input, ctx_maintainer, process_join, process_update,
+                process_lookup, role_join, role_lookup)
 {
 }
 
@@ -37,9 +36,6 @@ void RuntimeEngine::register_sources()
     if (pipeline_.syscall_fd() >= 0) {
         loop_.add(pipeline_.syscall_fd(), kSyscallTag);
     }
-    if (pipeline_.file_fd() >= 0) {
-        loop_.add(pipeline_.file_fd(), kFileTag);
-    }
 }
 
 void RuntimeEngine::run()
@@ -55,7 +51,7 @@ void RuntimeEngine::run()
                 if (drain_events(drafts) != 0) {
                     continue;
                 }
-                // 命令与两条输入都已取空：它们各自在取空时交还了通知权，
+                // 命令与输入都已取空：它们各自在取空时交还了通知权，
                 // 此处的阻塞不会丢唤醒。就绪源由下一轮的排空取走。
                 idle_waits_.fetch_add(1, std::memory_order_relaxed);
                 (void)loop_.wait(ready, hng::EventLoop::capacity());
@@ -75,11 +71,11 @@ void RuntimeEngine::run()
 
     HNG_LOG_INFO(
         "engine stopped: {} idle wait(s), {} unsettled event(s), {} rejected "
-        "command(s), {} syscall drop(s), {} file drop(s)",
+        "command(s), {} syscall drop(s)",
         idle_waits_.load(std::memory_order_relaxed),
         unsettled_events_.load(std::memory_order_relaxed),
         queue_rejected_.load(std::memory_order_relaxed),
-        pipeline_.syscall_dropped(), pipeline_.file_dropped());
+        pipeline_.syscall_dropped());
 }
 
 void RuntimeEngine::stop()
@@ -129,7 +125,6 @@ hng::RuntimeEngineStats RuntimeEngine::stats() const
     snapshot.queue_rejected   = queue_rejected_.load(std::memory_order_relaxed);
     snapshot.idle_waits       = idle_waits_.load(std::memory_order_relaxed);
     snapshot.syscall_dropped  = pipeline_.syscall_dropped();
-    snapshot.file_dropped     = pipeline_.file_dropped();
     return snapshot;
 }
 

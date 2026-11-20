@@ -21,8 +21,8 @@ namespace hng {
  * 对应 FilterAtom::numbers，role 标签对应 FilterAtom::strings。
  */
 enum class FilterField : uint8_t {
-    TYPE = 1,    ///< 顶层事件大类 hng::EventType
-    KIND,        ///< 语义子类型 hng::EventKind
+    TYPE = 1,    ///< 事件来源 hng::EventType
+    SUBTYPE,     ///< 语义子类型 syscall_event_type
     PID,         ///< 事件主体进程的 pid
     PPID,        ///< 事件发生时刻的父进程 pid
     ROLE_ID,     ///< 归属角色 ID
@@ -40,7 +40,7 @@ enum class FilterCompare : uint8_t { EQ = 1, NE, PREFIX };
 
 /**
  * @brief 单个原子谓词：字段 + 比较方式 + 取值集合
- * @details numbers 用于 TYPE / KIND / PID / PPID / ROLE_ID / CONTEXT_ID，
+ * @details numbers 用于 TYPE / SUBTYPE / PID / PPID / ROLE_ID / CONTEXT_ID，
  * strings 用于 ROLE_LABEL，另一组不参与判定。
  * @note 取值集合为空时 EQ 不命中任何事件，NE 命中所有事件。
  * @see hng::FilterExpr::make_atom

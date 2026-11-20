@@ -37,7 +37,7 @@ jobs:
       - name: 构建 eBPF 骨架并确认未跳过
         run: |
           make ebpf
-          for probe in files syscalls networks; do
+          for probe in syscalls; do
             if [ ! -f "kernel/${probe}.skel.h" ]; then
               echo "eBPF 骨架缺失：${probe}（collector 会被静默跳过）" >&2
               exit 1

@@ -1,7 +1,7 @@
 /**
  * @file test_collector_filter_map.cc
  * @brief 用真实采集器源码验证初始化事务、回调边界、map fd、消费与资源回收。
- * @note 使用骨架替身，不代表真实内核加载验证。
+ * @note 使用骨架替身，不代表真实内核加载验证；只覆盖系统调用线。
  */
 #include "agent/collector/src/collector.hpp"
 #include "test/fixtures/collector_skeleton_stub.hpp"
@@ -9,11 +9,14 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
+#include <string_view>
 
 namespace {
 int checks = 0;
@@ -24,6 +27,91 @@ int checks = 0;
             throw std::runtime_error(std::string(#expression) + " at line " + \
                                      std::to_string(__LINE__));               \
     } while (false)
+
+constexpr const char* kSkeleton = "syscalls_collector";
+
+/// @brief 把 tracepoint/<group>/<event> 拆成组名与事件名
+bool split_tracepoint(const std::string& section, std::string& group,
+                      std::string& event)
+{
+    constexpr std::string_view prefix = "tracepoint/";
+    if (section.rfind(prefix, 0) != 0) {
+        return false;
+    }
+    const std::size_t separator = section.find('/', prefix.size());
+    if (separator == std::string::npos) {
+        return false;
+    }
+    group = section.substr(prefix.size(), separator - prefix.size());
+    event = section.substr(separator + 1);
+    return !group.empty() && !event.empty() &&
+           event.find('/') == std::string::npos;
+}
+
+/// @brief 由 mkdtemp 独占创建的 tracefs 根，析构时整体删除
+struct TempTracefs {
+    std::filesystem::path root;
+
+    TempTracefs()
+    {
+        std::string pattern = (std::filesystem::temp_directory_path() /
+                               "hng_collector_tracefs_XXXXXX")
+                                  .string();
+        if (::mkdtemp(pattern.data()) != nullptr) {
+            root = pattern;
+        }
+    }
+
+    ~TempTracefs()
+    {
+        if (!root.empty()) {
+            std::error_code error;
+            std::filesystem::remove_all(root, error);
+        }
+    }
+
+    /// @brief 为 tracepoint/<group>/<event> 创建 events/<group>/<event>/id
+    void add(const std::string& section)
+    {
+        if (root.empty()) {
+            return;
+        }
+        std::string group;
+        std::string event;
+        if (!split_tracepoint(section, group, event)) {
+            return;
+        }
+        const std::filesystem::path directory = root / "events" / group / event;
+        std::filesystem::create_directories(directory);
+        std::ofstream id(directory / "id");
+        id << "1\n";
+    }
+};
+
+/// @brief 写上系统调用骨架的全部程序 section
+void add_syscall_programs(TempTracefs& tracefs)
+{
+    for (const std::string& section : hng_test_program_sections(kSkeleton)) {
+        tracefs.add(section);
+    }
+}
+
+int program_count()
+{
+    return static_cast<int>(hng_test_program_sections(kSkeleton).size());
+}
+
+/// @brief 按 section 取替身程序
+bpf_program* find_program(const std::string& section)
+{
+    REQUIRE(hng_test_last_object != nullptr);
+    for (bpf_program& program : hng_test_last_object->programs) {
+        if (program.section == section) {
+            return &program;
+        }
+    }
+    return nullptr;
+}
 
 void reset_consume()
 {
@@ -36,79 +124,145 @@ void reset_consume()
     hng_test_payload_size      = 0;
 }
 
-// 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
-template <class Event>
-Event sample()
+void reset_attach_controls()
 {
-    Event event{};
-    if constexpr (std::is_same_v<Event, file_access_data>) {
-        event.head.pid = 123;
-        std::memset(event.comm, 'c', sizeof(event.comm));
-        std::memset(event.filename, 'f', sizeof(event.filename));
-        event.flags          = 0x1234;
-        event.is_innamespace = 1;
-    }
-    else if constexpr (std::is_same_v<Event, syscall_event>) {
-        event.hdr.head.pid = 456;
-        event.hdr.name     = SYSCALL_EVENT_EXECVE;
-        event.hdr.type     = EXEC_EVENT;
-        std::memset(event.exec_event.filename, 'x',
-                    sizeof(event.exec_event.filename));
-        std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
-        std::memset(event.exec_event.argv1, 'b', sizeof(event.exec_event.argv1));
-        event.exec_event.flags = 7;
-    }
-    else {
-        event.head.pid  = 789;
-        event.family    = 10;
-        event.dst_ip[3] = 42;
-        event.src_port  = 80;
-        event.dst_port  = 443;
-        event.protocol  = 6;
-    }
+    hng_test_attach_failure = false;
+    hng_test_attach_failure_sections.clear();
+}
+
+/// @brief EXEC 子类型的 ringbuf 记录长度：事件头 + exec 载荷。
+constexpr std::size_t kExecRecordSize =
+    sizeof(struct syscall_event_head) + sizeof(struct exec_event);
+
+// 为有字符数组的事件构造不含 NUL 的完整字段，并保留有效的 syscall 枚举值。
+// exec、credential、namespace 共用 union：按此顺序填充，后写者覆盖前者的前缀；
+// 本样本只用于验证 ringbuf 记录按字节搬运，不解释重叠区的语义。
+syscall_event sample()
+{
+    syscall_event event{};
+    event.hdr.head.pid = 456;
+    event.hdr.name     = SYSCALL_EVENT_EXECVE;
+    event.hdr.subtype  = EXEC_EVENT;
+    std::memset(event.exec_event.invoked, 'x', sizeof(event.exec_event.invoked));
+    std::memset(event.exec_event.image, 'y', sizeof(event.exec_event.image));
+    std::memset(event.exec_event.argv0, 'a', sizeof(event.exec_event.argv0));
+    std::memset(event.exec_event.argv1, 'b', sizeof(event.exec_event.argv1));
+    std::memset(event.exec_event.argv2, 'c', sizeof(event.exec_event.argv2));
+    std::memset(event.exec_event.argv3, 'd', sizeof(event.exec_event.argv3));
+    std::memset(event.exec_event.ld_preload, 'e',
+                sizeof(event.exec_event.ld_preload));
+    std::memset(event.exec_event.ld_library_path, 'f',
+                sizeof(event.exec_event.ld_library_path));
+    event.exec_event.flags                 = 7;
+    event.exec_event.image_flags           = PATH_TRUNCATED;
+
+    event.credential_event.kind            = CREDENTIAL_CAPS;
+    event.credential_event.requested_count = 2;
+    event.credential_event.requested[0]    = 1000;
+    event.credential_event.requested[1]    = 1001;
+    event.credential_event.requested[2]    = 0;
+    event.credential_event.cap_effective   = 0x1;
+    event.credential_event.cap_permitted   = 0x2;
+    event.credential_event.cap_inheritable = 0x4;
+    event.credential_event.prctl_option    = 38;  // PR_SET_NO_NEW_PRIVS
+    event.credential_event.arg2            = 0x1234;
+    event.credential_event.securebits      = 0x3f;
+
+    event.namespace_event.flags            = 0x50000000;
+    event.namespace_event.ns_mask          = 0x50000000;
+    event.namespace_event.fd               = 7;
+    std::memset(event.namespace_event.source, 's',
+                sizeof(event.namespace_event.source));
+    std::memset(event.namespace_event.target, 't',
+                sizeof(event.namespace_event.target));
+    std::memset(event.namespace_event.fstype, 'f',
+                sizeof(event.namespace_event.fstype));
+    event.namespace_event.source_flags = PATH_TRUNCATED;
+    event.namespace_event.target_flags = PATH_UNRESOLVED;
+    event.namespace_event.mount_flags  = 0x1;
+
+    event.signal_event.sig             = 9;
+    event.signal_event.target_pid      = 1234;
+    event.signal_event.target_tid      = 2;
+    event.signal_event.si_code         = -6;
     return event;
 }
 
-template <class Event>
-bool same_event(const Event& left, const Event& right)
+bool same_event(const syscall_event& left, const syscall_event& right)
 {
-    // 比较字段，不依赖编译器是否复制结构体填充字节。
-    if constexpr (std::is_same_v<Event, file_access_data>) {
-        return left.head.pid == right.head.pid && left.flags == right.flags &&
-               left.is_innamespace == right.is_innamespace &&
-               std::memcmp(left.comm, right.comm, sizeof(left.comm)) == 0 &&
-               std::memcmp(left.filename, right.filename,
-                           sizeof(left.filename)) == 0;
-    }
-    else if constexpr (std::is_same_v<Event, syscall_event>) {
-        return left.hdr.head.pid == right.hdr.head.pid &&
-               left.hdr.name == right.hdr.name &&
-               left.hdr.type == right.hdr.type &&
-               left.exec_event.flags == right.exec_event.flags &&
-               std::memcmp(left.exec_event.filename, right.exec_event.filename,
-                           sizeof(left.exec_event.filename)) == 0 &&
-               std::memcmp(left.exec_event.argv0, right.exec_event.argv0,
-                           sizeof(left.exec_event.argv0)) == 0 &&
-               std::memcmp(left.exec_event.argv1, right.exec_event.argv1,
-                           sizeof(left.exec_event.argv1)) == 0;
-    }
-    else {
-        return left.head.pid == right.head.pid && left.family == right.family &&
-               std::memcmp(left.dst_ip, right.dst_ip, sizeof(left.dst_ip)) == 0 &&
-               left.src_port == right.src_port &&
-               left.dst_port == right.dst_port && left.protocol == right.protocol;
-    }
+    // 比较字段，不依赖编译器是否复制结构体填充字节。union 内三类载荷重叠，
+    // 逐字段比较仍能发现任一载荷被丢弃或按错误长度搬运。
+    return left.hdr.head.pid == right.hdr.head.pid &&
+           left.hdr.name == right.hdr.name &&
+           left.hdr.subtype == right.hdr.subtype &&
+           left.exec_event.flags == right.exec_event.flags &&
+           left.exec_event.image_flags == right.exec_event.image_flags &&
+           std::memcmp(left.exec_event.invoked, right.exec_event.invoked,
+                       sizeof(left.exec_event.invoked)) == 0 &&
+           std::memcmp(left.exec_event.image, right.exec_event.image,
+                       sizeof(left.exec_event.image)) == 0 &&
+           std::memcmp(left.exec_event.argv0, right.exec_event.argv0,
+                       sizeof(left.exec_event.argv0)) == 0 &&
+           std::memcmp(left.exec_event.argv1, right.exec_event.argv1,
+                       sizeof(left.exec_event.argv1)) == 0 &&
+           std::memcmp(left.exec_event.argv2, right.exec_event.argv2,
+                       sizeof(left.exec_event.argv2)) == 0 &&
+           std::memcmp(left.exec_event.argv3, right.exec_event.argv3,
+                       sizeof(left.exec_event.argv3)) == 0 &&
+           std::memcmp(left.exec_event.ld_preload, right.exec_event.ld_preload,
+                       sizeof(left.exec_event.ld_preload)) == 0 &&
+           std::memcmp(left.exec_event.ld_library_path,
+                       right.exec_event.ld_library_path,
+                       sizeof(left.exec_event.ld_library_path)) == 0 &&
+           left.credential_event.kind == right.credential_event.kind &&
+           left.credential_event.requested_count ==
+               right.credential_event.requested_count &&
+           std::memcmp(left.credential_event.requested,
+                       right.credential_event.requested,
+                       sizeof(left.credential_event.requested)) == 0 &&
+           left.credential_event.cap_effective ==
+               right.credential_event.cap_effective &&
+           left.credential_event.cap_permitted ==
+               right.credential_event.cap_permitted &&
+           left.credential_event.cap_inheritable ==
+               right.credential_event.cap_inheritable &&
+           left.credential_event.prctl_option ==
+               right.credential_event.prctl_option &&
+           left.credential_event.arg2 == right.credential_event.arg2 &&
+           left.credential_event.securebits ==
+               right.credential_event.securebits &&
+           left.namespace_event.flags == right.namespace_event.flags &&
+           left.namespace_event.ns_mask == right.namespace_event.ns_mask &&
+           left.namespace_event.fd == right.namespace_event.fd &&
+           std::memcmp(left.namespace_event.source, right.namespace_event.source,
+                       sizeof(left.namespace_event.source)) == 0 &&
+           std::memcmp(left.namespace_event.target, right.namespace_event.target,
+                       sizeof(left.namespace_event.target)) == 0 &&
+           std::memcmp(left.namespace_event.fstype, right.namespace_event.fstype,
+                       sizeof(left.namespace_event.fstype)) == 0 &&
+           left.namespace_event.source_flags ==
+               right.namespace_event.source_flags &&
+           left.namespace_event.target_flags ==
+               right.namespace_event.target_flags &&
+           left.namespace_event.mount_flags ==
+               right.namespace_event.mount_flags &&
+           left.signal_event.sig == right.signal_event.sig &&
+           left.signal_event.target_pid == right.signal_event.target_pid &&
+           left.signal_event.target_tid == right.signal_event.target_tid &&
+           left.signal_event.si_code == right.signal_event.si_code;
 }
 
-template <class Collector, class Event>
-void verify()
+void verify(const std::filesystem::path& tracefs_root)
 {
-    hng::EventChannel<Event> channel(4);
+    reset_attach_controls();
+    hng::EventChannel<syscall_event> channel(4);
     reset_consume();
     // prepare 只加载骨架、建 ringbuf 并取 map fd；探针未挂载前不消费。
     {
-        Collector collector(channel.writer());
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.role_filter_map_fd() == -1);
+        REQUIRE(collector.reserve_failures_fd() == -1);
+        REQUIRE(collector.pending_lost_fd() == -1);
         REQUIRE(collector.epoll_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
@@ -125,8 +279,12 @@ void verify()
 
         const int attaches_before = hng_test_attach_calls;
         REQUIRE(collector.prepare());
+        const int programs =
+            static_cast<int>(hng_test_last_object->programs.size());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd && fd >= 0);
+        REQUIRE(collector.reserve_failures_fd() >= 0);
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         REQUIRE(hng_test_attach_calls == attaches_before);
         REQUIRE(collector.epoll_fd() == -1);
@@ -141,7 +299,8 @@ void verify()
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
 
         REQUIRE(collector.attach());
-        REQUIRE(hng_test_attach_calls == attaches_before + 1);
+        REQUIRE(hng_test_attach_calls == attaches_before + programs);
+        REQUIRE(hng_test_live_links == programs);
         REQUIRE(!collector.attach());
         REQUIRE(!collector.init());
         REQUIRE(collector.role_filter_map_fd() == fd);
@@ -157,42 +316,51 @@ void verify()
         REQUIRE(collector.consume(1) == -EIO);
         REQUIRE(hng_test_consume_calls == 1);
 
-        // detach 只停止新事件，ringbuf 仍可继续排空。
-        const int detaches_before = hng_test_detach_calls;
+        // detach 只停止新事件，销毁链接；ringbuf 仍可继续排空。
         collector.detach();
-        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        REQUIRE(hng_test_live_links == 0);
+        REQUIRE(collector.epoll_fd() >= 0);
         collector.detach();
-        REQUIRE(hng_test_detach_calls == detaches_before + 1);
+        REQUIRE(hng_test_live_links == 0);
         reset_consume();
         hng_test_consume_successes = 1;
         REQUIRE(collector.consume(1) == 1);
         REQUIRE(hng_test_consume_calls == 1);
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 
-    // 独立 attach 失败保留已准备资源，重试成功；析构仍回收全部资源。
+    // 全部探针 attach 失败时保留已准备资源，重试成功；析构仍回收全部资源。
     {
-        Collector collector(channel.writer());
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.prepare());
+        const int programs =
+            static_cast<int>(hng_test_last_object->programs.size());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
         reset_consume();
         hng_test_attach_failure = true;
         REQUIRE(!collector.attach());
+        REQUIRE(collector.stats().attach_failed ==
+                static_cast<std::uint64_t>(programs));
+        REQUIRE(collector.stats().skipped_probes == 0);
+        REQUIRE(hng_test_live_links == 0);
         REQUIRE(collector.role_filter_map_fd() == fd);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
         hng_test_attach_failure = false;
         REQUIRE(collector.attach());
+        REQUIRE(hng_test_live_links == programs);
         REQUIRE(collector.role_filter_map_fd() == fd);
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 
     {
-        Collector collector(channel.writer());
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.role_filter_map_fd() == -1);
         REQUIRE(collector.consume(1) == 0);
         REQUIRE(hng_test_consume_calls == 0);
@@ -215,6 +383,12 @@ void verify()
         REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
         REQUIRE(collector.role_filter_map_fd() == -1);
         hng_test_filter_fd_override.reset();
+        hng_test_pending_lost_fd_override = -EBADF;
+        REQUIRE(!collector.init());
+        REQUIRE(hng_test_attach_calls == attaches_before);
+        REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+        REQUIRE(collector.pending_lost_fd() == -1);
+        hng_test_pending_lost_fd_override.reset();
 
         hng_test_attach_failure = true;
         REQUIRE(!collector.init());
@@ -230,6 +404,7 @@ void verify()
         REQUIRE(collector.init());
         const int fd = collector.role_filter_map_fd();
         REQUIRE(fd == hng_test_last_filter_fd);
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
         REQUIRE(hng_test_last_ring->map_fd == hng_test_last_event_fd);
         const int opens_before = hng_test_open_calls;
         REQUIRE(!collector.init());
@@ -237,43 +412,53 @@ void verify()
         REQUIRE(collector.role_filter_map_fd() == fd);
         REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
 
-        auto* ring  = hng_test_last_ring;
-        Event event = sample<Event>();
-        REQUIRE(ring->callback(nullptr, &event, sizeof(event)) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, nullptr, sizeof(event)) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, &event, 0) == -EINVAL);
-        REQUIRE(ring->callback(ring->context, &event, sizeof(event) - 1) ==
+        auto* ring          = hng_test_last_ring;
+        syscall_event event = sample();
+        REQUIRE(ring->callback(nullptr, &event, kExecRecordSize) == -EINVAL);
+        REQUIRE(ring->callback(ring->context, nullptr, kExecRecordSize) ==
                 -EINVAL);
         REQUIRE(channel.empty());
 
-        alignas(Event) std::array<unsigned char, sizeof(Event) + 9> payload{};
-        std::memcpy(payload.data() + 1, &event, sizeof(event));
+        // 不足一个头、只有头、长度多/少 1B 都按 malformed 丢弃，不向 libbpf
+        // 报错。
+        const std::uint64_t malformed_before = collector.stats().malformed;
+        REQUIRE(ring->callback(ring->context, &event, 0) == 0);
+        REQUIRE(ring->callback(ring->context, &event,
+                               sizeof(struct syscall_event_head)) == 0);
+        REQUIRE(ring->callback(ring->context, &event, kExecRecordSize - 1) == 0);
+        REQUIRE(ring->callback(ring->context, &event, kExecRecordSize + 1) == 0);
+        REQUIRE(channel.empty());
+        REQUIRE(collector.stats().malformed == malformed_before + 4);
+        REQUIRE(collector.stats().consumed == 0);
+
+        alignas(syscall_event) std::array<unsigned char, kExecRecordSize + 2>
+            payload{};
+        std::memcpy(payload.data() + 1, &event, kExecRecordSize);
         reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = payload.data() + 1;
-        hng_test_payload_size    = sizeof(event);
+        hng_test_payload_size    = kExecRecordSize;
         REQUIRE(collector.consume(1) == 1);
         REQUIRE(hng_test_callback_result == 0 && hng_test_consume_calls == 1);
         // 回调后覆写 ringbuf 借用内存，队列仍须持有独立事件值。
         payload.fill(0);
-        Event received{};
+        syscall_event received{};
         REQUIRE(channel.reader().try_pop(received) &&
                 same_event(received, event));
         REQUIRE(channel.empty());
 
-        // 对更长载荷只复制已知 ABI 前缀。
-        std::memcpy(payload.data() + 1, &event, sizeof(event));
+        // 长度必须恰好相等：多 1B 不再按 ABI 前缀截断，按 malformed 丢弃。
+        std::memcpy(payload.data() + 1, &event, kExecRecordSize);
         REQUIRE(ring->callback(ring->context, payload.data() + 1,
-                               payload.size() - 1) == 0);
-        REQUIRE(channel.reader().try_pop(received) &&
-                same_event(received, event));
+                               kExecRecordSize + 1) == 0);
+        REQUIRE(channel.empty());
 
         // 满队列不覆写已有元素，也不向 libbpf 报错。
         for (int i = 0; i < 4; ++i)
-            REQUIRE(ring->callback(ring->context, &event, sizeof(event)) == 0);
-        Event different{};
-        REQUIRE(ring->callback(ring->context, &different, sizeof(different)) ==
-                0);
+            REQUIRE(ring->callback(ring->context, &event, kExecRecordSize) == 0);
+        syscall_event different{};
+        different.hdr.subtype = EXEC_EVENT;
+        REQUIRE(ring->callback(ring->context, &different, kExecRecordSize) == 0);
         REQUIRE(channel.size() == 4);
         for (int i = 0; i < 4; ++i)
             REQUIRE(channel.reader().try_pop(received) &&
@@ -288,54 +473,271 @@ void verify()
         reset_consume();
         hng_test_deliver_payload = true;
         hng_test_payload         = &event;
-        hng_test_payload_size    = sizeof(event) - 1;
-        REQUIRE(collector.consume(1) == -EINVAL);
-        REQUIRE(hng_test_callback_result == -EINVAL);
+        hng_test_payload_size    = kExecRecordSize - 1;
+        REQUIRE(collector.consume(1) == 1);
+        REQUIRE(hng_test_callback_result == 0);
         REQUIRE(hng_test_consume_calls == 1);
         REQUIRE(channel.empty());
         reset_consume();
     }
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
+
+    {
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
+        REQUIRE(collector.init());
+        REQUIRE(collector.pending_lost_fd() == hng_test_last_pending_lost_fd);
+    }
+    REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
 
     // 0 是有效 fd，不能按布尔值判断有效性。
     hng_test_filter_fd_override = 0;
     {
-        Collector collector(channel.writer());
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.init());
         REQUIRE(collector.role_filter_map_fd() == 0);
     }
     hng_test_filter_fd_override.reset();
     hng_test_event_fd_override = 0;
     {
-        Collector collector(channel.writer());
+        SyscallEventCollector collector(channel.writer(), tracefs_root);
         REQUIRE(collector.init());
         REQUIRE(hng_test_last_ring->map_fd == 0);
     }
     hng_test_event_fd_override.reset();
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
+}
+
+/// @brief 逐 subtype 验证记录长度：合法记录入队，非法长度与未知 subtype 计
+/// malformed
+void verify_record_framing(const std::filesystem::path& tracefs_root)
+{
+    reset_attach_controls();
+    reset_consume();
+    hng::EventChannel<syscall_event> channel(16);
+    SyscallEventCollector collector(channel.writer(), tracefs_root);
+    REQUIRE(collector.init());
+    auto* ring = hng_test_last_ring;
+
+    struct Case {
+        enum syscall_event_type subtype;
+        std::size_t payload_size;
+    };
+    const Case cases[] = {
+        {PROCESS_EVENT, sizeof(struct process_event)},
+        {EXEC_EVENT, sizeof(struct exec_event)},
+        {CREDENTIAL_EVENT, sizeof(struct credential_event)},
+        {NAMESPACE_EVENT, sizeof(struct namespace_event)},
+        {FILE_EVENT, sizeof(struct file_event)},
+        {MEMORY_EVENT, sizeof(struct memory_event)},
+        {NETWORK_EVENT, sizeof(struct network_event)},
+        {KERNEL_EVENT, sizeof(struct kernel_event)},
+        {SIGNAL_EVENT, sizeof(struct signal_event)},
+    };
+    const std::size_t head = sizeof(struct syscall_event_head);
+    REQUIRE(head == 80);
+    alignas(syscall_event) std::array<unsigned char, head + sizeof(syscall_event)>
+        record{};
+
+    std::uint64_t malformed = 0;
+    for (const Case& c : cases) {
+        const std::size_t record_size = head + c.payload_size;
+        REQUIRE(hng::detail::SyscallRecordSize(c.subtype) == record_size);
+
+        syscall_event source{};
+        source.hdr.subtype  = c.subtype;
+        source.hdr.head.pid = 456;
+        std::memset(record.data(), 0, record.size());
+        std::memcpy(record.data(), &source, record_size);
+        std::memset(record.data() + head, 0x5A, c.payload_size);
+
+        REQUIRE(ring->callback(ring->context, record.data(), record_size) == 0);
+        syscall_event received{};
+        REQUIRE(channel.reader().try_pop(received));
+        REQUIRE(received.hdr.subtype == c.subtype);
+        REQUIRE(received.hdr.head.pid == 456);
+        REQUIRE(std::memcmp(reinterpret_cast<const char*>(&received) + head,
+                            record.data() + head, c.payload_size) == 0);
+        // 载荷之后到 union 末尾不在记录内，必须由本地事件清零。
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&received);
+        for (std::size_t i = head + c.payload_size; i < sizeof(syscall_event);
+             ++i) {
+            REQUIRE(bytes[i] == 0);
+        }
+        REQUIRE(channel.empty());
+
+        // 长度必须恰好相等：多 1B、少 1B 都拒绝。
+        REQUIRE(ring->callback(ring->context, record.data(), record_size + 1) ==
+                0);
+        REQUIRE(ring->callback(ring->context, record.data(), record_size - 1) ==
+                0);
+        malformed += 2;
+        REQUIRE(collector.stats().malformed == malformed);
+    }
+
+    // 未知 subtype（0 与枚举外）与只有头的记录都拒绝。
+    syscall_event unknown{};
+    unknown.hdr.subtype = UNKNOWN_EVENT;
+    REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
+    unknown.hdr.subtype = static_cast<enum syscall_event_type>(10);
+    REQUIRE(ring->callback(ring->context, &unknown, head) == 0);
+    syscall_event head_only{};
+    head_only.hdr.subtype = EXEC_EVENT;
+    REQUIRE(ring->callback(ring->context, &head_only, head) == 0);
+    malformed += 3;
+    REQUIRE(collector.stats().malformed == malformed);
+    REQUIRE(collector.stats().consumed == 9);
+    REQUIRE(channel.empty());
+    REQUIRE(hng::detail::SyscallRecordSize(UNKNOWN_EVENT) == 0);
+    REQUIRE(hng::detail::SyscallRecordSize(
+                static_cast<enum syscall_event_type>(10)) == 0);
+}
+
+/// @brief tracepoint 缺失的程序不 autoload，也不参与 attach
+void verify_skips_missing_tracepoint()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_syscall_programs(tracefs);
+    const auto& sections = hng_test_program_sections(kSkeleton);
+    std::string missing;
+    for (const std::string& section : sections) {
+        if (section.rfind("tracepoint/", 0) == 0) {
+            missing = section;
+            break;
+        }
+    }
+    REQUIRE(!missing.empty());
+    std::string group;
+    std::string event;
+    REQUIRE(split_tracepoint(missing, group, event));
+    std::error_code error;
+    std::filesystem::remove_all(tracefs.root / "events" / group / event, error);
+
+    hng::EventChannel<syscall_event> channel(4);
+    SyscallEventCollector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+
+    const int programs = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before = hng_test_attach_calls;
+    REQUIRE(collector.stats().skipped_probes == 1);
+    REQUIRE(collector.stats().attach_failed == 0);
+    bpf_program* skipped = find_program(missing);
+    REQUIRE(skipped != nullptr && !skipped->autoload);
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + programs - 1);
+    REQUIRE(hng_test_live_links == programs - 1);
+    REQUIRE(!skipped->attached);
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.skipped_probes == 1);
+    REQUIRE(stats.attach_failed == 0);
+    REQUIRE(stats.attached);
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+    REQUIRE(!collector.stats().attached);
+}
+
+/// @brief 全部 tracepoint 缺失时只跳过，不拖垮启动；非 tracepoint 程序照常挂载
+void verify_all_tracepoints_skipped()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;  // 不创建任何 events 条目
+    REQUIRE(!tracefs.root.empty());
+    const auto& sections = hng_test_program_sections(kSkeleton);
+    int tracepoints      = 0;
+    for (const std::string& section : sections) {
+        if (section.rfind("tracepoint/", 0) == 0) {
+            ++tracepoints;
+        }
+    }
+    REQUIRE(tracepoints > 0);
+
+    hng::EventChannel<syscall_event> channel(4);
+    SyscallEventCollector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+    const int total = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before = hng_test_attach_calls;
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + total - tracepoints);
+    REQUIRE(hng_test_live_links == total - tracepoints);
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.skipped_probes == static_cast<std::uint64_t>(tracepoints));
+    REQUIRE(stats.attach_failed == 0);
+    REQUIRE(stats.attached);
+    for (const bpf_program& program : hng_test_last_object->programs) {
+        const bool is_tracepoint = program.section.rfind("tracepoint/", 0) == 0;
+        REQUIRE(program.autoload == !is_tracepoint);
+        REQUIRE(program.attached == !is_tracepoint);
+    }
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+}
+
+/// @brief 单个程序 attach 失败只计数，其余仍挂载
+void verify_partial_attach_failure()
+{
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_syscall_programs(tracefs);
+    const auto& sections = hng_test_program_sections(kSkeleton);
+    REQUIRE(sections.size() > 1);
+    const std::string failed = sections[1];
+
+    hng::EventChannel<syscall_event> channel(4);
+    SyscallEventCollector collector(channel.writer(), tracefs.root);
+    REQUIRE(collector.prepare());
+    const int programs = static_cast<int>(hng_test_last_object->programs.size());
+    const int calls_before           = hng_test_attach_calls;
+    hng_test_attach_failure_sections = {failed};
+
+    REQUIRE(collector.attach());
+    REQUIRE(hng_test_attach_calls == calls_before + programs);
+    REQUIRE(hng_test_live_links == programs - 1);
+    for (const bpf_program& program : hng_test_last_object->programs) {
+        REQUIRE(program.attached == (program.section != failed));
+    }
+    const hng::CollectorLineStats stats = collector.stats();
+    REQUIRE(stats.attach_failed == 1);
+    REQUIRE(stats.skipped_probes == 0);
+    REQUIRE(stats.attached);
+
+    collector.detach();
+    REQUIRE(hng_test_live_links == 0);
+    reset_attach_controls();
 }
 
 void verify_multiple_instances()
 {
-    hng::EventChannel<file_access_data> files(1), more_files(1);
+    reset_attach_controls();
+    TempTracefs tracefs;
+    REQUIRE(!tracefs.root.empty());
+    add_syscall_programs(tracefs);
     hng::EventChannel<syscall_event> syscalls(1);
-    hng::EventChannel<network_data> networks(1);
-    std::unique_ptr<CollectorType> first =
-        std::make_unique<FileEventCollector>(files.writer());
-    auto second = std::make_unique<FileEventCollector>(more_files.writer());
-    auto third  = std::make_unique<SyscallEventCollector>(syscalls.writer());
-    auto fourth = std::make_unique<NetworkEventCollector>(networks.writer());
-    REQUIRE(first->init() && second->init() && third->init() && fourth->init());
-    REQUIRE(hng_test_live_skeletons == 4 && hng_test_live_rings == 4);
+    hng::EventChannel<syscall_event> more_syscalls(1);
+    auto first =
+        std::make_unique<SyscallEventCollector>(syscalls.writer(), tracefs.root);
+    auto second = std::make_unique<SyscallEventCollector>(more_syscalls.writer(),
+                                                          tracefs.root);
+    REQUIRE(first->init() && second->init());
+    const int count = program_count();
+    REQUIRE(hng_test_live_links == 2 * count);
+    REQUIRE(hng_test_live_skeletons == 2 && hng_test_live_rings == 2);
     first.reset();  // 验证虚析构；其余采集器的资源仍然存活。
-    REQUIRE(hng_test_live_skeletons == 3 && hng_test_live_rings == 3);
+    REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
+    REQUIRE(hng_test_live_links == count);
     REQUIRE(!hng_test_bad_cleanup_order);
-    third.reset();
     second.reset();
-    fourth.reset();
     REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
+    REQUIRE(hng_test_live_links == 0);
     REQUIRE(!hng_test_bad_cleanup_order);
 }
 }  // namespace
@@ -343,9 +745,14 @@ void verify_multiple_instances()
 int main()
 {
     try {
-        verify<FileEventCollector, file_access_data>();
-        verify<SyscallEventCollector, syscall_event>();
-        verify<NetworkEventCollector, network_data>();
+        TempTracefs tracefs;
+        REQUIRE(!tracefs.root.empty());
+        add_syscall_programs(tracefs);
+        verify(tracefs.root);
+        verify_record_framing(tracefs.root);
+        verify_skips_missing_tracepoint();
+        verify_all_tracepoints_skipped();
+        verify_partial_attach_failure();
         verify_multiple_instances();
         std::printf("PASS: collector filter map, %d checks (skeleton mocks)\n",
                     checks);

@@ -12,7 +12,6 @@
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
 
-struct file_access_data;
 struct syscall_event;
 
 namespace hng {
@@ -22,7 +21,6 @@ class EventChannelReader;
 template <class T>
 class EventChannelWriter;
 
-struct file_semantic_data;
 struct syscall_semantic_data;
 
 /**
@@ -31,20 +29,16 @@ struct syscall_semantic_data;
  *          写端须同时为空或同时非空。
  */
 struct SemanticOptions {
-    /// 文件原始事件通道读端
-    hng::EventChannelReader<::file_access_data>* raw_file            = nullptr;
     /// 系统调用原始事件通道读端
     hng::EventChannelReader<::syscall_event>* raw_syscall            = nullptr;
-    /// 文件语义事件通道写端
-    hng::EventChannelWriter<hng::file_semantic_data>* out_file       = nullptr;
     /// 系统调用语义事件通道写端
     hng::EventChannelWriter<hng::syscall_semantic_data>* out_syscall = nullptr;
 };
 
 /**
  * @brief 语义聚合组件。
- * @details 单线程消费两条原始事件通道并写入对应语义通道；组件不持线程。
- * @note 构造后即为 READY；run() 退出前排空两条原始通道并关闭两条语义通道。
+ * @details 单线程消费系统调用原始事件通道并写入语义通道；组件不持线程。
+ * @note 构造后即为 READY；run() 退出前排空原始通道并关闭语义通道。
  * @see hng::Component, SemanticOptions, SemanticFactory
  */
 class SemanticComponent final : public hng::Component {

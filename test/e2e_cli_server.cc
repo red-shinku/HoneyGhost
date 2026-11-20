@@ -69,6 +69,7 @@ constexpr uint32_t kPidSyscall     = 1001;
 constexpr uint32_t kPidFile        = 2002;
 constexpr uint32_t kContextID      = 3;
 constexpr uint32_t kExtraContextID = 4;
+constexpr char kEventExe[]         = "/tmp/test";
 
 constexpr char kSocketPath[]       = "/tmp/honeyghost-cli-e2e.sock";
 
@@ -292,20 +293,25 @@ class StatsStub final : public hng::PipelineStatsService {
     {
         hng::PipelineStats stats;
         hng::CollectorLineStats line;
-        line.line             = "file";
+        line.line             = "syscall";
         line.consumed         = 10;
         line.consume_errors   = 1;
         line.channel_dropped  = 2;
         line.channel_rejected = 3;
         line.reserve_failures = 4;
+        line.skipped_probes   = 5;
+        line.attach_failed    = 6;
+        line.pending_lost     = 9;
+        line.malformed        = 10;
         line.attached         = true;
         line.polling          = false;
         stats.collector.push_back(line);
 
         hng::SemanticStats semantic;
-        semantic.processed_file   = 7;
-        semantic.raw_file_dropped = 2;
-        stats.semantic            = semantic;
+        semantic.processed_syscall   = 7;
+        semantic.raw_syscall_dropped = 2;
+        semantic.path_unresolved     = 8;
+        stats.semantic               = semantic;
 
         hng::PipelineEngineStats engine;
         engine.peak_cli_streams = 5;
@@ -315,45 +321,27 @@ class StatsStub final : public hng::PipelineStatsService {
     }
 };
 
-/// 一条合成的运行时事件：偶数序号为系统调用事件，奇数为文件事件
-/// @note 父进程取固定值：文件事件为 kPidSyscall，系统调用事件为 1
+/// 一条合成的系统调用运行时事件
+/// @note 进程在 kPidSyscall 与 kPidFile 之间轮换，供按 pid 过滤的用例使用
 hng::RuntimeEvent MakeEvent(uint32_t seq)
 {
-    const bool is_file = (seq % 2) != 0;
-    const uint32_t pid = is_file ? kPidFile : kPidSyscall;
+    const uint32_t pid = (seq % 2) == 0 ? kPidSyscall : kPidFile;
 
     hng::RuntimeEvent event{};
-    event.runtimeInfo.process = hng::Process{pid, pid * 10};
-    event.runtimeInfo.etype =
-        is_file ? hng::EventType::FILE_EVENT : hng::EventType::SYSCALL_EVENT;
-    event.runtimeInfo.kind =
-        is_file ? hng::EventKind::FILE : hng::EventKind::PROCESS;
-    if (is_file) {
-        event.runtimeInfo.parent = hng::Process{kPidSyscall, kPidSyscall * 10};
-    }
-    else {
-        event.runtimeInfo.parent = hng::Process{1, 0};
-    }
-    event.runtimeInfo.roleID    = kRoleID;
-    event.runtimeInfo.roleLabel = kRoleLabel;
-    event.runtimeInfo.contextID = kContextID;
+    event.runtimeInfo.process      = hng::Process{pid, pid * 10};
+    event.runtimeInfo.parent       = hng::Process{1, 0};
+    event.runtimeInfo.etype        = hng::EventType::SYSCALL_EVENT;
+    event.runtimeInfo.subtype      = PROCESS_EVENT;
+    event.runtimeInfo.roleID       = kRoleID;
+    event.runtimeInfo.roleLabel    = kRoleLabel;
+    event.runtimeInfo.contextID    = kContextID;
+    event.runtimeInfo.exe          = kEventExe;
 
-    if (is_file) {
-        hng::file_semantic_data& file =
-            event.data.emplace<hng::file_semantic_data>();
-        file.head.pid            = pid;
-        file.head.pid_start_time = pid * 10;
-        file.head.type           = hng::EventType::FILE_EVENT;
-        file.data.set_semantic_filename("/tmp/e2e");
-    }
-    else {
-        hng::syscall_semantic_data& syscall =
-            event.data.emplace<hng::syscall_semantic_data>();
-        syscall.head.pid            = pid;
-        syscall.head.pid_start_time = pid * 10;
-        syscall.head.type           = hng::EventType::SYSCALL_EVENT;
-        syscall.data.emplace<0>().set_syscall_name("e2e");
-    }
+    event.data.head.pid            = pid;
+    event.data.head.pid_start_time = pid * 10;
+    event.data.head.type           = hng::EventType::SYSCALL_EVENT;
+    event.data.head.subtype        = PROCESS_EVENT;
+    event.data.data.emplace<0>().set_syscall_name("e2e");
     return event;
 }
 
@@ -803,16 +791,21 @@ void run_pipeline_stats(hng::clisv::RuntimeService::Stub& runtime)
     CHECK(status.ok() && response.has_stats(), "GetPipelineStats 应成功");
     const hng::clisv::pipeline_stats& stats = response.stats();
     CHECK(stats.collector_size() == 1, "collector 应有一条线");
-    CHECK(stats.collector(0).line() == "file" &&
+    CHECK(stats.collector(0).line() == "syscall" &&
               stats.collector(0).consumed() == 10 &&
               stats.collector(0).consume_errors() == 1 &&
               stats.collector(0).channel_dropped() == 2 &&
               stats.collector(0).channel_rejected() == 3 &&
               stats.collector(0).reserve_failures() == 4 &&
+              stats.collector(0).skipped_probes() == 5 &&
+              stats.collector(0).attach_failed() == 6 &&
+              stats.collector(0).pending_lost() == 9 &&
+              stats.collector(0).malformed() == 10 &&
               stats.collector(0).attached() && !stats.collector(0).polling(),
           "collector 字段应逐一映射");
-    CHECK(stats.has_semantic() && stats.semantic().processed_file() == 7 &&
-              stats.semantic().raw_file_dropped() == 2,
+    CHECK(stats.has_semantic() && stats.semantic().processed_syscall() == 7 &&
+              stats.semantic().raw_syscall_dropped() == 2 &&
+              stats.semantic().path_unresolved() == 8,
           "semantic 字段应逐一映射");
     CHECK(stats.has_engine() && stats.engine().peak_cli_streams() == 5 &&
               stats.engine().syscall_dropped() == 6,
@@ -933,23 +926,23 @@ void run_multi_stream(hng::clisv::RuntimeService::Stub& runtime)
 
 void run_filter(hng::clisv::RuntimeService::Stub& runtime)
 {
-    // -t file：只应收到文件事件
+    // 事件来源：只应收到系统调用事件
     grpc::ClientContext context;
     SetDeadline(context, std::chrono::seconds(10));
     hng::clisv::ReceiveEventRequest request;
-    request.add_etype(hng::clisv::EVENT_TYPE_FILE);
-    auto reader    = runtime.ReceiveEvent(&context, request);
+    request.add_etype(hng::clisv::EVENT_TYPE_SYSCALL);
+    auto reader      = runtime.ReceiveEvent(&context, request);
 
-    bool saw_file  = false;
-    bool saw_other = false;
+    bool saw_syscall = false;
+    bool saw_other   = false;
     hng::clisv::ReceiveEventResponse message;
     for (int i = 0; i < 5 && reader->Read(&message); ++i) {
         if (!message.has_batch()) {
             continue;
         }
         for (const hng::clisv::eventrecord& record : message.batch().records()) {
-            if (record.event_case() == hng::clisv::eventrecord::kFileEv) {
-                saw_file = true;
+            if (record.event_case() == hng::clisv::eventrecord::kSyscallEv) {
+                saw_syscall = true;
             }
             else {
                 saw_other = true;
@@ -959,8 +952,34 @@ void run_filter(hng::clisv::RuntimeService::Stub& runtime)
     context.TryCancel();
     (void)reader->Finish();
 
-    CHECK(saw_file, "按事件类型过滤后应收到文件事件");
-    CHECK(!saw_other, "按事件类型过滤后不应收到其他类型");
+    CHECK(saw_syscall, "按事件来源过滤后应收到系统调用事件");
+    CHECK(!saw_other, "按事件来源过滤后不应收到其他类型");
+
+    // -t 语义子类型：合成事件全部是 PROCESS
+    {
+        grpc::ClientContext typed_context;
+        SetDeadline(typed_context, std::chrono::seconds(10));
+        hng::clisv::ReceiveEventRequest typed;
+        typed.add_subtype(hng::clisv::SUBTYPE_PROCESS);
+        auto typed_reader = runtime.ReceiveEvent(&typed_context, typed);
+
+        bool saw_record   = false;
+        hng::clisv::ReceiveEventResponse typed_message;
+        for (int i = 0; i < 5 && typed_reader->Read(&typed_message); ++i) {
+            if (!typed_message.has_batch()) {
+                continue;
+            }
+            for (const hng::clisv::eventrecord& record :
+                 typed_message.batch().records()) {
+                saw_record = true;
+                CHECK(record.head().subtype() == hng::clisv::SUBTYPE_PROCESS,
+                      "-t process 只应收到该子类型");
+            }
+        }
+        typed_context.TryCancel();
+        (void)typed_reader->Finish();
+        CHECK(saw_record, "-t process 应收到事件");
+    }
 }
 
 /// @brief 按给定请求订阅，收集若干批中的全部事件记录
@@ -991,16 +1010,16 @@ std::vector<hng::clisv::eventrecord> CollectRecords(
 /// @brief -e 表达式：AND 原子取交、NOT 取反、非法表达式被拒绝
 void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
 {
-    // kind=file and pid=<file pid>：只应收到该进程的文件事件
+    // subtype=process and pid=<pid>：只应收到该进程的系统调用事件
     {
         hng::clisv::ReceiveEventRequest request;
         auto* logic = request.mutable_expr()->mutable_logic();
         logic->set_logic(hng::clisv::FILTER_LOGIC_AND);
-        auto* kind_atom = logic->add_operands()->mutable_atom();
-        kind_atom->set_field(hng::clisv::FILTER_FIELD_KIND);
-        kind_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
-        kind_atom->add_numbers(
-            static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+        auto* subtype_atom = logic->add_operands()->mutable_atom();
+        subtype_atom->set_field(hng::clisv::FILTER_FIELD_SUBTYPE);
+        subtype_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
+        subtype_atom->add_numbers(
+            static_cast<uint32_t>(hng::clisv::SUBTYPE_PROCESS));
         auto* pid_atom = logic->add_operands()->mutable_atom();
         pid_atom->set_field(hng::clisv::FILTER_FIELD_PID);
         pid_atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
@@ -1008,30 +1027,31 @@ void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
 
         const std::vector<hng::clisv::eventrecord> records =
             CollectRecords(runtime, request);
-        CHECK(!records.empty(), "kind=file and pid 应收到事件");
+        CHECK(!records.empty(), "subtype=process and pid 应收到事件");
         for (const hng::clisv::eventrecord& record : records) {
-            CHECK(record.event_case() == hng::clisv::eventrecord::kFileEv,
-                  "kind=file 应只收到文件事件");
+            CHECK(record.event_case() == hng::clisv::eventrecord::kSyscallEv,
+                  "事件应为系统调用事件");
             CHECK(record.head().pid() == kPidFile, "pid 原子应只命中该进程");
         }
     }
 
-    // not kind=file：只应收到系统调用事件
+    // not pid=<pid>：不应收到该进程的事件
     {
         hng::clisv::ReceiveEventRequest request;
         auto* logic = request.mutable_expr()->mutable_logic();
         logic->set_logic(hng::clisv::FILTER_LOGIC_NOT);
         auto* atom = logic->add_operands()->mutable_atom();
-        atom->set_field(hng::clisv::FILTER_FIELD_KIND);
+        atom->set_field(hng::clisv::FILTER_FIELD_PID);
         atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
-        atom->add_numbers(static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+        atom->add_numbers(kPidFile);
 
         const std::vector<hng::clisv::eventrecord> records =
             CollectRecords(runtime, request);
-        CHECK(!records.empty(), "not kind=file 应收到事件");
+        CHECK(!records.empty(), "not pid 应收到事件");
         for (const hng::clisv::eventrecord& record : records) {
             CHECK(record.event_case() == hng::clisv::eventrecord::kSyscallEv,
-                  "not kind=file 应只收到系统调用事件");
+                  "事件应为系统调用事件");
+            CHECK(record.head().pid() != kPidFile, "NOT 应排除该进程");
         }
     }
 
@@ -1044,9 +1064,9 @@ void run_expr_filter(hng::clisv::RuntimeService::Stub& runtime)
         logic->set_logic(hng::clisv::FILTER_LOGIC_NOT);
         for (int i = 0; i < 2; ++i) {
             auto* atom = logic->add_operands()->mutable_atom();
-            atom->set_field(hng::clisv::FILTER_FIELD_KIND);
+            atom->set_field(hng::clisv::FILTER_FIELD_PID);
             atom->set_compare(hng::clisv::FILTER_COMPARE_EQ);
-            atom->add_numbers(static_cast<uint32_t>(hng::clisv::EVENT_KIND_FILE));
+            atom->add_numbers(kPidFile);
         }
         auto reader = runtime.ReceiveEvent(&context, request);
         hng::clisv::ReceiveEventResponse message;
@@ -1071,6 +1091,8 @@ void run_role_label_filter(hng::clisv::RuntimeService::Stub& runtime)
           "事件应装在批里");
     CHECK(message.batch().records(0).head().rolelabel() == kRoleLabel,
           "事件头应带角色标签");
+    CHECK(message.batch().records(0).head().exe() == kEventExe,
+          "事件头应带进程镜像");
 
     context.TryCancel();
     (void)reader->Finish();

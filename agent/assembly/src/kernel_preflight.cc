@@ -4,14 +4,12 @@
  */
 #include "agent/assembly/src/kernel_preflight.hpp"
 
-#include <sys/stat.h>
+#include "agent/util/include/tracefs.hpp"
+
 #include <sys/utsname.h>
 #include <unistd.h>
 
 #include <charconv>
-#include <fstream>
-#include <sstream>
-#include <system_error>
 
 namespace hng::detail {
 
@@ -46,39 +44,14 @@ bool parse_unsigned(std::string_view text, std::size_t& offset, unsigned& value)
     return true;
 }
 
-/// @brief path 是否存在且为目录
-bool is_directory(const std::string& path)
-{
-    struct stat info{};
-    return ::stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
-}
-
 /**
  * @brief tracefs 是否已挂载且暴露 events 目录
- * @details 先看标准挂载点；再按挂载表识别自定义挂载点，与 libbpf 的查找方式
- *          一致。挂载点中的空格转义不处理：tracefs 的实际挂载点不含空格。
+ * @details 标准挂载点与挂载表的探测顺序由 find_tracefs_root 统一实现。
  */
 bool tracefs_available(const KernelPaths& paths)
 {
-    if (is_directory(paths.tracing + "/events") ||
-        is_directory(paths.tracing_debugfs + "/events")) {
-        return true;
-    }
-    std::ifstream table(paths.mounts);
-    std::string line;
-    while (std::getline(table, line)) {
-        std::istringstream fields(line);
-        std::string device;
-        std::string mount_point;
-        std::string filesystem;
-        if (!(fields >> device >> mount_point >> filesystem)) {
-            continue;
-        }
-        if (filesystem == "tracefs" && is_directory(mount_point + "/events")) {
-            return true;
-        }
-    }
-    return false;
+    return !find_tracefs_root(paths.tracing, paths.tracing_debugfs, paths.mounts)
+                .empty();
 }
 
 }  // namespace

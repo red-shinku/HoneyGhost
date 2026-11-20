@@ -5,80 +5,196 @@ package hng;
 // ============================================================
 // 系统调用语义事件载荷
 //
-// 八个消息与 kernel/include/syscalls_type.h 中 union 的八种事件一一对应，
-// 字段参照 eBPF 侧原始结构（syscalls_type.h）重新定义：内容相似但不复用，
+// 九个消息与 kernel/include/syscall_event_type.h 中 union 的九种事件一一对应，
+// 字段参照 eBPF 侧原始结构（syscall_event_type.h）重新定义：内容相似但不复用，
 // 不组合任何内核侧数据结构，由语义化模块填充后推向下游。
 // ============================================================
 
 // 进程生命周期事件：fork(进程诞生) / exit_group。
 // fork 类 sys_enter 采集已迁移为「进程诞生」事件（kprobe wake_up_new_task），
 // 事件头 head.pid/pid_start_time 即新进程、head.ppid/ppid_start_time 即父进程，
-message process_semantic_data {
-  int32  exit_code   = 2;  // 进程退出码；exit_group 时有效，可为负
-  string syscall_name = 3;  // 语义名（如 "fork"、"exit_group"）
+message process_semantic_data
+{
+    int32 exit_code     = 2;  // 进程退出码；exit_group 时有效，可为负
+    string syscall_name = 3;  // 语义名（如 "fork"、"exit_group"）
+    // 进程诞生事件的派生标志：bit0 共享地址空间、bit1 CLONE_PARENT、
+    // bit2 新命名空间集合、bit3 新用户命名空间
+    uint32 derived_flags = 4;
+    sint32 exit_signal   = 5;  // 终止信号号；正常退出为 0
+    string old_comm      = 6;  // task_rename 的旧进程名
+    string new_comm      = 7;  // task_rename 的新进程名
+    string cgroup_path   = 8;  // cgroup_attach_task 的目标 cgroup 路径
+    // 被操作任务的 pid（task_rename 的改名对象、cgroup_attach_task 的被迁移者）；
+    // 事件头的主体是发起者，两者可能不同；其余事件为 0
+    uint32 target_pid    = 9;
 }
 
 // 执行事件（execve / execveat）。
-message exec_semantic_data {
-  string semantic_filename = 1;  // 语义化后的可执行文件路径；不保留原始 filename
-  string argv0             = 2;  // argv[0]（程序名或启动命令）
-  string argv1             = 5;  // argv[1]（第一个参数；无参数时为空）
-  uint32 flags             = 3;  // execveat 有效，AT_* 标志
-  string syscall_name      = 4;  // 系统调用名（如 "execve"、"execveat"）
+message exec_semantic_data
+{
+    // 供规则与基线使用的语义化镜像路径；实例性片段已替换
+    string semantic_filename = 1;
+    string argv0             = 2;  // argv[0]（程序名或启动命令）
+    string argv1             = 5;  // argv[1]（第一个参数；无参数时为空）
+    uint32 flags             = 3;  // execveat 有效，AT_* 标志
+    string syscall_name      = 4;  // 系统调用名（如 "execve"、"execveat"）
+    // 用户给出的原始路径，原样搬运（可相对、可裸名、可为空）
+    string invoked           = 6;
+    // 事件时刻进程镜像的真实绝对路径，供取证；不做实例语义化
+    string image             = 7;
+    // image 的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致：bit0 路径被截断，bit1 无法解析
+    uint32 image_flags       = 8;
+    string argv2             = 9;   // argv[2]；参数不足时为空
+    string argv3             = 10;  // argv[3]；参数不足时为空
+    // LD_PRELOAD / LD_LIBRARY_PATH 的值（已去掉变量名前缀）；envp 前 16 项内
+    // 未命中时为空。进程注入的典型特征
+    string ld_preload        = 11;
+    string ld_library_path   = 12;
 }
 
 // 权限变更事件（setuid / setgid / capset）。
-message credential_semantic_data {
-  // capset 的 Capability 集合
-  message capability_set {
-    uint64 effective   = 1;  // Effective Capability
-    uint64 permitted   = 2;  // Permitted Capability
-    uint64 inheritable = 3;  // Inheritable Capability
-  }
+message credential_semantic_data
+{
+    // capset 的 Capability 集合
+    message capability_set
+    {
+        uint64 effective   = 1;  // Effective Capability
+        uint64 permitted   = 2;  // Permitted Capability
+        uint64 inheritable = 3;  // Inheritable Capability
+    }
 
-  // 具体权限操作，三者互斥（对应内核侧 credential_event 的 union）
-  oneof op {
-    uint32        setuid_uid = 1;  // setuid() 设置的新 UID
-    uint32        setgid_gid = 2;  // setgid() 设置的新 GID
-    capability_set capset    = 3;  // capset() 设置的 Capability 集合
-  }
+    reserved 1, 2, 3;
+    reserved "setuid_uid", "setgid_gid";
 
-  string syscall_name = 4;  // 系统调用名（如 "setuid"、"setgid"、"capset"）
+    string syscall_name = 4;  // 系统调用名（如 "setuid"、"setgid"、"capset"）
+    // 1=UID 2=GID 3=CAPS 4=PRCTL，与内核 enum credential_kind 同值
+    uint32 kind         = 5;
+    repeated uint32 requested = 6;  // 请求的目标 UID 或 GID，按 kind 解释
+    capability_set capset = 7;      // kind=CAPS 时有效
+    uint32 prctl_option  = 8;       // kind=PRCTL 时的 option
+    uint64 arg2          = 9;       // prctl 的 arg2
+    uint32 securebits    = 10;      // PR_SET_SECUREBITS 的新值；其余为 0
 }
 
 // 命名空间事件（unshare / setns）。
-message namespace_semantic_data {
-  uint32 ns_type = 1;  // setns() 目标 Namespace 类型（CLONE_NEW*）；unshare 涉及时亦填
-  uint64 flags   = 2;  // unshare() 的 CLONE_* 标志
-  string syscall_name = 3;  // 系统调用名（如 "unshare"、"setns"）
+message namespace_semantic_data
+{
+    reserved 1;
+    reserved "ns_type";
+
+    uint64 flags        = 2;  // unshare 的完整 CLONE_* 掩码；setns 为 0
+    string syscall_name = 3;
+    uint32 ns_mask      = 4;  // 涉及的 CLONE_NEW* 位：unshare 为掩码，setns 为单值
+    sint32 fd           = 5;  // setns 的目标 fd；unshare 为 -1
+    // mount 的源、pivot_root 的新根；绝对化，解析状态位见下
+    string source       = 6;
+    // mount 的挂载点、umount2/chroot 的路径
+    string target       = 7;
+    // 两条路径的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致
+    uint32 source_flags = 8;
+    uint32 target_flags = 9;
+    string fstype       = 10;  // mount 的文件系统类型；其余为空
+    uint64 mount_flags  = 11;  // mount 的 MS_*；umount2 的 MNT_*；其余为 0
 }
 
 // 文件系统调用事件（open / openat / creat / unlink / link / rename 等）。
-// 文件路径由独立的文件事件采集模块（files.bpf.c）负责，此处仅含标志位。
-message file_syscall_semantic_data {
-  uint32 flags = 1;  // open 系列的 O_* 标志；renameat2 的 RENAME_* 标志
-  uint32 mode  = 2;  // creat()/open(O_CREAT) 创建权限
-  string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
+message file_syscall_semantic_data
+{
+    reserved 4;
+    reserved "path";
+
+    uint32 flags        = 1;  // open 系列的 O_* 标志；renameat2 的 RENAME_* 标志
+    uint32 mode         = 2;  // creat()/open(O_CREAT) 创建权限
+    string syscall_name = 3;  // 系统调用名（如 "open"、"unlink"、"renameat2"）
+    // 主路径：open 族的唯一路径、rename/link 的源；未采集时为空
+    string path1        = 5;
+    // 第二路径：rename 的目标、link 的新名；无第二路径时为空
+    string path2        = 6;
+    // 两条路径的解析状态位，取值与 kernel/include/syscall_event_type.h 的
+    // enum path_flag 一致：bit0 路径被截断，bit1 无法解析为绝对路径（此时
+    // 该路径承载的是用户给出的原始串）
+    uint32 path1_flags  = 7;
+    uint32 path2_flags  = 8;
+    // 两条路径的基准目录 fd；无 *at 语义或没有第二路径时为 AT_FDCWD(-100)
+    sint32 dirfd        = 9;
+    sint32 dirfd2       = 10;
+    uint32 at_flags     = 11;  // *at 族的 AT_* 标志
+    uint64 resolve      = 12;  // openat2 的 open_how.resolve
+    int64 length        = 13;  // truncate 的目标长度
+    uint32 dev          = 14;  // mknod 的设备号
+    // open_by_handle_at/name_to_handle_at 的文件句柄前 16 字节
+    bytes handle        = 15;
+    sint32 fd           = 16;  // 以 fd 为参数的操作；无则为 -1
 }
 
 // 内存事件（mmap / mprotect）。
-message memory_semantic_data {
-  uint64 prot  = 1;  // PROT_* 权限
-  uint64 flags = 2;  // MAP_* 标志（mmap）或保留扩展
-  string syscall_name = 3;  // 系统调用名（如 "mmap"、"mprotect"）
+message memory_semantic_data
+{
+    uint64 prot         = 1;  // PROT_* 权限
+    uint64 flags        = 2;  // MAP_* 标志（mmap）或保留扩展
+    string syscall_name = 3;  // 系统调用名（如 "mmap"、"mprotect"）
+    uint64 addr         = 4;  // 请求地址；实际地址在事件头的 ret
+    uint64 length       = 5;  // 映射/保护的字节数
+    uint64 offset       = 6;  // mmap 的文件区段起点；mprotect 为 0
+    sint32 fd           = 7;  // mmap 的源文件 fd；匿名映射与 mprotect 为 -1
+    bool anonymous      = 8;  // MAP_ANONYMOUS：匿名内存
+    bool wx             = 9;  // prot 同时含 PROT_WRITE 与 PROT_EXEC
+    // mmap 的源文件绝对路径；匿名映射或解析失败时为空。解析状态位取值与
+    // kernel/include/syscall_event_type.h 的 enum path_flag 一致
+    string path         = 10;
+    uint32 path_flags   = 11;
 }
 
-// 网络事件（socket / bind / connect）。
-message network_syscall_semantic_data {
-  uint32 family   = 1;  // AF_INET / AF_INET6 / AF_UNIX 等地址族
-  uint32 type     = 2;  // SOCK_STREAM / SOCK_DGRAM 等
-  uint32 protocol = 3;  // IPPROTO_TCP 等协议号
-  string syscall_name = 4;  // 系统调用名（如 "socket"、"bind"、"connect"）
+// 网络事件（socket / bind / connect / sendto / sendmsg）。
+message network_syscall_semantic_data
+{
+    uint32 family       = 1;  // AF_INET / AF_INET6 / AF_UNIX 等地址族
+    uint32 type         = 2;  // SOCK_STREAM / SOCK_DGRAM 等
+    uint32 protocol     = 3;  // IPPROTO_TCP 等协议号
+    string syscall_name = 4;  // 系统调用名（如 "socket"、"bind"、"connect"）
+    // 目标 IP，网络字节序，固定 4 个字：IPv4 用 dst_ip[0]，IPv6 用 dst_ip[0..3]；
+    // 目标地址未采集时 4 个字全为 0
+    repeated uint32 dst_ip = 5;
+    uint32 dst_port        = 6;  // 目标端口（主机字节序）
+    uint32 src_port        = 7;  // 本地端口（主机字节序）；connect 的 enter 阶段可能为 0
+    sint32 sockfd          = 8;  // 涉及套接字的 fd；socket 事件为 -1（新 fd 在 ret）
+    uint64 count           = 9;  // sendto/sendmsg 的字节数；其余为 0
+    // AF_UNIX 的目标 sun_path（抽象命名空间以 '@' 开头）；非 AF_UNIX 为空
+    string unix_path       = 10;
+    // recvfrom 的来源 IP，网络字节序，固定 4 个字；未采集时 4 个字全为 0
+    repeated uint32 src_ip = 11;
+    sint32 backlog         = 12;  // listen 的积压队列长度；其余为 0
+    uint32 flags           = 13;  // accept4 的 SOCK_NONBLOCK/SOCK_CLOEXEC；其余为 0
 }
 
 // 内核操作事件（ptrace / bpf）。
-message kernel_semantic_data {
-  uint32 command = 1;  // ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
-  uint64 arg     = 2;  // 与 command 对应的重要参数（按事件类型解释）
-  string syscall_name = 3;  // 系统调用名（如 "ptrace"、"bpf"）
+message kernel_semantic_data
+{
+    uint32 command      = 1;  // ptrace 请求类型（PTRACE_*）或 bpf 命令（BPF_*）
+    uint64 arg          = 2;  // ptrace 的数据参数（POKETEXT 的 data）；bpf 为 attr 大小
+    string syscall_name = 3;  // 系统调用名（如 "ptrace"、"bpf"）
+    uint32 target_pid   = 4;  // ptrace 的目标 pid；bpf 为 0
+    // bpf：union bpf_attr 的前 16 字节，按 4 个小端 u32 原样搬运
+    repeated uint32 bpf_attr = 5;
+    // bpf：按 cmd 解出的类型（map_type / prog_type / attach_type）；解不出为 0
+    uint32 bpf_type     = 6;
+    string module_name  = 7;   // 模块名（delete_module/module_load/module_free）
+    uint32 module_len   = 8;   // init_module 的镜像长度
+    uint64 kexec_entry  = 9;   // kexec_load 的入口地址
+    uint32 kexec_segments = 10;  // kexec_load 的段数
+    uint32 reboot_cmd   = 11;  // reboot 的命令（LINUX_REBOOT_CMD_*）
+    string hostname     = 12;  // sethostname 的新主机名
+}
+
+// 信号发送事件（kill / tkill / tgkill / rt_sigqueueinfo）。
+message signal_semantic_data
+{
+    uint32 sig          = 1;  // 信号号
+    // kill 的 pid、tgkill 的 tgid、tkill 的 tid
+    uint32 target_pid   = 2;
+    uint32 target_tid   = 3;  // tgkill 的 tid；其余为 0
+    sint32 si_code      = 4;  // rt_sigqueueinfo 的 si_code；其余为 0
+    string syscall_name = 5;  // 系统调用名
 }

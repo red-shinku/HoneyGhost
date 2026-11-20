@@ -16,16 +16,15 @@ namespace hng {
 
 struct SemanticComponent::Impl {
     /**
-     * @brief 先占用存活名额，再按选项绑定四条通道端。
+     * @brief 先占用存活名额，再按选项绑定两条通道端。
      * @param taken 本创建方法的存活标志
-     * @param options 两条原始通道读端与两条语义通道写端
+     * @param options 原始通道读端与语义通道写端
      * @throws std::logic_error 名额已被占用
      * @throws std::system_error 事件循环 fd 创建失败
      */
     Impl(std::atomic<bool>& taken, const SemanticOptions& options)
         : guard(taken, "SemanticComponent"),
-          aggregate(options.raw_file, options.raw_syscall, options.out_file,
-                    options.out_syscall)
+          aggregate(options.raw_syscall, options.out_syscall)
     {
     }
 

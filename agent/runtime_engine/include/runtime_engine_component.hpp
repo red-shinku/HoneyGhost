@@ -17,6 +17,7 @@
 class ContextMaintainer;
 class ProcessJoinService;
 class ProcessUpdateService;
+class ProcessLookupService;
 class RoleJoinService;
 class RoleLookupService;
 
@@ -25,7 +26,6 @@ namespace hng {
 template <class T>
 class EventChannelReader;
 
-struct file_semantic_data;
 struct syscall_semantic_data;
 
 /** @brief 运行时引擎的观测快照 */
@@ -40,8 +40,6 @@ struct RuntimeEngineStats {
     uint64_t idle_waits       = 0;
     /// 累计：系统调用语义通道未入队的元素数（队列满与通道关闭合计）
     uint64_t syscall_dropped  = 0;
-    /// 累计：文件语义通道未入队的元素数（队列满与通道关闭合计）
-    uint64_t file_dropped     = 0;
 };
 
 /**
@@ -52,14 +50,14 @@ struct RuntimeEngineStats {
 struct RuntimeEngineOptions {
     /// 系统调用语义通道读端
     hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input = nullptr;
-    /// 文件语义通道读端
-    hng::EventChannelReader<hng::file_semantic_data>* file_input       = nullptr;
     /// 上下文维护模块
     ContextMaintainer* ctx_maintainer                                  = nullptr;
     /// 控制平面进程注册接口
     ProcessJoinService* process_join                                   = nullptr;
     /// 控制平面进程镜像更新接口
     ProcessUpdateService* process_update                               = nullptr;
+    /// 控制平面进程查询接口，用于组装事件时刻的进程镜像快照
+    ProcessLookupService* process_lookup                               = nullptr;
     /// 控制平面角色归属接口
     RoleJoinService* role_join                                         = nullptr;
     /// 控制平面角色查询接口

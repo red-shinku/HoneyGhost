@@ -26,7 +26,6 @@
 namespace hng {
 template <class T>
 class EventChannelReader;
-struct file_semantic_data;
 struct syscall_semantic_data;
 }  // namespace hng
 
@@ -41,18 +40,18 @@ struct syscall_semantic_data;
 class RuntimeEngine final : public SubscriberRegService {
    public:
     /// @param syscall_input 系统调用语义通道读端，未接线传 nullptr
-    /// @param file_input 文件语义通道读端，未接线传 nullptr
     /// @param ctx_maintainer 上下文维护模块，非拥有
     /// @param process_join 控制平面进程注册接口，非拥有
     /// @param process_update 控制平面进程镜像更新接口，非拥有
+    /// @param process_lookup 控制平面进程查询接口，非拥有；空表示未接线
     /// @param role_join 控制平面角色归属接口，非拥有
     /// @param role_lookup 控制平面角色查询接口，非拥有
     /// @throws std::system_error 事件循环或命令唤醒 fd 创建失败
     RuntimeEngine(
         hng::EventChannelReader<hng::syscall_semantic_data>* syscall_input,
-        hng::EventChannelReader<hng::file_semantic_data>* file_input,
         ContextMaintainer* ctx_maintainer, ProcessJoinService* process_join,
-        ProcessUpdateService* process_update, RoleJoinService* role_join,
+        ProcessUpdateService* process_update,
+        ProcessLookupService* process_lookup, RoleJoinService* role_join,
         RoleLookupService* role_lookup);
 
     /// @brief 登记系统订阅者
@@ -82,8 +81,8 @@ class RuntimeEngine final : public SubscriberRegService {
     hng::RuntimeEngineStats stats() const;
 
    private:
-    /// 一轮取事件的产物槽位数：每条已接线队列每轮至多产出一条
-    static constexpr std::size_t kMaxDraftsPerRound = 4;
+    /// 一轮取事件的产物槽位数：每轮至多产出一条
+    static constexpr std::size_t kMaxDraftsPerRound = 1;
 
     /// 一次唤醒内最多分发的事件数：用尽即回到命令排空，使订阅命令的落地延迟
     /// 有上界
@@ -92,7 +91,6 @@ class RuntimeEngine final : public SubscriberRegService {
     /// 就绪源的标识，与事件循环的停机 tag 不冲突
     static constexpr std::uint64_t kCommandTag      = 1;
     static constexpr std::uint64_t kSyscallTag      = 2;
-    static constexpr std::uint64_t kFileTag         = 3;
 
     /// @brief 订阅命令；两张表分别对应两个 kind
     struct Command {
@@ -117,7 +115,7 @@ class RuntimeEngine final : public SubscriberRegService {
     /// @brief 落地一条命令
     void land(Command& cmd);
 
-    /// @brief 分发事件，直到两条输入都取空或达到 kMaxEventsPerWake
+    /// @brief 分发事件，直到输入取空或达到 kMaxEventsPerWake
     /// @param[out] drafts 本轮产物，槽位数不得少于 kMaxDraftsPerRound
     /// @return 本次分发的事件数；0 表示输入已取空
     std::size_t drain_events(RuntimeDraft* drafts);

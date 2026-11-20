@@ -15,9 +15,9 @@
 
 /**
  * @brief 订阅流关心的运行时信息组合
- * @details 值对象，可拷贝。共四个维度：进程、角色、上下文、事件类型。角色维度
- * 含 roleID 与 roleLabel 两组取值。取值集合为空表示该维度不限，故默认构造即全选。
- * 表达式集合与各维度取交集。
+ * @details 值对象，可拷贝。共五个维度：进程、角色、上下文、事件来源、语义子类型。
+ * 角色维度含 roleID 与 roleLabel 两组取值。取值集合为空表示该维度不限，故默认
+ * 构造即全选。表达式集合与各维度取交集。
  * @note 匹配语义：维度之间取交集，维度之内取并集——已设置的维度要求事件至少
  * 命中该维度中某个集合的某个成员。
  * @note 各 set_* 与 add_expression 只在构造期调用，构造完成后成员不变。
@@ -48,9 +48,14 @@ class RuntimeInfoFilter {
     /// @note 取值在构造期排序去重
     RuntimeInfoFilter& set_context(std::vector<uint32_t> contextIDs);
 
-    /// @brief 设置事件类型维度
+    /// @brief 设置事件来源维度
     /// @note 取值在构造期排序去重
     RuntimeInfoFilter& set_etype(std::vector<hng::EventType> etypes);
+
+    /// @brief 设置语义子类型维度
+    /// @note UNKNOWN_EVENT(0) 是合法取值，按字面比较
+    /// @note 取值在构造期排序去重
+    RuntimeInfoFilter& set_subtype(std::vector<syscall_event_type> subtypes);
 
     /// @brief 追加一条布尔表达式，与既有条件取交集
     /// @param expr 表达式；默认构造的表达式恒真，不改变结果
@@ -59,7 +64,8 @@ class RuntimeInfoFilter {
 
     /// @brief 判定一条运行时信息是否命中本过滤器
     /// @return 所有已设置维度与表达式均命中为 true；无已设置条件时为 true
-    /// @note 判定顺序：etype → process.pid → contextID → 角色维度 → 各表达式
+    /// @note 判定顺序：etype → subtype → process.pid → contextID → 角色维度 →
+    /// 各表达式
     bool should_take(const hng::RuntimeInformation& info) const;
 
    private:
@@ -68,6 +74,7 @@ class RuntimeInfoFilter {
     std::vector<hng::role_label_t> roleLabels_;
     std::vector<uint32_t> contextIDs_;
     std::vector<hng::EventType> etypes_;
+    std::vector<syscall_event_type> subtypes_;
     std::vector<hng::FilterExpr> expressions_;
 };
 

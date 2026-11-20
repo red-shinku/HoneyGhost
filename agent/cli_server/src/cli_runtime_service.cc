@@ -99,22 +99,22 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         item->set_channel_dropped(line.channel_dropped);
         item->set_channel_rejected(line.channel_rejected);
         item->set_reserve_failures(line.reserve_failures);
+        item->set_skipped_probes(line.skipped_probes);
+        item->set_attach_failed(line.attach_failed);
+        item->set_pending_lost(line.pending_lost);
+        item->set_malformed(line.malformed);
         item->set_attached(line.attached);
         item->set_polling(line.polling);
     }
     if (stats.semantic) {
         const hng::SemanticStats& source   = *stats.semantic;
         hng::clisv::semantic_stats* target = out.mutable_semantic();
-        target->set_processed_file(source.processed_file);
         target->set_processed_syscall(source.processed_syscall);
-        target->set_raw_file_dropped(source.raw_file_dropped);
-        target->set_raw_file_rejected(source.raw_file_rejected);
         target->set_raw_syscall_dropped(source.raw_syscall_dropped);
         target->set_raw_syscall_rejected(source.raw_syscall_rejected);
-        target->set_out_file_dropped(source.out_file_dropped);
-        target->set_out_file_rejected(source.out_file_rejected);
         target->set_out_syscall_dropped(source.out_syscall_dropped);
         target->set_out_syscall_rejected(source.out_syscall_rejected);
+        target->set_path_unresolved(source.path_unresolved);
     }
     if (stats.engine) {
         const hng::PipelineEngineStats& source = *stats.engine;
@@ -124,7 +124,6 @@ void FillPipelineStats(const hng::PipelineStats& stats,
         target->set_queue_rejected(source.queue_rejected);
         target->set_idle_waits(source.idle_waits);
         target->set_syscall_dropped(source.syscall_dropped);
-        target->set_file_dropped(source.file_dropped);
     }
     hng::clisv::cli_stream_stats* cli = out.mutable_cli();
     cli->set_active(stats.cli.active);
@@ -156,8 +155,8 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
         case hng::clisv::FILTER_FIELD_TYPE:
             result.field = hng::FilterField::TYPE;
             break;
-        case hng::clisv::FILTER_FIELD_KIND:
-            result.field = hng::FilterField::KIND;
+        case hng::clisv::FILTER_FIELD_SUBTYPE:
+            result.field = hng::FilterField::SUBTYPE;
             break;
         case hng::clisv::FILTER_FIELD_PID:
             result.field = hng::FilterField::PID;
@@ -243,15 +242,16 @@ std::optional<hng::FilterAtom> ToFilterAtom(const hng::clisv::filter_atom& atom,
     for (const uint32_t value : atom.numbers()) {
         switch (result.field) {
             case hng::FilterField::TYPE:
-                if (value > 3) {
+                if (value != 0) {
                     error = "invalid filter expression: type value " +
-                            std::to_string(value) + " is out of range 0..3";
+                            std::to_string(value) +
+                            " is not EVENT_TYPE_SYSCALL (0)";
                     return std::nullopt;
                 }
                 break;
-            case hng::FilterField::KIND:
+            case hng::FilterField::SUBTYPE:
                 if (value < 1 || value > 9) {
-                    error = "invalid filter expression: kind value " +
+                    error = "invalid filter expression: subtype value " +
                             std::to_string(value) + " is out of range 1..9";
                     return std::nullopt;
                 }
@@ -384,10 +384,28 @@ std::optional<RuntimeInfoFilter> hng::cli::ToRuntimeInfoFilter(
     std::vector<hng::EventType> etypes;
     etypes.reserve(static_cast<std::size_t>(request.etype_size()));
     for (const int raw : request.etype()) {
-        etypes.push_back(
-            FromProtoEventType(static_cast<hng::clisv::EventType>(raw)));
+        std::optional<hng::EventType> etype =
+            FromProtoEventType(static_cast<hng::clisv::EventType>(raw));
+        if (!etype.has_value()) {
+            error = "invalid event type " + std::to_string(raw) +
+                    ": only syscall events are available";
+            return std::nullopt;
+        }
+        etypes.push_back(*etype);
     }
     filter.set_etype(std::move(etypes));
+
+    std::vector<syscall_event_type> subtypes;
+    subtypes.reserve(static_cast<std::size_t>(request.subtype_size()));
+    for (const int value : request.subtype()) {
+        if (value < 1 || value > 9) {
+            error = "invalid event subtype " + std::to_string(value) +
+                    ": value is out of range 1..9";
+            return std::nullopt;
+        }
+        subtypes.push_back(static_cast<syscall_event_type>(value));
+    }
+    filter.set_subtype(std::move(subtypes));
 
     if (request.has_info()) {
         const hng::clisv::runtimeinfo& info = request.info();

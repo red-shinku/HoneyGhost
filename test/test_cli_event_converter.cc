@@ -3,21 +3,22 @@
  * @brief 运行时事件 → RuntimeService 响应报文的单测
  * @details
  * 纯转换，无 IO / 无协程。覆盖：
- *  - syscall 载荷的八个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
- *  - 文件事件落到 file_ev；
- *  - eventhead 的字段来源：pid 与归属（含 roleLabel）取自 RuntimeInformation，
- *    其余取自事件头；
+ *  - syscall 载荷的九个变体备选各自落到 oneof 的对应成员，载荷内容不丢；
+ *  - eventhead 的字段来源：pid、归属（含 roleLabel）与 exe 取自
+ *    RuntimeInformation，其余取自事件头（含 uid/euid/ret/comm/mnt_ns）；
  *  - 归属未落定时 roleLabel 留空；
- *  - 事件类型的双边映射可往返。
+ *  - 事件来源的双边映射可往返，非法报文取值返回 std::nullopt。
  * @author red-shinku
  * @date 2026.10.16
  */
 
 #include "agent/cli_server/src/event_converter.hpp"
+#include "agent/util/include/utf8_sanitize.hpp"
 
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -42,27 +43,69 @@ constexpr uint64_t kPpidStart = 84;
 constexpr uint32_t kRoleID    = 7;
 constexpr uint32_t kContextID = 9;
 constexpr char kRoleLabel[]   = "nginx:1.25";
+constexpr uint32_t kUid       = 1000;
+constexpr uint32_t kEuid      = 0;
+constexpr int64_t kRet        = 3;
+constexpr uint32_t kMntNS     = 4026532222;
+constexpr char kComm[]        = "bash";
+constexpr char kExe[]         = "/tmp/test";
 
 /// 一条归属已落定的 syscall 事件，事件头填齐
-hng::RuntimeEvent make_syscall(hng::EventType type)
+hng::RuntimeEvent make_syscall()
 {
     hng::RuntimeEvent event{};
-    event.runtimeInfo.process   = hng::Process{kPid, kPidStart};
-    event.runtimeInfo.etype     = type;
-    event.runtimeInfo.roleID    = kRoleID;
-    event.runtimeInfo.roleLabel = kRoleLabel;
-    event.runtimeInfo.contextID = kContextID;
-    event.data.emplace<hng::syscall_semantic_data>();
+    event.runtimeInfo.process       = hng::Process{kPid, kPidStart};
+    event.runtimeInfo.etype         = hng::EventType::SYSCALL_EVENT;
+    event.runtimeInfo.roleID        = kRoleID;
+    event.runtimeInfo.roleLabel     = kRoleLabel;
+    event.runtimeInfo.contextID     = kContextID;
+    event.runtimeInfo.exe           = kExe;
 
-    hng::syscall_semantic_data& syscall =
-        std::get<hng::syscall_semantic_data>(event.data);
-    syscall.head.pid             = kPid;
-    syscall.head.pid_start_time  = kPidStart;
-    syscall.head.ppid            = kPpid;
-    syscall.head.ppid_start_time = kPpidStart;
-    syscall.head.type            = type;
+    event.data.head.pid             = kPid;
+    event.data.head.pid_start_time  = kPidStart;
+    event.data.head.ppid            = kPpid;
+    event.data.head.ppid_start_time = kPpidStart;
+    event.data.head.type            = hng::EventType::SYSCALL_EVENT;
+    event.data.head.subtype         = EXEC_EVENT;
+    event.data.head.uid             = kUid;
+    event.data.head.euid            = kEuid;
+    event.data.head.ret             = kRet;
+    event.data.head.comm            = kComm;
+    event.data.head.mnt_ns          = kMntNS;
     return event;
 }
+
+// 内核 syscall_event_type 与 proto Subtype 必须同数值
+static_assert(static_cast<int>(UNKNOWN_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_UNSPECIFIED),
+              "UNKNOWN_EVENT must equal SUBTYPE_UNSPECIFIED");
+static_assert(static_cast<int>(PROCESS_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_PROCESS),
+              "PROCESS_EVENT must equal SUBTYPE_PROCESS");
+static_assert(static_cast<int>(EXEC_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_EXEC),
+              "EXEC_EVENT must equal SUBTYPE_EXEC");
+static_assert(static_cast<int>(CREDENTIAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_CREDENTIAL),
+              "CREDENTIAL_EVENT must equal SUBTYPE_CREDENTIAL");
+static_assert(static_cast<int>(NAMESPACE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NAMESPACE),
+              "NAMESPACE_EVENT must equal SUBTYPE_NAMESPACE");
+static_assert(static_cast<int>(FILE_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_FILE),
+              "FILE_EVENT must equal SUBTYPE_FILE");
+static_assert(static_cast<int>(MEMORY_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_MEMORY),
+              "MEMORY_EVENT must equal SUBTYPE_MEMORY");
+static_assert(static_cast<int>(NETWORK_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_NETWORK),
+              "NETWORK_EVENT must equal SUBTYPE_NETWORK");
+static_assert(static_cast<int>(KERNEL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_KERNEL),
+              "KERNEL_EVENT must equal SUBTYPE_KERNEL");
+static_assert(static_cast<int>(SIGNAL_EVENT) ==
+                  static_cast<int>(hng::clisv::SUBTYPE_SIGNAL),
+              "SIGNAL_EVENT must equal SUBTYPE_SIGNAL");
 
 using SDataCase = hng::clisv::syscall_event_data::SDataCase;
 
@@ -142,11 +185,19 @@ void run_syscall_payload_mapping()
          [](const hng::clisv::syscall_event_data& d) {
              return d.kernel_data().syscall_name();
          }},
+        {"signal",
+         [](hng::syscall_semantic_data& s) {
+             s.data.emplace<8>().set_syscall_name("signal");
+         },
+         hng::clisv::syscall_event_data::kSignalData,
+         [](const hng::clisv::syscall_event_data& d) {
+             return d.signal_data().syscall_name();
+         }},
     };
 
     for (const PayloadCase& c : table) {
-        hng::RuntimeEvent event = make_syscall(hng::EventType::SYSCALL_EVENT);
-        c.fill(std::get<hng::syscall_semantic_data>(event.data));
+        hng::RuntimeEvent event = make_syscall();
+        c.fill(event.data);
 
         hng::clisv::eventrecord msg;
         hng::cli::ToProto(event, msg);
@@ -161,7 +212,7 @@ void run_syscall_payload_mapping()
 
 void run_head_fields()
 {
-    hng::RuntimeEvent event = make_syscall(hng::EventType::FILE_EVENT);
+    hng::RuntimeEvent event = make_syscall();
 
     hng::clisv::eventrecord msg;
     hng::cli::ToProto(event, msg);
@@ -173,50 +224,80 @@ void run_head_fields()
     CHECK(msg.head().ppid() == kPpid, "ppid 取自事件头");
     CHECK(msg.head().ppid_start_time() == kPpidStart,
           "ppid 的 start_time 取自事件头");
-    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_FILE, "事件类型取自事件头");
+    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_SYSCALL,
+          "事件类型取自事件头");
+    CHECK(msg.head().subtype() == hng::clisv::SUBTYPE_EXEC,
+          "语义子类型取自事件头");
     CHECK(msg.head().rolelabel() == kRoleLabel, "roleLabel 直传");
+    CHECK(msg.head().uid() == kUid, "uid 取自事件头");
+    CHECK(msg.head().euid() == kEuid, "euid 取自事件头");
+    CHECK(msg.head().ret() == kRet, "ret 取自事件头");
+    CHECK(msg.head().comm() == kComm, "comm 取自事件头");
+    CHECK(msg.head().mnt_ns() == kMntNS, "mnt_ns 取自事件头");
+    CHECK(msg.head().exe() == kExe, "exe 取自 RuntimeInformation");
 }
 
-void run_file_event()
+/// roleLabel 与 exe 不经过语义层，应在此收敛为合法 UTF-8
+void run_utf8_convergence()
 {
-    hng::RuntimeEvent event{};
-    event.runtimeInfo.process   = hng::Process{kPid, kPidStart};
-    event.runtimeInfo.etype     = hng::EventType::FILE_EVENT;
-    event.runtimeInfo.roleID    = 0;
-    event.runtimeInfo.contextID = 0;
-    event.data.emplace<hng::file_semantic_data>();
-
-    hng::file_semantic_data& file = std::get<hng::file_semantic_data>(event.data);
-    file.head.pid                 = kPid;
-    file.head.pid_start_time      = kPidStart;
-    file.head.ppid                = kPpid;
-    file.head.ppid_start_time     = kPpidStart;
-    file.head.type                = hng::EventType::FILE_EVENT;
-    file.data.set_semantic_filename("/tmp/a");
-    file.data.set_comm("cat");
+    hng::RuntimeEvent event     = make_syscall();
+    event.runtimeInfo.roleLabel = std::string("\xff", 1);
+    event.runtimeInfo.exe       = "a\xe4\xb8";
 
     hng::clisv::eventrecord msg;
     hng::cli::ToProto(event, msg);
 
-    CHECK(msg.event_case() == hng::clisv::eventrecord::kFileEv,
-          "文件事件应走 file_ev");
-    CHECK(msg.file_ev().semantic_filename() == "/tmp/a", "文件载荷应被搬进报文");
-    CHECK(msg.file_ev().comm() == "cat", "文件载荷字段不应丢");
-    CHECK(msg.head().type() == hng::clisv::EVENT_TYPE_FILE, "事件类型随之");
-    CHECK(msg.head().roleid() == 0, "未落定的归属传 0");
-    CHECK(msg.head().rolelabel().empty(), "未落定的归属不带标签");
+    CHECK(msg.head().rolelabel() == "?", "roleLabel 非法字节替换为 ?");
+    CHECK(msg.head().exe() == "a??", "exe 被截断的多字节逐字节替换为 ?");
+    CHECK(hng::is_valid_utf8(msg.head().rolelabel()),
+          "roleLabel 收敛为合法 UTF-8");
+    CHECK(hng::is_valid_utf8(msg.head().exe()), "exe 收敛为合法 UTF-8");
+}
+
+/// 内核枚举的每个取值都应落到同数值的 Subtype
+void run_subtype_mapping()
+{
+    struct Case {
+        enum syscall_event_type subtype;
+        hng::clisv::Subtype expected;
+    };
+    const Case cases[] = {
+        {UNKNOWN_EVENT, hng::clisv::SUBTYPE_UNSPECIFIED},
+        {PROCESS_EVENT, hng::clisv::SUBTYPE_PROCESS},
+        {EXEC_EVENT, hng::clisv::SUBTYPE_EXEC},
+        {CREDENTIAL_EVENT, hng::clisv::SUBTYPE_CREDENTIAL},
+        {NAMESPACE_EVENT, hng::clisv::SUBTYPE_NAMESPACE},
+        {FILE_EVENT, hng::clisv::SUBTYPE_FILE},
+        {MEMORY_EVENT, hng::clisv::SUBTYPE_MEMORY},
+        {NETWORK_EVENT, hng::clisv::SUBTYPE_NETWORK},
+        {KERNEL_EVENT, hng::clisv::SUBTYPE_KERNEL},
+        {SIGNAL_EVENT, hng::clisv::SUBTYPE_SIGNAL},
+    };
+    for (const Case& c : cases) {
+        hng::RuntimeEvent event = make_syscall();
+        event.data.head.subtype = c.subtype;
+
+        hng::clisv::eventrecord msg;
+        hng::cli::ToProto(event, msg);
+        CHECK(msg.head().subtype() == c.expected,
+              "内核 subtype 应映射到同数值的报文 Subtype");
+    }
 }
 
 void run_event_type_round_trip()
 {
-    const hng::EventType all[] = {
-        hng::EventType::SYSCALL_EVENT, hng::EventType::FILE_EVENT,
-        hng::EventType::NETWORK_EVENT, hng::EventType::IPC_EVENT};
-    for (const hng::EventType type : all) {
-        CHECK(hng::cli::FromProtoEventType(hng::cli::ToProtoEventType(type)) ==
-                  type,
-              "事件类型的双边映射应可往返");
-    }
+    const hng::EventType type = hng::EventType::SYSCALL_EVENT;
+    const std::optional<hng::EventType> round_trip =
+        hng::cli::FromProtoEventType(hng::cli::ToProtoEventType(type));
+    CHECK(round_trip.has_value() && *round_trip == type,
+          "事件来源的双边映射应可往返");
+
+    CHECK(!hng::cli::FromProtoEventType(static_cast<hng::clisv::EventType>(1))
+               .has_value(),
+          "已保留的事件来源取值应被拒绝");
+    CHECK(!hng::cli::FromProtoEventType(static_cast<hng::clisv::EventType>(-1))
+               .has_value(),
+          "非法的事件来源取值应被拒绝");
 }
 
 }  // namespace
@@ -225,7 +306,8 @@ int main()
 {
     run_syscall_payload_mapping();
     run_head_fields();
-    run_file_event();
+    run_utf8_convergence();
+    run_subtype_mapping();
     run_event_type_round_trip();
 
     if (g_fail) {

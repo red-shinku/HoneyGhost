@@ -31,15 +31,14 @@ add_subdirectory(kernel)
 
 # ============================================================
 # 事件数据结构：proto 生成载荷 + 手写组合结构
-#   proto/file_event.proto   → ${PROTO_GEN_DIR}/file_event.pb.{h,cc}
 #   proto/syscall_event.proto → ${PROTO_GEN_DIR}/syscall_event.pb.{h,cc}
 # ============================================================
 find_package(Protobuf REQUIRED)
 set(PROTO_GEN_DIR ${CMAKE_BINARY_DIR}/generated/event_data)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
-# 载荷由 proto 生成；手写的事件结构 file_event.hpp / syscall_event.hpp 为
-# header-only，订阅过滤器 filter_expr / runtime_info_filter 有实现源文件
+# 载荷由 proto 生成；手写的事件结构 syscall_event.hpp 为 header-only，
+# 订阅过滤器 filter_expr / runtime_info_filter 有实现源文件
 add_library(hng_event_data STATIC
     agent/event_data/src/filter_expr.cc
     agent/event_data/src/runtime_info_filter.cc
@@ -50,8 +49,7 @@ target_include_directories(hng_event_data PUBLIC
 )
 target_link_libraries(hng_event_data PUBLIC protobuf::libprotobuf)
 protobuf_generate(TARGET hng_event_data LANGUAGE cpp
-    PROTOS proto/file_event.proto
-          proto/syscall_event.proto
+    PROTOS proto/syscall_event.proto
     IMPORT_DIRS ${HNG_SOURCE_DIR}/proto
     PROTOC_OUT_DIR ${PROTO_GEN_DIR}
 )
@@ -76,6 +74,19 @@ target_link_libraries(hng_log
 )
 # log.cc 自身的告警（如无法识别的 HNG_LOG_LEVEL）以 "log" 为模块名
 target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
+
+# ============================================================
+# 公共工具
+#
+# 只依赖标准库；tracefs 解析供装配层预检与采集器共用。
+# ============================================================
+add_library(hng_util STATIC
+    agent/util/src/tracefs.cc
+    agent/util/src/utf8_sanitize.cc
+)
+target_include_directories(hng_util PUBLIC
+    ${HNG_SOURCE_DIR}
+)
 
 # ============================================================
 # 配置来源（通用 INI 文档 + 主配置 schema）
@@ -107,7 +118,6 @@ add_library(hng_semantic STATIC
     agent/semantic/src/path/token_validator.cc
     agent/semantic/src/semantic.cc
     agent/semantic/src/semantic_component.cc
-    agent/semantic/src/semantic_file.cc
     agent/semantic/src/semantic_syscall.cc
 )
 target_include_directories(hng_semantic PUBLIC
@@ -117,7 +127,7 @@ target_link_libraries(hng_semantic
     PUBLIC hng_event_data
            Threads::Threads
 )
-target_link_libraries(hng_semantic PRIVATE hng_log)
+target_link_libraries(hng_semantic PRIVATE hng_log hng_util)
 target_compile_definitions(hng_semantic PRIVATE HNG_LOG_TAG="semantic")
 
 # ============================================================

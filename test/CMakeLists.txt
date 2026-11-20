@@ -16,15 +16,11 @@ if(NOT TARGET hng_semantic)
         "（不要直接对 test/ 执行 cmake）")
 endif()
 
-add_executable(test_semantic_file test_semantic_file.cc)
-target_link_libraries(test_semantic_file PRIVATE hng_semantic)
-add_test(NAME test_semantic_file COMMAND test_semantic_file)
-
 add_executable(test_semantic_syscall test_semantic_syscall.cc)
 target_link_libraries(test_semantic_syscall PRIVATE hng_semantic)
 add_test(NAME test_semantic_syscall COMMAND test_semantic_syscall)
 
-# 语义聚合：真实 SPSC 双线验证转换、预算轮转与停机排空
+# 语义聚合：真实 SPSC 单线验证转换、预算与停机排空
 add_executable(test_semantic_aggregate test_semantic_aggregate.cc)
 target_link_libraries(test_semantic_aggregate PRIVATE
     hng_semantic Threads::Threads)
@@ -100,7 +96,18 @@ add_executable(test_kernel_preflight
     test_kernel_preflight.cc
     ${HNG_SOURCE_DIR}/agent/assembly/src/kernel_preflight.cc)
 target_include_directories(test_kernel_preflight PRIVATE ${HNG_SOURCE_DIR})
+target_link_libraries(test_kernel_preflight PRIVATE hng_util)
 add_test(NAME test_kernel_preflight COMMAND test_kernel_preflight)
+
+# tracefs 根与 tracepoint 存在性：临时目录伪造 events 树与挂载表，无特权
+add_executable(test_tracefs test_tracefs.cc)
+target_link_libraries(test_tracefs PRIVATE hng_util)
+add_test(NAME test_tracefs COMMAND test_tracefs)
+
+# UTF-8 收敛：合法序列保留、非法字节替换与定长缓冲边界，无 IO / 无特权
+add_executable(test_utf8_sanitize test_utf8_sanitize.cc)
+target_link_libraries(test_utf8_sanitize PRIVATE hng_util)
+add_test(NAME test_utf8_sanitize COMMAND test_utf8_sanitize)
 
 # 可执行目标的用法输出：不阻塞信号、不构造装配层
 add_test(NAME hng_agent_help COMMAND hng_agent --help)
@@ -287,6 +294,12 @@ target_include_directories(test_kernel_role_filter PRIVATE
     ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_filter)
 add_test(NAME test_kernel_role_filter COMMAND test_kernel_role_filter)
 
+# 内核侧路径解析：包含真实解析头，主机模拟 CO-RE 宏与读取 helper
+add_executable(test_path_resolver test_path_resolver.cc)
+target_include_directories(test_path_resolver PRIVATE
+    ${HNG_SOURCE_DIR} ${HNG_SOURCE_DIR}/test/fixtures/kernel_path)
+add_test(NAME test_path_resolver COMMAND test_path_resolver)
+
 # containerd 角色发现源：经真实 Unix socket 与假翻译进程对打，无特权
 if(TARGET hng_role_containerd)
     add_executable(test_role_containerd_discoverer test_role_containerd_discoverer.cc)
@@ -329,23 +342,45 @@ else()
     message(STATUS "libbpf 未找到，跳过 verify_starttime")
 endif()
 
+# ============================================================
+# 采集吞吐压测（需 root 与 BPF 权限，不注册为 ctest 用例）
+#
+#   make ebpf        # 产出 kernel/build/syscalls.bpf.o
+#   sudo build-agent/test/bench_syscalls --profile mixed --seconds 10
+#
+# 只链接 hng_util 与 libbpf：不引入 hng_collector 的 spdlog 运行时依赖，
+# 构建产物可直接在宿主上运行。libbpf 缺失时跳过。
+# ============================================================
+if(LIBBPF_LIB)
+    add_executable(bench_syscalls bench_syscalls.cc)
+    target_include_directories(bench_syscalls PRIVATE ${HNG_SOURCE_DIR})
+    target_link_libraries(bench_syscalls PRIVATE hng_util Threads::Threads
+                                                    ${LIBBPF_LIB})
+else()
+    message(STATUS "libbpf 未找到，跳过 bench_syscalls")
+endif()
+
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/bpf)
-foreach(probe files syscalls networks)
+foreach(probe syscalls)
     configure_file(fixtures/collector_skeleton_stub.hpp
         ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
+configure_file(fixtures/collector_skeleton_stub.hpp
+    ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf.h COPYONLY)
 configure_file(fixtures/libbpf_version_stub.h
     ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
 add_executable(test_collector_filter_map
     test_collector_filter_map.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/file_event_collector.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/network_event_collector.cc)
+    ${HNG_SOURCE_DIR}/agent/collector/src/probe_attach.cc
+    ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc)
 target_include_directories(test_collector_filter_map PRIVATE
     ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
+target_link_libraries(test_collector_filter_map PRIVATE hng_util hng_log)
+target_compile_definitions(test_collector_filter_map
+    PRIVATE HNG_LOG_TAG="collector")
 add_test(NAME test_collector_filter_map COMMAND test_collector_filter_map)
 
 # 采集聚合：假线 + eventfd 验证 epoll 唤醒、预算与停机排空，不依赖 libbpf。

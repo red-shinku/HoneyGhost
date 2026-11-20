@@ -21,9 +21,9 @@ func typeAtom(compare model.FilterCompare, types ...model.EventType) *model.Filt
 	}}
 }
 
-func kindAtom(compare model.FilterCompare, kinds ...model.EventKind) *model.FilterExpr {
+func subtypeAtom(compare model.FilterCompare, subtypes ...model.Subtype) *model.FilterExpr {
 	return &model.FilterExpr{Atom: &model.FilterAtom{
-		Field: model.FilterFieldKind, Compare: compare, Kinds: kinds,
+		Field: model.FilterFieldSubtype, Compare: compare, Subtypes: subtypes,
 	}}
 }
 
@@ -61,15 +61,13 @@ func TestParseExpr(t *testing.T) {
 		},
 		{
 			"types case insensitive and canonical",
-			[]string{"type=FILE,SYSCALL,network,ipc,syscall"},
-			typeAtom(model.FilterCompareEq,
-				model.EventTypeSyscall, model.EventTypeFile,
-				model.EventTypeNetwork, model.EventTypeIPC),
+			[]string{"type=SYSCALL,syscall"},
+			typeAtom(model.FilterCompareEq, model.EventTypeSyscall),
 		},
 		{
-			"kinds case insensitive and canonical",
-			[]string{"kind=EXEC,process,exec"},
-			kindAtom(model.FilterCompareEq, model.EventKindProcess, model.EventKindExec),
+			"subtypes case insensitive and canonical",
+			[]string{"subtype=EXEC,process,exec"},
+			subtypeAtom(model.FilterCompareEq, model.SubtypeProcess, model.SubtypeExec),
 		},
 		{
 			"role prefix",
@@ -229,7 +227,11 @@ func TestParseExprErrors(t *testing.T) {
 		{"negative", []string{"pid=-1"}, "not a uint32"},
 		{"prefix on numeric field", []string{"pid~=1"}, "~= is only supported for role"},
 		{"bad type", []string{"type=bogus"}, "invalid type"},
-		{"bad kind", []string{"kind=bogus"}, "invalid kind"},
+		{"old file type", []string{"type=file"}, "invalid type"},
+		{"bad subtype", []string{"subtype=bogus"}, "invalid subtype"},
+		{"old file_syscall subtype", []string{"subtype=file_syscall"}, "invalid subtype"},
+		{"old network_syscall subtype", []string{"subtype=network_syscall"}, "invalid subtype"},
+		{"old kind key", []string{"kind=exec"}, "unknown key"},
 		{"missing comparison", []string{"pid 1"}, "expected a comparison operator"},
 		{"missing predicate", []string{"pid=1 pid=2"}, "unexpected"},
 		{"unclosed parenthesis", []string{"(pid=1"}, "expected ')'"},

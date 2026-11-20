@@ -8,45 +8,50 @@ import (
 	"honeyghost/cli/internal/model"
 )
 
-func TestParseTypes(t *testing.T) {
+func TestParseSubtypes(t *testing.T) {
 	tests := []struct {
 		name   string
 		values []string
-		want   []model.EventType
+		want   []model.Subtype
 	}{
-		{"none", nil, []model.EventType{}},
-		{"single", []string{"syscall"}, []model.EventType{model.EventTypeSyscall}},
-		{"case and comma", []string{"SYSCALL,File"}, []model.EventType{
-			model.EventTypeSyscall, model.EventTypeFile,
+		{"none", nil, []model.Subtype{}},
+		{"single", []string{"file"}, []model.Subtype{model.SubtypeFile}},
+		{"case and comma", []string{"FILE,Exec"}, []model.Subtype{
+			model.SubtypeExec, model.SubtypeFile,
 		}},
-		{"canonical order", []string{"ipc", "network", "file", "syscall"}, []model.EventType{
-			model.EventTypeSyscall, model.EventTypeFile,
-			model.EventTypeNetwork, model.EventTypeIPC,
+		{"canonical order", []string{
+			"kernel", "network", "memory", "file", "namespace", "credential",
+			"exec", "process",
+		}, []model.Subtype{
+			model.SubtypeProcess, model.SubtypeExec, model.SubtypeCredential,
+			model.SubtypeNamespace, model.SubtypeFile, model.SubtypeMemory,
+			model.SubtypeNetwork, model.SubtypeKernel,
 		}},
-		{"dedupe", []string{"file", "FILE,file"}, []model.EventType{model.EventTypeFile}},
+		{"dedupe", []string{"file", "FILE,file"}, []model.Subtype{model.SubtypeFile}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseTypes(tt.values)
+			got, err := ParseSubtypes(tt.values)
 			if err != nil {
-				t.Fatalf("ParseTypes: %v", err)
+				t.Fatalf("ParseSubtypes: %v", err)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ParseTypes = %v, want %v", got, tt.want)
+				t.Errorf("ParseSubtypes = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestParseTypesErrors(t *testing.T) {
+func TestParseSubtypesErrors(t *testing.T) {
 	for _, value := range [][]string{
 		{"bogus"},
 		{""},
-		{"syscall,"},
+		{"file,"},
+		{"syscall"},
 	} {
 		t.Run(strings.Join(value, "|"), func(t *testing.T) {
-			if _, err := ParseTypes(value); err == nil {
+			if _, err := ParseSubtypes(value); err == nil {
 				t.Error("expected an error")
 			}
 		})

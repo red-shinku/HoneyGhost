@@ -6,7 +6,7 @@ endif()
 
 get_target_property(HNG_COLLECTOR_CAN_GENERATE hng_ebpf HNG_HAS_SKELETON_GENERATION)
 if(NOT HNG_COLLECTOR_CAN_GENERATE)
-    foreach(probe files syscalls networks)
+    foreach(probe syscalls)
         if(NOT EXISTS "${HNG_SOURCE_DIR}/kernel/${probe}.skel.h")
             message(STATUS "eBPF 骨架不可用，跳过 hng_collector")
             return()
@@ -24,14 +24,14 @@ endif()
 add_library(hng_collector STATIC
     src/collector.cc
     src/collector_component.cc
-    src/file_event_collector.cc
-    src/syscall_event_collector.cc
-    src/network_event_collector.cc)
+    src/probe_attach.cc
+    src/syscall_event_collector.cc)
 target_include_directories(hng_collector
     PUBLIC ${HNG_SOURCE_DIR}
     PRIVATE ${HNG_COLLECTOR_LIBBPF_INCLUDE_DIR})
 target_link_libraries(hng_collector
     PRIVATE ${HNG_COLLECTOR_LIBBPF_LIBRARY}
-            hng_log)
+            hng_log
+            hng_util)
 target_compile_definitions(hng_collector PRIVATE HNG_LOG_TAG="collector")
 add_dependencies(hng_collector hng_ebpf)

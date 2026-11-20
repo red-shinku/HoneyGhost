@@ -37,5 +37,5 @@ target_link_libraries(hng_cli_server
             hng_runtime_engine
 )
 # 配置文档解析只在实现内使用，公共头不暴露配置模块类型
-target_link_libraries(hng_cli_server PRIVATE hng_config)
+target_link_libraries(hng_cli_server PRIVATE hng_config hng_util)
 target_compile_features(hng_cli_server PUBLIC cxx_std_20)

@@ -1,6 +1,6 @@
 /**
  * @file test_semantic_aggregate.cc
- * @brief 语义聚合的双线消费、预算轮转与停机排空，无 IO / 无特权。
+ * @brief 语义聚合的单线消费、预算与停机排空，无 IO / 无特权。
  */
 #include "agent/semantic/src/semantic.hpp"
 #include "agent/util/include/event_channel.hpp"
@@ -38,48 +38,36 @@ bool wait_until(Pred done, int timeout_ms = 2000)
     return done();
 }
 
-file_access_data make_file_raw(uint32_t pid)
-{
-    file_access_data raw{};
-    raw.head.pid = pid;
-    std::memset(raw.comm, 'c', sizeof(raw.comm));
-    std::memset(raw.filename, 'f', sizeof(raw.filename));
-    std::memcpy(raw.filename, "/tmp/a", 6);
-    raw.flags          = 0x1234;
-    raw.is_innamespace = 1;
-    return raw;
-}
-
 syscall_event make_syscall_raw(uint32_t pid, int32_t exit_code)
 {
     syscall_event raw{};
     raw.hdr.head.pid            = pid;
-    raw.hdr.type                = PROCESS_EVENT;
+    raw.hdr.subtype             = PROCESS_EVENT;
     raw.hdr.name                = SYSCALL_EVENT_EXIT_GROUP;
     raw.process_event.exit_code = exit_code;
     return raw;
 }
 
-void run_two_lines()
+syscall_event make_file_raw(uint32_t pid, uint32_t path_flags)
 {
-    hng::EventChannel<file_access_data> raw_file(256);
+    syscall_event raw{};
+    raw.hdr.head.pid           = pid;
+    raw.hdr.subtype            = FILE_EVENT;
+    raw.hdr.name               = SYSCALL_EVENT_OPEN;
+    raw.file_event.path1_flags = path_flags;
+    std::strncpy(raw.file_event.path1, "rel/x", sizeof(raw.file_event.path1) - 1);
+    return raw;
+}
+
+void run_single_line()
+{
     hng::EventChannel<syscall_event> raw_syscall(256);
-    hng::EventChannel<hng::file_semantic_data> out_file(512);
     hng::EventChannel<hng::syscall_semantic_data> out_syscall(512);
 
-    Semantic semantic(&raw_file.reader(), &raw_syscall.reader(),
-                      &out_file.writer(), &out_syscall.writer());
+    Semantic semantic(&raw_syscall.reader(), &out_syscall.writer());
     REQUIRE(semantic.state() == hng::ComponentState::READY);
 
     std::thread thread([&semantic] { semantic.run(); });
-
-    REQUIRE(raw_file.writer().push(make_file_raw(123)));
-    REQUIRE(wait_until([&out_file] { return !out_file.empty(); }));
-    hng::file_semantic_data file_out;
-    REQUIRE(out_file.reader().try_pop(file_out));
-    REQUIRE(file_out.head.pid == 123);
-    REQUIRE(file_out.head.type == hng::EventType::FILE_EVENT);
-    REQUIRE(!file_out.data.semantic_filename().empty());
 
     REQUIRE(raw_syscall.writer().push(make_syscall_raw(456, 7)));
     REQUIRE(wait_until([&out_syscall] { return !out_syscall.empty(); }));
@@ -92,68 +80,89 @@ void run_two_lines()
     REQUIRE(process != nullptr);
     REQUIRE(process->exit_code() == 7);
 
-    // 热点文件线超过预算时，syscall 线仍应在首轮获得处理。
+    // 超过单轮预算：队列中的事件仍应全部被消费。
     for (uint32_t i = 1; i <= 200; ++i) {
-        REQUIRE(raw_file.writer().push(make_file_raw(1000 + i)));
+        REQUIRE(raw_syscall.writer().push(make_syscall_raw(1000 + i, 0)));
     }
-    REQUIRE(raw_syscall.writer().push(make_syscall_raw(789, 9)));
-    REQUIRE(wait_until([&out_syscall] { return !out_syscall.empty(); }));
-    hng::syscall_semantic_data hot_syscall;
-    REQUIRE(out_syscall.reader().try_pop(hot_syscall));
-    REQUIRE(hot_syscall.head.pid == 789);
-
-    REQUIRE(wait_until([&out_file] { return out_file.size() == 200; }));
+    REQUIRE(wait_until([&out_syscall] { return out_syscall.size() == 200; }));
     for (uint32_t i = 0; i < 200; ++i) {
-        hng::file_semantic_data event;
-        REQUIRE(out_file.reader().try_pop(event));
+        hng::syscall_semantic_data event;
+        REQUIRE(out_syscall.reader().try_pop(event));
     }
 
     semantic.stop();
     thread.join();
     REQUIRE(semantic.state() == hng::ComponentState::STOPPED);
-    REQUIRE(raw_file.empty());
     REQUIRE(raw_syscall.empty());
 
     const hng::SemanticStats stats = semantic.stats();
-    REQUIRE(stats.processed_file == 201);
-    REQUIRE(stats.processed_syscall == 2);
+    REQUIRE(stats.processed_syscall == 201);
 }
 
 void drain_on_stop()
 {
-    hng::EventChannel<file_access_data> raw_file(8);
     hng::EventChannel<syscall_event> raw_syscall(8);
-    hng::EventChannel<hng::file_semantic_data> out_file(16);
     hng::EventChannel<hng::syscall_semantic_data> out_syscall(16);
 
-    for (uint32_t i = 0; i < 4; ++i) {
-        REQUIRE(raw_file.writer().push(make_file_raw(i)));
-    }
     for (uint32_t i = 0; i < 4; ++i) {
         REQUIRE(raw_syscall.writer().push(make_syscall_raw(i, 0)));
     }
 
-    Semantic semantic(&raw_file.reader(), &raw_syscall.reader(),
-                      &out_file.writer(), &out_syscall.writer());
+    Semantic semantic(&raw_syscall.reader(), &out_syscall.writer());
     semantic.stop();
     REQUIRE(semantic.state() == hng::ComponentState::STOPPED);
     semantic.run();  // 已停止：不消费
-    REQUIRE(raw_file.size() == 4);
     REQUIRE(raw_syscall.size() == 4);
 
-    Semantic running(&raw_file.reader(), &raw_syscall.reader(),
-                     &out_file.writer(), &out_syscall.writer());
+    Semantic running(&raw_syscall.reader(), &out_syscall.writer());
     std::thread thread([&running] { running.run(); });
-    REQUIRE(wait_until([&raw_file] { return raw_file.empty(); }));
+    REQUIRE(wait_until([&raw_syscall] { return raw_syscall.empty(); }));
     running.stop();
     thread.join();
     REQUIRE(running.state() == hng::ComponentState::STOPPED);
-    REQUIRE(raw_file.empty() && raw_syscall.empty());
+    REQUIRE(raw_syscall.empty());
 }
 
-void unwired_lines()
+/// @brief 未解析路径按事件计数，path_flags 一并透传到语义数据
+void count_unresolved_path()
 {
-    Semantic semantic(nullptr, nullptr, nullptr, nullptr);
+    hng::EventChannel<syscall_event> raw_syscall(16);
+    hng::EventChannel<hng::syscall_semantic_data> out_syscall(16);
+
+    Semantic semantic(&raw_syscall.reader(), &out_syscall.writer());
+    std::thread thread([&semantic] { semantic.run(); });
+
+    REQUIRE(raw_syscall.writer().push(make_file_raw(1, PATH_UNRESOLVED)));
+    REQUIRE(raw_syscall.writer().push(make_file_raw(2, 0)));
+    REQUIRE(raw_syscall.writer().push(make_file_raw(3, PATH_TRUNCATED)));
+    REQUIRE(raw_syscall.writer().push(
+        make_file_raw(4, PATH_UNRESOLVED | PATH_TRUNCATED)));
+    REQUIRE(wait_until([&out_syscall] { return out_syscall.size() == 4; }));
+
+    const uint32_t expect_flags[] = {PATH_UNRESOLVED, 0, PATH_TRUNCATED,
+                                     PATH_UNRESOLVED | PATH_TRUNCATED};
+    for (uint32_t expect : expect_flags) {
+        hng::syscall_semantic_data event;
+        REQUIRE(out_syscall.reader().try_pop(event));
+        const auto* file =
+            std::get_if<hng::file_syscall_semantic_data>(&event.data);
+        REQUIRE(file != nullptr);
+        REQUIRE(file->path1_flags() == expect);
+        REQUIRE(file->path1() == "rel/x");
+    }
+
+    semantic.stop();
+    thread.join();
+    REQUIRE(semantic.state() == hng::ComponentState::STOPPED);
+
+    const hng::SemanticStats stats = semantic.stats();
+    REQUIRE(stats.processed_syscall == 4);
+    REQUIRE(stats.path_unresolved == 2);
+}
+
+void unwired_line()
+{
+    Semantic semantic(nullptr, nullptr);
     std::thread thread([&semantic] { semantic.run(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     semantic.stop();
@@ -166,9 +175,10 @@ void unwired_lines()
 int main()
 {
     try {
-        run_two_lines();
+        run_single_line();
+        count_unresolved_path();
         drain_on_stop();
-        unwired_lines();
+        unwired_line();
         std::printf("PASS: semantic aggregate, %d checks\n", checks);
         return 0;
     }

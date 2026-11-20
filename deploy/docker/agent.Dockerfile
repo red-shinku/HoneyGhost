@@ -48,9 +48,7 @@ RUN cmake --build /build --target hng_agent --parallel "${BUILD_PARALLEL}"
 # 调试或性能分析时用本地构建产物（本地构建仍带 DWARF）。
 RUN strip --strip-debug /build/hng_agent
 
-RUN test -f /src/kernel/files.skel.h \
- && test -f /src/kernel/syscalls.skel.h \
- && test -f /src/kernel/networks.skel.h \
+RUN test -f /src/kernel/syscalls.skel.h \
  && test -f /build/agent/collector/libhng_collector.a
 
 # 运行时库取 ldd 闭包；装配阶段再按内容与基础镜像比对，只保留基础镜像没有的文件。

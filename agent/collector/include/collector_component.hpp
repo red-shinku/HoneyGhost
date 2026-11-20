@@ -13,9 +13,7 @@
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
 
-struct file_access_data;
 struct syscall_event;
-struct network_data;
 
 namespace hng {
 
@@ -24,20 +22,16 @@ class EventChannelWriter;
 
 /**
  * @brief 采集组件的构造选项。
- * @details 三条原始事件通道由装配层创建并持有；空指针表示该线未接线。
+ * @details 原始事件通道由装配层创建并持有；空指针表示该线未接线。
  */
 struct CollectorOptions {
-    /// 文件原始事件通道写端
-    hng::EventChannelWriter<::file_access_data>* file_sink = nullptr;
     /// 系统调用原始事件通道写端
     hng::EventChannelWriter<::syscall_event>* syscall_sink = nullptr;
-    /// 网络原始事件通道写端
-    hng::EventChannelWriter<::network_data>* network_sink  = nullptr;
 };
 
 /**
  * @brief 原始事件采集组件。
- * @details 封装各事件线的 prepare / attach 与单线程采集聚合；组件不持线程。
+ * @details 封装事件线的 prepare / attach 与单线程采集聚合；组件不持线程。
  * @note 生命周期为 CONSTRUCTED → READY → RUNNING → STOPPED。prepare() 成功
  *       后 role_filter_map_fds() 才可能返回有效 fd。
  * @see hng::Component, CollectorOptions, CollectorFactory

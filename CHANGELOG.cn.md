@@ -5,7 +5,18 @@
 
 ## [Unreleased]
 
-None
+### Added
+
+- 内核事件（现表示为 type = syscall）子类型 SIGNAL。
+- 47 个 tracepoint 探针；完善事件信息。  
+
+### Changed
+
+- 原顶层 type 的 file、network、ipc 收敛到 syscall 的九个子类型下。
+- `hghost events -t/--type` 改为按子类型过滤（`process`、`exec`、
+  `credential`、`namespace`、`file`、`memory`、`network`、`kernel`），
+  子类型即输出表格视图在 `TYPE` 后新增的 `SUBTYPE` 列。  
+  
 
 ## [v0.1.2] - 2026-11-16
 

@@ -64,7 +64,7 @@ class ProcessUpdateService {
    public:
     /// @brief 更新进程最近一次 exec 的镜像路径
     /// @param p 目标进程；按 (pid, pid_start_time) 匹配，不命中同 pid 的新实例
-    /// @param exe 语义化后的 exec 路径
+    /// @param exe 事件时刻镜像的真实绝对路径（未做实例语义化）
     /// @note 通知写：入队即返回，落地在 ProcessManager 的消费线程上。落地时
     ///       先查实进程树，未命中再查虚拟根；都不命中则丢弃。
     virtual void update_exe_image(hng::Process p, std::string exe) = 0;

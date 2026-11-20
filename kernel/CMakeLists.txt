@@ -2,12 +2,12 @@
 # eBPF 探针与骨架
 #
 # 产物落源码树：kernel/<n>.skel.h 与 kernel/build/<n>.bpf.o。
-# 理由：采集器实现以 "kernel/files.skel.h" 包含骨架、verify_starttime.cc
+# 理由：采集器实现以 "kernel/syscalls.skel.h" 包含骨架、verify_starttime.cc
 # 默认读 "kernel/build/syscalls.bpf.o"，落源码树可做到零代码改动。两者均已被
 # .gitignore 覆盖（*.skel.h 与 build/）。
 #
 # 骨架名必须显式给 <n>_collector：bpftool 的默认名只去掉 .o 扩展名（得
-# files_bpf），而 *_event_collector.cc 引用的是 files_collector。
+# syscalls_bpf），而采集器引用的是 syscalls_collector。
 #
 # 探针的 include 一律仓库根相对，故 -I 指向仓库根，与 C++ 侧同款。
 #
@@ -26,8 +26,7 @@ endif()
 
 option(HNG_ENABLE_EBPF "构建 eBPF 探针与骨架（需 clang 与 bpftool）" ON)
 
-# ipc.bpf.c 尚为空文件，未纳入
-set(HNG_EBPF_PROBES files networks syscalls)
+set(HNG_EBPF_PROBES syscalls)
 
 set(HNG_EBPF_OBJ_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build)
 set(HNG_VMLINUX ${CMAKE_CURRENT_SOURCE_DIR}/include/vmlinux.h)
@@ -39,11 +38,17 @@ set(HNG_EBPF_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/role_filter.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/event_head.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/files_type.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/networks_type.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/path_resolver.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_head.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/syscalls_type.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/uapi_const.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_maps.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_event_builders.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_event_commit.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/socket_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/exec_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_path_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_helpers.bpf.h
 )
 
 if(NOT HNG_ENABLE_EBPF)

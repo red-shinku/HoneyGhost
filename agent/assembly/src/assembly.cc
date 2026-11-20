@@ -26,7 +26,6 @@
 #include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/role_component.hpp"
-#include "agent/event_data/include/file_event.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
 #include "agent/role_discovery/include/role_discovery_component.hpp"
 #include "agent/role_discovery/include/role_discovery_factory.hpp"
@@ -41,9 +40,7 @@
 #include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/log.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
-#include "kernel/include/files_type.h"
-#include "kernel/include/networks_type.h"
-#include "kernel/include/syscalls_type.h"
+#include "kernel/include/syscall_event_type.h"
 
 #include <atomic>
 #include <exception>
@@ -56,15 +53,13 @@ namespace hng {
 
 struct Assembly::Impl final : public PipelineStatsService {
     /**
-     * @brief 保存选项并按容量创建五条事件通道
+     * @brief 保存选项并按容量创建两条事件通道
      * @param opts 通道容量与启动参数
      * @throws std::system_error 通道唤醒 fd 创建失败
      */
     explicit Impl(AssemblyOptions opts)
         : options(std::move(opts)),
-          raw_file_ch(options.raw_queue_capacity),
           raw_syscall_ch(options.raw_queue_capacity),
-          semantic_file_ch(options.semantic_queue_capacity),
           semantic_syscall_ch(options.semantic_queue_capacity)
     {
     }
@@ -115,9 +110,7 @@ struct Assembly::Impl final : public PipelineStatsService {
     void release_components();
 
     AssemblyOptions options;
-    hng::EventChannel<::file_access_data> raw_file_ch;
     hng::EventChannel<::syscall_event> raw_syscall_ch;
-    hng::EventChannel<hng::file_semantic_data> semantic_file_ch;
     hng::EventChannel<hng::syscall_semantic_data> semantic_syscall_ch;
     ::ContextMaintainer maintainer;
     /// @brief 控制面三个组件的聚合句柄
@@ -173,22 +166,19 @@ void Assembly::Impl::build_pipeline()
 {
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
-        // network 语义线尚无 consumer：不建采集线，避免无读端通道静默丢事件
-        collector = CollectorFactory::create({&raw_file_ch.writer(),
-                                              &raw_syscall_ch.writer(),
-                                              nullptr});
+        collector = CollectorFactory::create({&raw_syscall_ch.writer()});
         semantic  = SemanticFactory::create(
-            {&raw_file_ch.reader(), &raw_syscall_ch.reader(),
-              &semantic_file_ch.writer(), &semantic_syscall_ch.writer()});
+            {&raw_syscall_ch.reader(), &semantic_syscall_ch.writer()});
     }
 #endif
 
-    engine = RuntimeEngineFactory::create(
-        {&semantic_syscall_ch.reader(), &semantic_file_ch.reader(), &maintainer,
-         &control_plane->process().join_service(),
-         &control_plane->process().update_service(),
-         &control_plane->role().join_service(),
-         &control_plane->role().lookup_service()});
+    engine =
+        RuntimeEngineFactory::create({&semantic_syscall_ch.reader(), &maintainer,
+                                      &control_plane->process().join_service(),
+                                      &control_plane->process().update_service(),
+                                      &control_plane->process().lookup_service(),
+                                      &control_plane->role().join_service(),
+                                      &control_plane->role().lookup_service()});
 }
 
 hng::PipelineStats Assembly::Impl::snapshot() const
@@ -208,7 +198,6 @@ hng::PipelineStats Assembly::Impl::snapshot() const
         target.queue_rejected   = source.queue_rejected;
         target.idle_waits       = source.idle_waits;
         target.syscall_dropped  = source.syscall_dropped;
-        target.file_dropped     = source.file_dropped;
         stats.engine            = target;
     }
     return stats;

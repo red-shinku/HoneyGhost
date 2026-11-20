@@ -91,11 +91,13 @@ class AckStub final : public UnsubscribeAck {
 };
 
 hng::RuntimeEvent mk_event(uint32_t pid, uint32_t roleID, uint32_t contextID,
-                           hng::EventType etype)
+                           hng::EventType etype,
+                           enum syscall_event_type subtype = UNKNOWN_EVENT)
 {
     hng::RuntimeEvent ev{};
     ev.runtimeInfo.process   = mk(pid, pid * 10);
     ev.runtimeInfo.etype     = etype;
+    ev.runtimeInfo.subtype   = subtype;
     ev.runtimeInfo.roleID    = roleID;
     ev.runtimeInfo.contextID = contextID;
     return ev;
@@ -149,34 +151,37 @@ void run_cli_filters()
     EventSinkStub all(log, 1);
     EventSinkStub by_role(log, 2);
     EventSinkStub by_pid(log, 3);
-    EventSinkStub by_etype(log, 4);
+    EventSinkStub by_subtype(log, 4);
 
     RuntimeEventDispatcher d;
     d.add_cli_sink(&all, RuntimeInfoFilter{}, nullptr);
     d.add_cli_sink(&by_role, RuntimeInfoFilter{}.set_role({7}, {}), nullptr);
     d.add_cli_sink(&by_pid, RuntimeInfoFilter{}.set_process({1001}), nullptr);
-    d.add_cli_sink(&by_etype,
-                   RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}),
+    d.add_cli_sink(&by_subtype, RuntimeInfoFilter{}.set_subtype({FILE_EVENT}),
                    nullptr);
 
     d.dispatch(mk_event(1001, 7, 33, hng::EventType::SYSCALL_EVENT), kDerived);
     CHECK(all.calls == 1, "空过滤器全选");
     CHECK(by_role.calls == 1, "角色命中");
     CHECK(by_pid.calls == 1, "进程命中");
-    CHECK(by_etype.calls == 0, "事件类型未命中则不投递");
+    CHECK(by_subtype.calls == 0, "语义子类型未命中则不投递");
 
-    d.dispatch(mk_event(2002, 7, 33, hng::EventType::FILE_EVENT), kDerived);
+    d.dispatch(mk_event(2002, 7, 33, hng::EventType::SYSCALL_EVENT, FILE_EVENT),
+               kDerived);
     CHECK(all.calls == 2, "空过滤器全选(2)");
     CHECK(by_role.calls == 2, "角色仍命中");
     CHECK(by_pid.calls == 1, "进程不同则不投递");
-    CHECK(by_etype.calls == 1, "文件事件命中");
+    CHECK(by_subtype.calls == 1, "文件子类型命中");
 
-    d.dispatch(mk_event(3003, 8, 44, hng::EventType::SYSCALL_EVENT), kDerived);
+    d.dispatch(
+        mk_event(3003, 8, 44, hng::EventType::SYSCALL_EVENT, PROCESS_EVENT),
+        kDerived);
     CHECK(all.calls == 3, "空过滤器全选(3)");
     CHECK(by_role.calls == 2, "角色不同则不投递");
-    CHECK(by_etype.calls == 1, "非文件事件不投递");
+    CHECK(by_subtype.calls == 1, "非文件子类型不投递");
 
-    d.dispatch(mk_event(1001, 7, 33, hng::EventType::FILE_EVENT), kDerived);
+    d.dispatch(mk_event(1001, 7, 33, hng::EventType::SYSCALL_EVENT, FILE_EVENT),
+               kDerived);
     CHECK(all.calls == 4, "空过滤器在后续事件上仍全选");
 }
 

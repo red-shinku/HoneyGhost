@@ -1,6 +1,6 @@
 /**
  * @file collector_component.cc
- * @brief 采集组件：存活名额、三条标准事件线与聚合转发。
+ * @brief 采集组件：存活名额、标准事件线与聚合转发。
  */
 #include "agent/collector/include/collector_component.hpp"
 
@@ -26,17 +26,9 @@ std::vector<std::unique_ptr<::CollectorType>> build_lines(
     const CollectorOptions& options)
 {
     std::vector<std::unique_ptr<::CollectorType>> lines;
-    if (options.file_sink) {
-        lines.push_back(
-            std::make_unique<::FileEventCollector>(*options.file_sink));
-    }
     if (options.syscall_sink) {
         lines.push_back(
             std::make_unique<::SyscallEventCollector>(*options.syscall_sink));
-    }
-    if (options.network_sink) {
-        lines.push_back(
-            std::make_unique<::NetworkEventCollector>(*options.network_sink));
     }
     return lines;
 }

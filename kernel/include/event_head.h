@@ -33,11 +33,23 @@
  */
 #define NSEC_PER_USER_HZ 10000000ULL
 
+/**
+ * @brief 初始挂载命名空间的 inode
+ * @details 宿主根命名空间的 inode 恒为 4026531840（0xF0000000），各内核版本稳定；
+ * 其余命名空间的 inode 或大于或小于该值，故用精确比较。内核与用户态共用该判据。
+ */
+#define HNG_INIT_MNT_NS_INUM 4026531840ULL
+
 struct event_head {
-    __u32 pid;
-    __u64 pid_start_time;
-    __u32 ppid;
-    __u64 ppid_start_time;
+    __u32 pid;              ///< 事件主体的 TGID
+    __u64 pid_start_time;   ///< 事件主体所属线程组长的启动时间（USER_HZ）
+    __u32 ppid;             ///< 父进程的 TGID
+    __u64 ppid_start_time;  ///< 父进程所属线程组长的启动时间（USER_HZ）
+    __u32 uid;              ///< 真实 UID
+    __u32 euid;             ///< 有效 UID
+    __u32 mnt_ns;           ///< 挂载命名空间 inode
+    __s64 ret;              ///< 系统调用返回值；非系统调用来源恒为 0
+    char comm[16];          ///< 事件主体进程名
 };
 
 // 初始化函数依赖 BPF helper，仅内核态探针程序使用
@@ -46,10 +58,12 @@ struct event_head {
 #include <bpf/bpf_helpers.h>
 
 /**
- * @brief 填写事件头的主体字段：事件所属进程的 TGID 与组长启动时间。
+ * @brief 填写事件头的主体字段：身份、凭据、进程名与挂载命名空间。
  * @param[out] head 待填写的事件头。
  * @param[in] task 事件主体所属的任务；为空时字段保持原值。
  * @note 进程身份由 TGID 与组长启动时间构成：工作线程自身的启动时间不是进程身份。
+ * @note 凭据与挂载命名空间由同一进程的线程共享，进程名则取事件主体自身。
+ * @note 任一环节读取失败时对应字段保持 0。
  */
 static __always_inline void init_event_head_self(struct event_head *head,
                                                  struct task_struct *task)
@@ -57,6 +71,13 @@ static __always_inline void init_event_head_self(struct event_head *head,
     if (!head || !task) {
         return;
     }
+
+    head->uid    = 0;
+    head->euid   = 0;
+    head->mnt_ns = 0;
+    head->ret    = 0;
+    __builtin_memset(head->comm, 0, sizeof(head->comm));
+
     struct task_struct *leader = BPF_CORE_READ(task, group_leader);
     if (!leader) {
         return;
@@ -64,6 +85,23 @@ static __always_inline void init_event_head_self(struct event_head *head,
     head->pid = BPF_CORE_READ(leader, tgid);
     head->pid_start_time =
         BPF_CORE_READ(leader, start_boottime) / NSEC_PER_USER_HZ;
+
+    const struct cred *cred = BPF_CORE_READ(task, cred);
+    if (cred) {
+        head->uid  = BPF_CORE_READ(cred, uid.val);
+        head->euid = BPF_CORE_READ(cred, euid.val);
+    }
+
+    BPF_CORE_READ_STR_INTO(&head->comm, task, comm);
+
+    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
+    if (!nsproxy) {
+        return;
+    }
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
+    if (mnt_ns) {
+        head->mnt_ns = BPF_CORE_READ(mnt_ns, ns.inum);
+    }
 }
 
 /**

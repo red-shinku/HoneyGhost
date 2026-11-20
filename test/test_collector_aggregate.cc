@@ -121,6 +121,13 @@ class FakeLine final : public CollectorType {
         return snapshot;
     }
     int reserve_failures_fd() const noexcept override { return -1; }
+    int pending_lost_fd() const noexcept override
+    {
+        ++pending_lost_fd_calls_;
+        return -1;
+    }
+
+    int pending_lost_fd_calls() const { return pending_lost_fd_calls_; }
 
     int taken() const { return taken_.load(); }
     int consume_calls() const { return consume_calls_.load(); }
@@ -138,9 +145,10 @@ class FakeLine final : public CollectorType {
     std::atomic<int> pending_{0};
     std::atomic<int> taken_{0};
     std::atomic<int> consume_calls_{0};
-    bool prepared_ = false;
-    bool attached_ = false;
-    bool detached_ = false;
+    mutable int pending_lost_fd_calls_ = 0;
+    bool prepared_                     = false;
+    bool attached_                     = false;
+    bool detached_                     = false;
 };
 
 void run_epoll_and_stop()
@@ -191,6 +199,10 @@ void run_epoll_and_stop()
     REQUIRE(stats[0].consumed == 310);
     REQUIRE(stats[1].consumed == 7);
     REQUIRE(stats[0].reserve_failures == 0);
+    // 暂存丢失计数由聚合层按 pending_lost_fd() 读取后填入
+    REQUIRE(stats[0].pending_lost == 0);
+    REQUIRE(first->pending_lost_fd_calls() == 1);
+    REQUIRE(second->pending_lost_fd_calls() == 1);
 }
 
 void stop_before_run()

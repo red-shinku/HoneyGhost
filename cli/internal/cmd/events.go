@@ -18,7 +18,7 @@ import (
 )
 
 type eventsOptions struct {
-	Types     []string
+	Subtypes  []string
 	Info      []string
 	Expr      []string
 	Duration  time.Duration
@@ -29,7 +29,7 @@ type eventsOptions struct {
 
 func newEventsCommand(app *App) *cobra.Command {
 	var opts eventsOptions
-	var types []model.EventType
+	var subtypes []model.Subtype
 	var runtimeSelector model.RuntimeSelector
 	var expr *model.FilterExpr
 
@@ -53,7 +53,7 @@ func newEventsCommand(app *App) *cobra.Command {
 			if opts.Tee && opts.WritePath == "" {
 				return usageErrorf("--tee requires --write")
 			}
-			parsedTypes, err := selector.ParseTypes(opts.Types)
+			parsedSubtypes, err := selector.ParseSubtypes(opts.Subtypes)
 			if err != nil {
 				return usageError{err}
 			}
@@ -66,11 +66,11 @@ func newEventsCommand(app *App) *cobra.Command {
 				return usageError{err}
 			}
 			if cmd.Flags().Changed("type") &&
-				model.UsesField(parsedExpr, model.FilterFieldType) {
+				model.UsesField(parsedExpr, model.FilterFieldSubtype) {
 				return usageErrorf(
-					"--type and a type predicate in --expr cannot be combined")
+					"--type and a subtype predicate in --expr cannot be combined")
 			}
-			types = parsedTypes
+			subtypes = parsedSubtypes
 			runtimeSelector = parsedSelector
 			expr = parsedExpr
 			return nil
@@ -111,7 +111,7 @@ func newEventsCommand(app *App) *cobra.Command {
 				Format:   app.opts.Format,
 				Service:  svcs.Events,
 				Selector: runtimeSelector,
-				Types:    types,
+				Subtypes: subtypes,
 				Expr:     expr,
 				Duration: opts.Duration,
 				Batch:    opts.Batch,
@@ -124,14 +124,15 @@ func newEventsCommand(app *App) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringSliceVarP(&opts.Types, "type", "t", nil,
-		"event types: syscall, file, network, ipc (repeatable or comma-separated; default all)")
+	cmd.Flags().StringSliceVarP(&opts.Subtypes, "type", "t", nil,
+		"event subtypes: process, exec, credential, namespace, file, memory, "+
+			"network, kernel, signal (repeatable or comma-separated; default all)")
 	cmd.Flags().StringArrayVarP(&opts.Info, "info", "i", nil,
 		"runtime filter key=value[,value...] (repeatable; keys: roleID, role, contextID, pid; "+
 			"roleID/contextID accept 0 for unsettled, pid must be positive)")
 	cmd.Flags().StringArrayVarP(&opts.Expr, "expr", "e", nil,
 		"runtime filter expression with and/or/not, parentheses, and comparisons "+
-			"=, !=, ~= (keys: type, kind, pid, ppid, roleID, role, contextID; "+
+			"=, !=, ~= (keys: type, subtype, pid, ppid, roleID, role, contextID; "+
 			"repeatable, combined with and)")
 	cmd.Flags().DurationVar(&opts.Duration, "duration", 0,
 		"maximum stream duration; 0 means until interrupted")
@@ -163,7 +164,7 @@ type eventsRun struct {
 	Format   render.Format
 	Service  api.EventService
 	Selector model.RuntimeSelector
-	Types    []model.EventType
+	Subtypes []model.Subtype
 	Expr     *model.FilterExpr
 	Duration time.Duration
 	Batch    uint32
@@ -178,7 +179,7 @@ func runEvents(parent context.Context, run eventsRun) (err error) {
 	ctx, cancel := streamContext(parent, run.Duration)
 	defer cancel()
 
-	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Types,
+	stream, err := run.Service.Subscribe(ctx, run.Selector, run.Subtypes,
 		api.SubscribeOptions{BatchSize: run.Batch, Expr: run.Expr})
 	if err != nil {
 		return err

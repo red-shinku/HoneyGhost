@@ -254,11 +254,10 @@ struct Env {
     FakeRoleJoin role_join;
     FakeRoleLookup role_lookup;
     hng::EventChannel<hng::syscall_semantic_data> sys_ch{64};
-    hng::EventChannel<hng::file_semantic_data> file_ch{64};
 
     ContextMaintainer cm;
-    RuntimeEngine engine{&sys_ch.reader(), &file_ch.reader(), &cm,
-                         &process_join,    &process_update,   &role_join,
+    RuntimeEngine engine{&sys_ch.reader(), &cm,     &process_join,
+                         &process_update,  nullptr, &role_join,
                          &role_lookup};
 
     Env() { cm.set_context_service(&ctx_svc, &ctx_svc, &ctx_svc); }
@@ -278,20 +277,8 @@ hng::syscall_semantic_data make_credential(uint32_t pid, uint64_t pstart)
     return ev;
 }
 
-hng::file_semantic_data make_file(uint32_t pid, uint64_t pstart, const char* path)
-{
-    hng::file_semantic_data ev;
-    ev.head.pid             = pid;
-    ev.head.pid_start_time  = pstart;
-    ev.head.ppid            = 0;
-    ev.head.ppid_start_time = 0;
-    ev.head.type            = hng::EventType::FILE_EVENT;
-    ev.data.set_semantic_filename(path);
-    return ev;
-}
-
 hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart,
-                                     const char* filename)
+                                     const char* image)
 {
     hng::syscall_semantic_data ev;
     ev.head.pid             = pid;
@@ -300,7 +287,8 @@ hng::syscall_semantic_data make_exec(uint32_t pid, uint64_t pstart,
     ev.head.ppid_start_time = 0;
     ev.head.type            = hng::EventType::SYSCALL_EVENT;
     auto& payload           = ev.data.emplace<hng::exec_semantic_data>();
-    payload.set_semantic_filename(filename);
+    payload.set_image(image);
+    payload.set_semantic_filename(image);
     payload.set_syscall_name("execve");
     return ev;
 }
@@ -371,7 +359,7 @@ void run_live_delivery()
     Env env;
     DecisionSinkStub sys;
     EventSinkStub all_cli;
-    EventSinkStub file_cli;
+    EventSinkStub syscall_cli;
 
     env.engine.add_system_sink(&sys);
     std::thread engine_thread([&env] { env.engine.run(); });
@@ -383,30 +371,24 @@ void run_live_delivery()
 
     // 订阅命令是通知写，落地时间不定，故反复投递直至观察到送达
     AckStub all_ack;
-    AckStub file_ack;
+    AckStub syscall_ack;
     CHECK(env.engine.subscribe(&all_cli, RuntimeInfoFilter{}, &all_ack),
           "全选流入队被接受");
     CHECK(env.engine.subscribe(
-              &file_cli,
-              RuntimeInfoFilter{}.set_etype({hng::EventType::FILE_EVENT}),
-              &file_ack),
-          "文件流入队被接受");
+              &syscall_cli,
+              RuntimeInfoFilter{}.set_etype({hng::EventType::SYSCALL_EVENT}),
+              &syscall_ack),
+          "系统调用流入队被接受");
 
     for (int i = 0; i < 300 && all_cli.calls.load() == 0; ++i) {
         env.sys_ch.writer().push(make_credential(1001, 10));
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(all_cli.calls.load() > 0, "全选流应收到事件");
-    CHECK(file_cli.calls.load() == 0, "过滤器未命中则不投递");
+    CHECK(syscall_cli.calls.load() > 0, "命中过滤器应收到");
+    CHECK(syscall_cli.last_pid.load() == 1001, "CLI 订阅流收到事件主体");
     CHECK(sys.calls.load() > 0, "系统订阅者按全量投递");
     CHECK(sys.last_pid.load() == 1001, "系统订阅者收到事件主体");
-
-    for (int i = 0; i < 300 && file_cli.calls.load() == 0; ++i) {
-        env.file_ch.writer().push(make_file(3003, 30, "/tmp/a"));
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    CHECK(file_cli.calls.load() > 0, "命中过滤器应收到");
-    CHECK(file_cli.last_pid.load() == 3003, "CLI 订阅流收到事件主体");
 
     // 注销：以回执为准，回执后不再有该流的回调
     env.engine.unsubscribe(&all_cli);
@@ -424,7 +406,7 @@ void run_live_delivery()
     env.engine.stop();
     engine_thread.join();
 
-    CHECK(file_ack.called.load(), "停机清表时未注销的流也收到回执");
+    CHECK(syscall_ack.called.load(), "停机清表时未注销的流也收到回执");
 
     // 峰值只增不减：注销后表内只剩一条，峰值仍是两条
     CHECK(env.engine.stats().peak_cli_streams == 2, "订阅流峰值只增不减");
@@ -543,7 +525,7 @@ void run_exec_image_update()
         env.process_update.snapshot();
     CHECK(updates.size() == 1 && updates[0].process == mk(5005, 50) &&
               updates[0].exe == "/bin/sh",
-          "更新应携带进程身份与语义化路径");
+          "更新应携带进程身份与真实镜像路径");
 }
 
 }  // namespace

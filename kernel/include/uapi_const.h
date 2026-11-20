@@ -14,6 +14,11 @@
 #ifndef __UAPI_CONST_H
 #define __UAPI_CONST_H
 
+// 目录基准 fd（include/uapi/linux/fcntl.h）
+#ifndef AT_FDCWD
+#define AT_FDCWD (-100)
+#endif
+
 // 文件打开标志（include/uapi/asm-generic/fcntl.h）
 #ifndef O_WRONLY
 #define O_WRONLY 00000001
@@ -23,6 +28,75 @@
 #endif
 #ifndef O_TRUNC
 #define O_TRUNC 00001000
+#endif
+
+// 内存保护位（include/uapi/asm-generic/mman-common.h）
+#ifndef PROT_WRITE
+#define PROT_WRITE 0x2
+#endif
+#ifndef PROT_EXEC
+#define PROT_EXEC 0x4
+#endif
+
+// 内存映射标志（include/uapi/asm-generic/mman-common.h）
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS 0x20
+#endif
+
+// 套接字地址族（include/uapi/linux/socket.h）
+#ifndef AF_UNIX
+#define AF_UNIX 1
+#endif
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
+
+// bpf 命令（include/uapi/linux/bpf.h）
+#ifndef BPF_MAP_CREATE
+#define BPF_MAP_CREATE 0
+#endif
+#ifndef BPF_PROG_LOAD
+#define BPF_PROG_LOAD 5
+#endif
+#ifndef BPF_PROG_ATTACH
+#define BPF_PROG_ATTACH 8
+#endif
+#ifndef BPF_PROG_DETACH
+#define BPF_PROG_DETACH 9
+#endif
+
+// 进程诞生事件的派生标志（wake_up_new_task 的字段比较结果）
+#ifndef HNG_PROCESS_DERIVED_SHARED_MM
+#define HNG_PROCESS_DERIVED_SHARED_MM (1U << 0)
+#endif
+#ifndef HNG_PROCESS_DERIVED_PARENT
+#define HNG_PROCESS_DERIVED_PARENT (1U << 1)
+#endif
+#ifndef HNG_PROCESS_DERIVED_NEW_NS
+#define HNG_PROCESS_DERIVED_NEW_NS (1U << 2)
+#endif
+#ifndef HNG_PROCESS_DERIVED_NEW_USER_NS
+#define HNG_PROCESS_DERIVED_NEW_USER_NS (1U << 3)
+#endif
+
+// prctl 与安全相关的 option（include/uapi/linux/prctl.h）
+#ifndef PR_SET_DUMPABLE
+#define PR_SET_DUMPABLE 4
+#endif
+#ifndef PR_SET_KEEPCAPS
+#define PR_SET_KEEPCAPS 8
+#endif
+#ifndef PR_CAPBSET_DROP
+#define PR_CAPBSET_DROP 24
+#endif
+#ifndef PR_SET_SECUREBITS
+#define PR_SET_SECUREBITS 28
+#endif
+#ifndef PR_SET_NO_NEW_PRIVS
+#define PR_SET_NO_NEW_PRIVS 38
 #endif
 
 // 命名空间克隆标志（include/uapi/linux/sched.h）

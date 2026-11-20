@@ -13,36 +13,35 @@ import (
 	"honeyghost/cli/internal/model"
 )
 
+// 事件来源只有 syscall；-e 的 type 原子仍按此表校验。
 var eventTypeOrder = map[model.EventType]int{
 	model.EventTypeSyscall: 0,
-	model.EventTypeFile:    1,
-	model.EventTypeNetwork: 2,
-	model.EventTypeIPC:     3,
 }
 
-// ParseTypes 解析 -t 的取值：可重复或逗号分隔，大小写不敏感。
-// 没有取值时返回空切片，表示全部类型。
-func ParseTypes(values []string) ([]model.EventType, error) {
+// ParseSubtypes 解析 -t 的取值：可重复或逗号分隔，大小写不敏感。
+// 没有取值时返回空切片，表示全部子类型。
+func ParseSubtypes(values []string) ([]model.Subtype, error) {
 	if len(values) == 0 {
-		return []model.EventType{}, nil
+		return []model.Subtype{}, nil
 	}
-	seen := make(map[model.EventType]bool)
+	seen := make(map[model.Subtype]bool)
 	for _, value := range values {
 		for _, token := range strings.Split(value, ",") {
-			eventType := model.EventType(strings.ToLower(token))
-			if _, ok := eventTypeOrder[eventType]; !ok {
+			subtype := model.Subtype(strings.ToLower(token))
+			if _, ok := subtypeOrder[subtype]; !ok {
 				return nil, fmt.Errorf(
-					"invalid event type %q (want syscall, file, network, or ipc)", token)
+					"invalid event subtype %q (want process, exec, credential, namespace, "+
+						"file, memory, network, kernel, or signal)", token)
 			}
-			seen[eventType] = true
+			seen[subtype] = true
 		}
 	}
-	out := make([]model.EventType, 0, len(seen))
-	for eventType := range seen {
-		out = append(out, eventType)
+	out := make([]model.Subtype, 0, len(seen))
+	for subtype := range seen {
+		out = append(out, subtype)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return eventTypeOrder[out[i]] < eventTypeOrder[out[j]]
+		return subtypeOrder[out[i]] < subtypeOrder[out[j]]
 	})
 	return out, nil
 }

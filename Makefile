@@ -124,4 +124,4 @@ clean:
 	$(CMAKE) -E remove_directory $(BIN_DIR)
 	$(CMAKE) -E remove_directory $(DIST_DIR)
 	$(CMAKE) -E remove_directory kernel/build
-	$(CMAKE) -E rm -f kernel/files.skel.h kernel/networks.skel.h kernel/syscalls.skel.h
+	$(CMAKE) -E rm -f kernel/syscalls.skel.h

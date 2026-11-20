@@ -185,6 +185,8 @@ std::vector<hng::CollectorLineStats> Collector::stats() const
         hng::CollectorLineStats stats = line->stats();
         stats.reserve_failures =
             hng::detail::ReadPercpuCounter(line->reserve_failures_fd());
+        stats.pending_lost =
+            hng::detail::ReadPercpuCounter(line->pending_lost_fd());
         snapshot.push_back(std::move(stats));
     }
     return snapshot;
