@@ -13,6 +13,7 @@
  */
 
 #include "agent/cli_server/src/event_converter.hpp"
+#include "agent/util/include/utf8_sanitize.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -236,6 +237,23 @@ void run_head_fields()
     CHECK(msg.head().exe() == kExe, "exe 取自 RuntimeInformation");
 }
 
+/// roleLabel 与 exe 不经过语义层，应在此收敛为合法 UTF-8
+void run_utf8_convergence()
+{
+    hng::RuntimeEvent event     = make_syscall();
+    event.runtimeInfo.roleLabel = std::string("\xff", 1);
+    event.runtimeInfo.exe       = "a\xe4\xb8";
+
+    hng::clisv::eventrecord msg;
+    hng::cli::ToProto(event, msg);
+
+    CHECK(msg.head().rolelabel() == "?", "roleLabel 非法字节替换为 ?");
+    CHECK(msg.head().exe() == "a??", "exe 被截断的多字节逐字节替换为 ?");
+    CHECK(hng::is_valid_utf8(msg.head().rolelabel()),
+          "roleLabel 收敛为合法 UTF-8");
+    CHECK(hng::is_valid_utf8(msg.head().exe()), "exe 收敛为合法 UTF-8");
+}
+
 /// 内核枚举的每个取值都应落到同数值的 Subtype
 void run_subtype_mapping()
 {
@@ -288,6 +306,7 @@ int main()
 {
     run_syscall_payload_mapping();
     run_head_fields();
+    run_utf8_convergence();
     run_subtype_mapping();
     run_event_type_round_trip();
 

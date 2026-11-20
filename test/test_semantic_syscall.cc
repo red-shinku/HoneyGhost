@@ -4,7 +4,7 @@
  * @details
  * 按 hdr.subtype 的九类事件各一张表，经公开纯转换接口 transform_one 断言输出
  * 语义事件：variant 类型、关键字段、syscall_name 字符串，以及 exec 的
- * image 归一化 / 语义化、invoked 原样搬运、credential 按 kind 分派的
+ * image 归一化 / 语义化、invoked 收敛后搬运、credential 按 kind 分派的
  * requested / capset 展开与通用事件头字段搬运。
  *
  * @author red_shinku
@@ -12,6 +12,7 @@
  */
 
 #include "agent/semantic/src/semantic.hpp"
+#include "agent/util/include/utf8_sanitize.hpp"
 #include "kernel/include/syscall_event_type.h"
 
 #include <fcntl.h>
@@ -21,6 +22,7 @@
 #include <sys/ptrace.h>
 #include <sys/socket.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -1030,6 +1032,161 @@ void run_head_fields()
     CHECK(out.head.comm == "a????", "head comm replaces invalid UTF-8 bytes");
 }
 
+// ---- UTF-8 收敛 ----
+
+/// @brief 把字节串写入定长字段：清零后拷贝，不写 NUL 以外的定界
+void fill_bytes(char* field, std::size_t capacity, const std::string& bytes)
+{
+    std::memset(field, 0, capacity);
+    const std::size_t count =
+        bytes.size() < capacity ? bytes.size() : capacity - 1;
+    std::memcpy(field, bytes.data(), count);
+}
+
+/// @brief 逐个 subtype 断言来源为定长缓冲/用户内存的字符串已收敛为合法 UTF-8
+void run_utf8_convergence()
+{
+    // process：cgroup_path 尾部被截断的多字节
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_CGROUP_ATTACH_TASK, PROCESS_EVENT);
+        fill_bytes(raw.process_event.cgroup_path,
+                   sizeof(raw.process_event.cgroup_path),
+                   "/system.slice/\xE4\xB8");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::process_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 process variant type");
+        if (d) {
+            CHECK(d->cgroup_path() == "/system.slice/??",
+                  "utf8 process cgroup_path");
+            CHECK(hng::is_valid_utf8(d->cgroup_path()),
+                  "utf8 process cgroup_path valid");
+        }
+    }
+
+    // exec：image 尾部截断多字节（相对路径，normalize 原样保留）、argv1 与
+    // ld_preload 的任意字节
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_EXECVE, EXEC_EVENT);
+        fill_bytes(raw.exec_event.image, sizeof(raw.exec_event.image),
+                   "abc\xE4\xB8");
+        fill_bytes(raw.exec_event.argv1, sizeof(raw.exec_event.argv1),
+                   "\x80"
+                   "arg");
+        fill_bytes(raw.exec_event.ld_preload, sizeof(raw.exec_event.ld_preload),
+                   "/tmp/\xFF.so");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::exec_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 exec variant type");
+        if (d) {
+            CHECK(d->image() == "abc??", "utf8 exec image");
+            CHECK(d->argv1() == "?arg", "utf8 exec argv1");
+            CHECK(d->ld_preload() == "/tmp/?.so", "utf8 exec ld_preload");
+            CHECK(hng::is_valid_utf8(d->image()), "utf8 exec image valid");
+            CHECK(hng::is_valid_utf8(d->argv1()), "utf8 exec argv1 valid");
+            CHECK(hng::is_valid_utf8(d->ld_preload()),
+                  "utf8 exec ld_preload valid");
+        }
+    }
+
+    // namespace：source 与 fstype
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_MOUNT, NAMESPACE_EVENT);
+        fill_bytes(raw.namespace_event.source, sizeof(raw.namespace_event.source),
+                   "/dev/\xE4\xB8");
+        fill_bytes(raw.namespace_event.fstype, sizeof(raw.namespace_event.fstype),
+                   "ext4\xFF");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::namespace_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 namespace variant type");
+        if (d) {
+            CHECK(d->source() == "/dev/??", "utf8 namespace source");
+            CHECK(d->fstype() == "ext4?", "utf8 namespace fstype");
+            CHECK(hng::is_valid_utf8(d->source()), "utf8 namespace source valid");
+            CHECK(hng::is_valid_utf8(d->fstype()), "utf8 namespace fstype valid");
+        }
+    }
+
+    // file：path1
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_OPEN, FILE_EVENT);
+        fill_bytes(raw.file_event.path1, sizeof(raw.file_event.path1),
+                   "/tmp/\xC0\xAF");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::file_syscall_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 file variant type");
+        if (d) {
+            CHECK(d->path1() == "/tmp/??", "utf8 file path1");
+            CHECK(hng::is_valid_utf8(d->path1()), "utf8 file path1 valid");
+        }
+    }
+
+    // memory：path
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_MMAP, MEMORY_EVENT);
+        fill_bytes(raw.memory_event.path, sizeof(raw.memory_event.path),
+                   "/usr/lib/\xED\xA0\x80");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::memory_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 memory variant type");
+        if (d) {
+            CHECK(d->path() == "/usr/lib/???", "utf8 memory path");
+            CHECK(hng::is_valid_utf8(d->path()), "utf8 memory path valid");
+        }
+    }
+
+    // network：unix_path
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_CONNECT, NETWORK_EVENT);
+        fill_bytes(raw.network_event.unix_path,
+                   sizeof(raw.network_event.unix_path), "@/run/\x80");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d =
+            std::get_if<hng::network_syscall_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 network variant type");
+        if (d) {
+            CHECK(d->unix_path() == "@/run/?", "utf8 network unix_path");
+            CHECK(hng::is_valid_utf8(d->unix_path()),
+                  "utf8 network unix_path valid");
+        }
+    }
+
+    // kernel：module_name
+    {
+        struct syscall_event raw = {};
+        fill_head(raw, SYSCALL_EVENT_DELETE_MODULE, KERNEL_EVENT);
+        fill_bytes(raw.kernel_event.module_name,
+                   sizeof(raw.kernel_event.module_name), "root\xFFkit");
+
+        hng::syscall_semantic_data out;
+        run_one(raw, out);
+        const auto* d = std::get_if<hng::kernel_semantic_data>(&out.data);
+        CHECK(d != nullptr, "utf8 kernel variant type");
+        if (d) {
+            CHECK(d->module_name() == "root?kit", "utf8 kernel module_name");
+            CHECK(hng::is_valid_utf8(d->module_name()),
+                  "utf8 kernel module_name valid");
+        }
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1046,6 +1203,7 @@ int main()
     run_signal();
     run_kernel();
     run_head_fields();
+    run_utf8_convergence();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);

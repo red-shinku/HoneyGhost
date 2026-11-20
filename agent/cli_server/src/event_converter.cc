@@ -12,6 +12,7 @@
 #include <variant>
 
 #include "agent/event_data/include/syscall_event.hpp"
+#include "agent/util/include/utf8_sanitize.hpp"
 
 namespace hng::cli {
 namespace {
@@ -153,7 +154,8 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
     hng::syscall_semantic_data& syscall = event.data;
 
     hng::clisv::eventhead* head         = out.mutable_head();
-    head->set_rolelabel(info.roleLabel);
+    // roleLabel 与 exe 不经过语义层，在此收敛为合法 UTF-8
+    head->set_rolelabel(hng::sanitize_utf8(info.roleLabel));
     head->set_roleid(info.roleID);
     head->set_contextid(info.contextID);
     head->set_pid(info.process.pid);
@@ -167,7 +169,7 @@ void ToProto(hng::RuntimeEvent& event, hng::clisv::eventrecord& out)
     head->set_ret(syscall.head.ret);
     head->set_comm(syscall.head.comm);
     head->set_mnt_ns(syscall.head.mnt_ns);
-    head->set_exe(info.exe);
+    head->set_exe(hng::sanitize_utf8(info.exe));
     MoveSyscallPayload(syscall, *out.mutable_syscall_ev());
 }
 

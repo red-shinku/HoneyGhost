@@ -104,6 +104,11 @@ add_executable(test_tracefs test_tracefs.cc)
 target_link_libraries(test_tracefs PRIVATE hng_util)
 add_test(NAME test_tracefs COMMAND test_tracefs)
 
+# UTF-8 收敛：合法序列保留、非法字节替换与定长缓冲边界，无 IO / 无特权
+add_executable(test_utf8_sanitize test_utf8_sanitize.cc)
+target_link_libraries(test_utf8_sanitize PRIVATE hng_util)
+add_test(NAME test_utf8_sanitize COMMAND test_utf8_sanitize)
+
 # 可执行目标的用法输出：不阻塞信号、不构造装配层
 add_test(NAME hng_agent_help COMMAND hng_agent --help)
 

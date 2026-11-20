@@ -82,6 +82,7 @@ target_compile_definitions(hng_log PRIVATE HNG_LOG_TAG="log")
 # ============================================================
 add_library(hng_util STATIC
     agent/util/src/tracefs.cc
+    agent/util/src/utf8_sanitize.cc
 )
 target_include_directories(hng_util PUBLIC
     ${HNG_SOURCE_DIR}
@@ -126,7 +127,7 @@ target_link_libraries(hng_semantic
     PUBLIC hng_event_data
            Threads::Threads
 )
-target_link_libraries(hng_semantic PRIVATE hng_log)
+target_link_libraries(hng_semantic PRIVATE hng_log hng_util)
 target_compile_definitions(hng_semantic PRIVATE HNG_LOG_TAG="semantic")
 
 # ============================================================

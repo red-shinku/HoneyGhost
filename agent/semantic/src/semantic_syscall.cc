@@ -8,8 +8,8 @@
  * 语义化原则：去除随机性信息。除 exec 的 image（先 normalize，再复用
  * agent/semantic/path/ 规则引擎语义化）、file 的 path1/path2 与 memory 的 path
  * （各自 normalize 消除拼写差异）与 credential 按 kind 展开 requested 外，其余
- * 事件为纯字段搬运——进程身份头部原样拷贝，syscall 名由 hdr.name 枚举映射为
- * 字符串。
+ * 事件为纯字段搬运——进程身份字符串字段收敛为合法 UTF-8 后拷贝，syscall 名由
+ * hdr.name 枚举映射为字符串。
  *
  * @author red_shinku
  * @date 2026.08.17
@@ -18,95 +18,11 @@
 #include "agent/semantic/src/semantic.hpp"
 #include "agent/semantic/src/path/path_normalizer.hpp"
 #include "agent/semantic/src/path/path_rule.hpp"
+#include "agent/util/include/utf8_sanitize.hpp"
 
 #include <string>
 
 namespace {
-
-/**
- * @brief 判断从 pos 起是否为一段合法 UTF-8，返回其长度
- * @param text 待检查的字节串
- * @param pos 起始位置
- * @return 合法序列的字节数（1..4）；非法或越界返回 0
- * @details 排除 overlong 编码、代理区编码与超出 U+10FFFF 的取值，
- *          与 protobuf 对 string 字段的 UTF-8 要求一致。
- */
-size_t utf8_sequence_length(std::string_view text, size_t pos)
-{
-    const unsigned char lead = static_cast<unsigned char>(text[pos]);
-    if (lead < 0x80) {
-        return 1;
-    }
-    size_t length      = 0;
-    unsigned char low  = 0x80;
-    unsigned char high = 0xBF;
-    if (lead >= 0xC2 && lead <= 0xDF) {
-        length = 2;
-    }
-    else if (lead >= 0xE0 && lead <= 0xEF) {
-        length = 3;
-        if (lead == 0xE0) {
-            low = 0xA0;  // overlong
-        }
-        if (lead == 0xED) {
-            high = 0x9F;  // 代理区
-        }
-    }
-    else if (lead >= 0xF0 && lead <= 0xF4) {
-        length = 4;
-        if (lead == 0xF0) {
-            low = 0x90;
-        }
-        if (lead == 0xF4) {
-            high = 0x8F;
-        }
-    }
-    else {
-        return 0;
-    }
-    if (pos + length > text.size()) {
-        return 0;
-    }
-    const unsigned char second = static_cast<unsigned char>(text[pos + 1]);
-    if (second < low || second > high) {
-        return 0;
-    }
-    for (size_t i = 2; i < length; ++i) {
-        const unsigned char next = static_cast<unsigned char>(text[pos + i]);
-        if (next < 0x80 || next > 0xBF) {
-            return 0;
-        }
-    }
-    return length;
-}
-
-/**
- * @brief 把内核的定长文本缓冲转成合法 UTF-8
- * @param raw 定长缓冲
- * @param size 缓冲容量
- * @return 截到首个 NUL 的副本；非法 UTF-8 序列的每个字节替换为 '?'
- * @note 内核 comm、模块名与主机名允许任意非 NUL 字节，直接放进 proto 的
- *       string 会让客户端解析失败，故在此收敛为合法 UTF-8。
- */
-std::string sanitize_comm(const char* raw, size_t size)
-{
-    const std::string_view text(raw, size);
-    const std::string_view trimmed = text.substr(0, text.find('\0'));
-    std::string out;
-    out.reserve(trimmed.size());
-    size_t pos = 0;
-    while (pos < trimmed.size()) {
-        const size_t length = utf8_sequence_length(trimmed, pos);
-        if (length == 0) {
-            out += '?';
-            ++pos;
-            continue;
-        }
-        out.append(trimmed.substr(pos, length));
-        pos += length;
-    }
-    return out;
-}
 
 /**
  * @brief syscall_event_name 枚举 → 系统调用名字符串
@@ -274,8 +190,9 @@ const char* syscall_name_str(enum syscall_event_name name)
 
 /**
  * @brief 进程生命周期事件 → process_semantic_data
- * @details 纯搬运 exit_code（进程退出事件有效）。进程诞生事件无载荷字段，新进程
- * 身份由事件头给出（head.pid/pid_start_time=新进程，ppid=父进程）。
+ * @details exit_code 等数值字段纯搬运（进程退出事件有效），字符串字段收敛为合法
+ * UTF-8 后搬运。进程诞生事件无载荷字段，新进程身份由事件头给出
+ * （head.pid/pid_start_time=新进程，ppid=父进程）。
  */
 void process_to_semantic(const struct syscall_event& raw,
                          hng::syscall_semantic_data& out)
@@ -284,42 +201,53 @@ void process_to_semantic(const struct syscall_event& raw,
     d.set_exit_code(raw.process_event.exit_code);
     d.set_derived_flags(raw.process_event.derived_flags);
     d.set_exit_signal(raw.process_event.exit_signal);
-    d.set_old_comm(sanitize_comm(raw.process_event.old_comm,
-                                 sizeof(raw.process_event.old_comm)));
-    d.set_new_comm(sanitize_comm(raw.process_event.new_comm,
-                                 sizeof(raw.process_event.new_comm)));
-    d.set_cgroup_path(raw.process_event.cgroup_path);
+    d.set_old_comm(hng::sanitize_utf8(raw.process_event.old_comm,
+                                      sizeof(raw.process_event.old_comm)));
+    d.set_new_comm(hng::sanitize_utf8(raw.process_event.new_comm,
+                                      sizeof(raw.process_event.new_comm)));
+    d.set_cgroup_path(hng::sanitize_utf8(raw.process_event.cgroup_path,
+                                         sizeof(raw.process_event.cgroup_path)));
     d.set_target_pid(raw.process_event.target_pid);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 执行事件 → exec_semantic_data
- * @details image 先 normalize 消除拼写差异后原样输出（供取证，保留实例信息），
- * 再经路径语义化规则引擎去除随机性后输出 semantic_filename（供规则与基线）；
- * invoked 是用户原始输入，不做 normalize 直接搬运。image 为空时上述两个路径
- * 字段均为空串。argv0..argv3、LD_PRELOAD 与 LD_LIBRARY_PATH 是命令行/注入特征，
- * 原样保留；image_flags 原样透传。
+ * @details image 收敛为合法 UTF-8 后再 normalize 消除拼写差异，然后原样输出（供
+ * 取证，保留实例信息），再经路径语义化规则引擎去除随机性后输出 semantic_filename
+ * （供规则与基线）；invoked 是用户原始输入，收敛为合法 UTF-8 后搬运，不做
+ * normalize。image 为空时上述两个路径字段均为空串。argv0..argv3、LD_PRELOAD 与
+ * LD_LIBRARY_PATH 是命令行/注入特征，收敛为合法 UTF-8 后保留；image_flags 原样
+ * 透传。
  */
 void exec_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::exec_semantic_data>();
+    const std::string image =
+        hng::sanitize_utf8(raw.exec_event.image, sizeof(raw.exec_event.image));
     std::string norm, sem;
-    hng::path::normalize(raw.exec_event.image, norm);
+    hng::path::normalize(image, norm);
     d.set_image(norm);
     if (!norm.empty()) {
         hng::path::semanticize(norm, sem);
         d.set_semantic_filename(sem);
     }
-    d.set_invoked(raw.exec_event.invoked);
+    d.set_invoked(hng::sanitize_utf8(raw.exec_event.invoked,
+                                     sizeof(raw.exec_event.invoked)));
     d.set_image_flags(raw.exec_event.image_flags);
-    d.set_argv0(raw.exec_event.argv0);
-    d.set_argv1(raw.exec_event.argv1);
-    d.set_argv2(raw.exec_event.argv2);
-    d.set_argv3(raw.exec_event.argv3);
-    d.set_ld_preload(raw.exec_event.ld_preload);
-    d.set_ld_library_path(raw.exec_event.ld_library_path);
+    d.set_argv0(
+        hng::sanitize_utf8(raw.exec_event.argv0, sizeof(raw.exec_event.argv0)));
+    d.set_argv1(
+        hng::sanitize_utf8(raw.exec_event.argv1, sizeof(raw.exec_event.argv1)));
+    d.set_argv2(
+        hng::sanitize_utf8(raw.exec_event.argv2, sizeof(raw.exec_event.argv2)));
+    d.set_argv3(
+        hng::sanitize_utf8(raw.exec_event.argv3, sizeof(raw.exec_event.argv3)));
+    d.set_ld_preload(hng::sanitize_utf8(raw.exec_event.ld_preload,
+                                        sizeof(raw.exec_event.ld_preload)));
+    d.set_ld_library_path(hng::sanitize_utf8(
+        raw.exec_event.ld_library_path, sizeof(raw.exec_event.ld_library_path)));
     d.set_flags(raw.exec_event.flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
@@ -356,7 +284,8 @@ void credential_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 命名空间事件 → namespace_semantic_data
  * @details unshare/setns 搬运 CLONE_* 掩码与目标 fd；mount 族搬运两条路径
- * （各自 normalize 后输出，未解析的路径保留原始串）、文件系统类型与挂载标志。
+ * （各自收敛为合法 UTF-8 后再 normalize 输出，未解析的路径保留收敛后的串）、
+ * 文件系统类型（收敛为合法 UTF-8）与挂载标志。
  */
 void namespace_to_semantic(const struct syscall_event& raw,
                            hng::syscall_semantic_data& out)
@@ -366,32 +295,42 @@ void namespace_to_semantic(const struct syscall_event& raw,
     d.set_ns_mask(raw.namespace_event.ns_mask);
     d.set_fd(raw.namespace_event.fd);
     std::string norm;
-    hng::path::normalize(raw.namespace_event.source, norm);
+    hng::path::normalize(hng::sanitize_utf8(raw.namespace_event.source,
+                                            sizeof(raw.namespace_event.source)),
+                         norm);
     d.set_source(norm);
-    hng::path::normalize(raw.namespace_event.target, norm);
+    hng::path::normalize(hng::sanitize_utf8(raw.namespace_event.target,
+                                            sizeof(raw.namespace_event.target)),
+                         norm);
     d.set_target(norm);
     d.set_source_flags(raw.namespace_event.source_flags);
     d.set_target_flags(raw.namespace_event.target_flags);
-    d.set_fstype(raw.namespace_event.fstype);
+    d.set_fstype(hng::sanitize_utf8(raw.namespace_event.fstype,
+                                    sizeof(raw.namespace_event.fstype)));
     d.set_mount_flags(raw.namespace_event.mount_flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 文件系统调用事件 → file_syscall_semantic_data
- * @details 两条路径均由探针解析为绝对路径，各自经 normalize 消除拼写差异后
- * 输出；未解析的路径保留原始串，其状态位一并搬运供呈现层标记。dirfd/dirfd2、
- * at_flags、openat2 的 resolve、truncate 的长度、mknod 的设备号、文件句柄与
- * 以 fd 为参数的系统调用统一原样透传。memfd 的 path1 带 "memfd:" 前缀。
+ * @details 两条路径均由探针解析为绝对路径，各自收敛为合法 UTF-8 后再经 normalize
+ * 消除拼写差异后输出；未解析的路径保留收敛后的串，其状态位一并搬运供呈现层
+ * 标记。dirfd/dirfd2、at_flags、openat2 的 resolve、truncate 的长度、mknod 的
+ * 设备号、文件句柄与以 fd 为参数的系统调用统一原样透传。memfd 的 path1 带
+ * "memfd:" 前缀。
  */
 void file_to_semantic(const struct syscall_event& raw,
                       hng::syscall_semantic_data& out)
 {
     auto& d = out.data.emplace<hng::file_syscall_semantic_data>();
     std::string norm;
-    hng::path::normalize(raw.file_event.path1, norm);
+    hng::path::normalize(
+        hng::sanitize_utf8(raw.file_event.path1, sizeof(raw.file_event.path1)),
+        norm);
     d.set_path1(norm);
-    hng::path::normalize(raw.file_event.path2, norm);
+    hng::path::normalize(
+        hng::sanitize_utf8(raw.file_event.path2, sizeof(raw.file_event.path2)),
+        norm);
     d.set_path2(norm);
     d.set_flags(raw.file_event.flags);
     d.set_mode(raw.file_event.mode);
@@ -411,8 +350,9 @@ void file_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 内存事件 → memory_semantic_data
  * @details 纯搬运：请求地址、长度、PROT_*、MAP_*、文件区段起点、源 fd、匿名与
- * W|X 标志。mmap 的源文件路径由 exit 钩子解析，经 normalize 消除拼写差异后
- * 输出，path_flags 一并搬运；匿名映射的 path 为空、path_flags 为 0。
+ * W|X 标志。mmap 的源文件路径由 exit 钩子解析，收敛为合法 UTF-8 后再经 normalize
+ * 消除拼写差异后输出，path_flags 一并搬运；匿名映射的 path 为空、path_flags
+ * 为 0。
  */
 void memory_to_semantic(const struct syscall_event& raw,
                         hng::syscall_semantic_data& out)
@@ -427,7 +367,9 @@ void memory_to_semantic(const struct syscall_event& raw,
     d.set_anonymous(raw.memory_event.anonymous != 0);
     d.set_wx(raw.memory_event.wx != 0);
     std::string norm;
-    hng::path::normalize(raw.memory_event.path, norm);
+    hng::path::normalize(
+        hng::sanitize_utf8(raw.memory_event.path, sizeof(raw.memory_event.path)),
+        norm);
     d.set_path(norm);
     d.set_path_flags(raw.memory_event.path_flags);
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
@@ -436,8 +378,8 @@ void memory_to_semantic(const struct syscall_event& raw,
 /**
  * @brief 网络事件 → network_syscall_semantic_data
  * @details 纯搬运：地址族 / 套接字类型 / 协议号、目标与来源 IP/端口、本地端口、
- * 套接字 fd、收发字节数、listen 的 backlog 与 AF_UNIX 的 sun_path。dst_ip 与
- * src_ip 固定输出 4 个网络字节序的字，未采集时为 0。
+ * 套接字 fd、收发字节数、listen 的 backlog 与 AF_UNIX 的 sun_path（收敛为合法
+ * UTF-8 后搬运）。dst_ip 与 src_ip 固定输出 4 个网络字节序的字，未采集时为 0。
  */
 void network_to_semantic(const struct syscall_event& raw,
                          hng::syscall_semantic_data& out)
@@ -456,14 +398,16 @@ void network_to_semantic(const struct syscall_event& raw,
     d.set_count(raw.network_event.count);
     d.set_backlog(raw.network_event.backlog);
     d.set_flags(raw.network_event.flags);
-    d.set_unix_path(raw.network_event.unix_path);
+    d.set_unix_path(hng::sanitize_utf8(raw.network_event.unix_path,
+                                       sizeof(raw.network_event.unix_path)));
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
 /**
  * @brief 内核操作事件 → kernel_semantic_data
- * @details 纯搬运：ptrace 的请求类型、目标 pid 与数据参数；bpf 的命令、前 16 字节
- * 属性与按命令解出的类型。bpf_attr 固定输出 4 个小端 u32，未采集时为 0。
+ * @details 纯搬运（字符串字段收敛为合法 UTF-8 后搬运）：ptrace 的请求类型、目标
+ * pid 与数据参数；bpf 的命令、前 16 字节属性与按命令解出的类型。bpf_attr 固定
+ * 输出 4 个小端 u32，未采集时为 0。
  */
 void kernel_to_semantic(const struct syscall_event& raw,
                         hng::syscall_semantic_data& out)
@@ -476,14 +420,14 @@ void kernel_to_semantic(const struct syscall_event& raw,
         d.add_bpf_attr(raw.kernel_event.bpf_attr[i]);
     }
     d.set_bpf_type(raw.kernel_event.bpf_type);
-    d.set_module_name(sanitize_comm(raw.kernel_event.module_name,
-                                    sizeof(raw.kernel_event.module_name)));
+    d.set_module_name(hng::sanitize_utf8(raw.kernel_event.module_name,
+                                         sizeof(raw.kernel_event.module_name)));
     d.set_module_len(raw.kernel_event.module_len);
     d.set_kexec_entry(raw.kernel_event.kexec_entry);
     d.set_kexec_segments(raw.kernel_event.kexec_segments);
     d.set_reboot_cmd(raw.kernel_event.reboot_cmd);
-    d.set_hostname(sanitize_comm(raw.kernel_event.hostname,
-                                 sizeof(raw.kernel_event.hostname)));
+    d.set_hostname(hng::sanitize_utf8(raw.kernel_event.hostname,
+                                      sizeof(raw.kernel_event.hostname)));
     d.set_syscall_name(syscall_name_str(raw.hdr.name));
 }
 
@@ -506,9 +450,9 @@ void signal_to_semantic(const struct syscall_event& raw,
 
 /**
  * @brief 原始事件 → 语义事件纯转换
- * @details 输入事件头（进程身份、凭据、挂载命名空间与进程名）原样拷贝为语义
- * 事件头部；载荷按 hdr.subtype 分派到对应 helper。hdr.subtype 由内核侧
- * init_syscall_event_head 归类，此处不做重新推断。
+ * @details 输入事件头（进程身份、凭据、挂载命名空间）原样拷贝，进程名 comm 收敛为
+ * 合法 UTF-8 后写入语义事件头部；载荷按 hdr.subtype 分派到对应 helper。
+ * hdr.subtype 由内核侧 init_syscall_event_head 归类，此处不做重新推断。
  */
 void Semantic_syscall::transform_one(const struct syscall_event& raw,
                                      hng::syscall_semantic_data& out) const
@@ -522,12 +466,13 @@ void Semantic_syscall::transform_one(const struct syscall_event& raw,
     out.head.euid            = raw.hdr.head.euid;
     out.head.mnt_ns          = raw.hdr.head.mnt_ns;
     out.head.ret             = raw.hdr.head.ret;
-    out.head.comm = sanitize_comm(raw.hdr.head.comm, sizeof(raw.hdr.head.comm));
+    out.head.comm =
+        hng::sanitize_utf8(raw.hdr.head.comm, sizeof(raw.hdr.head.comm));
 
     // head.type 为顶层事件流类别（hng::EventType，scoped 枚举），与
     // raw.hdr.subtype （syscall_event_type 的九类细分）不同义；本流恒为 syscall
     // 语义流，故固定。
-    out.head.type = hng::EventType::SYSCALL_EVENT;
+    out.head.type    = hng::EventType::SYSCALL_EVENT;
     // 语义子类型由内核头原样携带，不再由载荷 variant 下标反推
     out.head.subtype = raw.hdr.subtype;
 
