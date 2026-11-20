@@ -42,6 +42,13 @@ set(HNG_EBPF_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_head.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/syscall_event_type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/uapi_const.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_maps.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_event_builders.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_event_commit.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/socket_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/exec_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/syscall_path_helpers.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernel_helpers.bpf.h
 )
 
 if(NOT HNG_ENABLE_EBPF)
