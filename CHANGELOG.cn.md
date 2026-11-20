@@ -5,17 +5,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- 内核事件（现表示为 type = syscall）子类型 SIGNAL。
+- 47 个 tracepoint 探针；完善事件信息。  
+
 ### Changed
 
-- 事件流收敛为单一 syscall 来源：`TYPE` 只剩 `syscall`，一条事件记录只携带
-  `syscall_ev`（`file_ev` 编号保留、不再使用），`semantic_stats`/`engine_stats`
-  的文件相关字段保留编号、不再上报。
-- `hghost events -t/--type` 改为按语义子类型过滤（`process`、`exec`、
-  `credential`、`namespace`、`file`、`memory`、`network`、`kernel`），不再是
-  顶层事件类型；`events` 表格在 `TYPE` 后新增 `SUBTYPE` 列，JSON 的
-  `head.subtype` 使用同一套字符串。
-- `-e` 的 `kind=` 更名 `subtype=`；`type=` 只剩 `syscall`。显式 `-t` 与
-  `-e` 中的 `subtype` 原子互斥，混用是用法错误。
+- 原顶层 type 的 file、network、ipc 收敛到 syscall 的九个子类型下。
+- `hghost events -t/--type` 改为按子类型过滤（`process`、`exec`、
+  `credential`、`namespace`、`file`、`memory`、`network`、`kernel`），
+  子类型即输出表格视图在 `TYPE` 后新增的 `SUBTYPE` 列。  
+  
 
 ## [v0.1.2] - 2026-11-16
 

@@ -5,13 +5,20 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Kernel events (now represented as type = syscall) subtype SIGNAL.
+- 47 tracepoint probes; improved event information.
+
 ### Changed
 
-- The event stream is converged onto a single syscall source: `TYPE` has only `syscall`, an event record carries only `syscall_ev` (`file_ev` is reserved), and the file-related `semantic_stats`/`engine_stats` fields are reserved and no longer reported.
-- `hghost events -t/--type` now selects semantic subtypes (`process`, `exec`, `credential`, `namespace`, `file`, `memory`, `network`, `kernel`) instead of top-level event types. The `events` table gains a `SUBTYPE` column after `TYPE`, and JSON `head.subtype` uses the same strings.
-- `-e` renames `kind=` to `subtype=`; `type=` only accepts `syscall`. Mixing an explicit `-t` with a `subtype` predicate in `-e` is a usage error.
+- The original top-level types file, network, and ipc have been consolidated under the nine subtypes of syscall.
+- `hghost events -t/--type` now filters by subtype (`process`, `exec`,
+  `credential`, `namespace`, `file`, `memory`, `network`, `kernel`).
+  The subtype is the newly added `SUBTYPE` column after `TYPE` in the output table view.
 
 ## [v0.1.2] - 2026-11-16
+
 ### Added
 
 - `hghost status` adds RUNTIME STATS: kernel-side ringbuf failure counts, and exception counts for collector/semantic/engine channels and CLI streams.
