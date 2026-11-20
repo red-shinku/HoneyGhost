@@ -337,6 +337,24 @@ else()
     message(STATUS "libbpf 未找到，跳过 verify_starttime")
 endif()
 
+# ============================================================
+# 采集吞吐压测（需 root 与 BPF 权限，不注册为 ctest 用例）
+#
+#   make ebpf        # 产出 kernel/build/syscalls.bpf.o
+#   sudo build-agent/test/bench_syscalls --profile mixed --seconds 10
+#
+# 只链接 hng_util 与 libbpf：不引入 hng_collector 的 spdlog 运行时依赖，
+# 构建产物可直接在宿主上运行。libbpf 缺失时跳过。
+# ============================================================
+if(LIBBPF_LIB)
+    add_executable(bench_syscalls bench_syscalls.cc)
+    target_include_directories(bench_syscalls PRIVATE ${HNG_SOURCE_DIR})
+    target_link_libraries(bench_syscalls PRIVATE hng_util Threads::Threads
+                                                    ${LIBBPF_LIB})
+else()
+    message(STATUS "libbpf 未找到，跳过 bench_syscalls")
+endif()
+
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
