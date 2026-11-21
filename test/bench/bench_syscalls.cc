@@ -12,6 +12,9 @@
  *
  * 需 root 与 BPF 权限，故不注册为 ctest 用例。从仓库根手动执行：
  *   sudo build-agent/test/bench_syscalls --profile mixed --seconds 10
+ *
+ * --dump PATH 把统计窗口内的 ringbuf 记录原样写成语料文件，格式见
+ * bench_trace.hpp。
  */
 
 #include <bpf/bpf.h>
@@ -50,6 +53,7 @@
 #include "agent/util/include/tracefs.hpp"
 #include "kernel/include/role_filter_types.h"
 #include "kernel/include/syscall_event_head.h"
+#include "test/bench/bench_trace.hpp"
 
 namespace {
 
@@ -125,6 +129,7 @@ struct Options {
     int warmup_seconds      = 1;
     int workers             = 1;
     bool quiet              = false;
+    std::string dump_path;
 };
 
 /// @brief 默认 worker 数：在线 CPU 数的一半，至少 1
@@ -150,6 +155,7 @@ void print_usage(std::FILE* out)
         "  --seconds N       压测时长，秒（默认 10）\n"
         "  --warmup N        预热秒数，不计入统计（默认 1）\n"
         "  --workers N       工作子进程数（默认 CPU 数的一半，至少 1）\n"
+        "  --dump PATH       把统计窗口内的记录导出为语料文件\n"
         "  --quiet           只输出结果行\n"
         "  --help            显示本帮助\n"
         "\n"
@@ -278,6 +284,13 @@ bool parse_options(int argc, char** argv, Options& options, bool& help)
                 std::fprintf(stderr, "参数错误：--workers 需为 1..4096 的整数\n");
                 return false;
             }
+        }
+        else if (name == "--dump") {
+            if (!take_value(value) || *value == '\0') {
+                std::fprintf(stderr, "参数错误：--dump 缺少路径\n");
+                return false;
+            }
+            options.dump_path = value;
         }
         else if (name == "--quiet") {
             if (inline_value != nullptr) {
@@ -504,6 +517,8 @@ struct Stats {
     std::uint64_t subtypes[kSubtypeSlotCount] = {};     ///< 按 subtype 分桶
     bool counting                             = false;  ///< 是否处于统计窗口
     int attach_failed                         = 0;      ///< 挂载失败的探针数
+    bench::TraceWriter* trace = nullptr;  ///< 语料写入器；nullptr 表示不导出
+    std::string trace_error;              ///< 语料写入的首个错误
 };
 
 /// @brief 校准 PID 命名空间偏移时使用的探查状态
@@ -525,6 +540,7 @@ PidProbe* g_pid_probe = nullptr;
  * @note 校准阶段（g_pid_probe 非空）改按进程诞生事件把启动时间映射到全局 TGID：
  *       嵌套 PID 命名空间里用户态 pid 与内核全局 TGID 不同，而角色过滤键用的是
  *       后者；启动时间与命名空间无关，可作匹配键。
+ * @note 统计窗口内的记录同时写入 --dump 语料；写入失败只停止导出，不影响计数。
  */
 int on_record(void* context, void* data, std::size_t size)
 {
@@ -553,6 +569,12 @@ int on_record(void* context, void* data, std::size_t size)
     }
     ++stats->records;
     stats->bytes += size;
+    if (stats->trace != nullptr) {
+        if (!stats->trace->write(data, size)) {
+            stats->trace_error = stats->trace->error();
+            stats->trace       = nullptr;
+        }
+    }
     if (size >= sizeof(struct syscall_event_head)) {
         const auto* head  = static_cast<const struct syscall_event_head*>(data);
         const int subtype = static_cast<int>(head->subtype);
@@ -974,10 +996,11 @@ void abort_workers(int& gate_write, std::vector<pid_t>& workers)
  * @param[in] drain 消费线程结果
  * @param[in] reserve_failures reserve_failures 增量
  * @param[in] pending_lost pending_lost 增量
+ * @param[in] trace 非空时打印语料汇总（路径、条数、字节数）
  */
 void print_results(const Options& options, const Stats& stats,
                    const DrainResult& drain, std::uint64_t reserve_failures,
-                   std::uint64_t pending_lost)
+                   std::uint64_t pending_lost, const bench::TraceWriter* trace)
 {
     const double seconds = static_cast<double>(options.seconds);
     const double mib     = static_cast<double>(stats.bytes) / (1024.0 * 1024.0);
@@ -1011,6 +1034,11 @@ void print_results(const Options& options, const Stats& stats,
                 reserve_failures, pending_lost, stats.attach_failed);
     std::printf("drain: cpu=%.3fs  us_per_event=%.2f  events=%" PRIu64 "\n",
                 drain.cpu_seconds, us_per_event, stats.records);
+    if (trace != nullptr) {
+        std::printf("trace: path=%s records=%" PRIu64 " bytes=%" PRIu64 "\n",
+                    options.dump_path.c_str(), trace->records(),
+                    trace->payload_bytes());
+    }
     std::printf("TSV\t%s\t%d\t%d\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
                 "\t%.1f\t%.2f\t%" PRIu64 "\t%" PRIu64 "\t%d\n",
                 profile_name(options.profile), options.workers, options.seconds,
@@ -1111,6 +1139,18 @@ int run(const Options& options)
         return kExitBpfFailure;
     }
     RingBufferPtr buffer(raw_buffer);
+
+    const bool trace_enabled = !options.dump_path.empty();
+    bench::TraceWriter trace_writer;
+    if (trace_enabled) {
+        std::string trace_open_error;
+        if (!trace_writer.open(options.dump_path, trace_open_error)) {
+            std::fprintf(stderr, "打开语料文件 %s 失败：%s\n",
+                         options.dump_path.c_str(), trace_open_error.c_str());
+            return kExitRuntimeFailure;
+        }
+        stats.trace = &trace_writer;
+    }
 
     int gate[2] = {-1, -1};
     if (::pipe2(gate, O_CLOEXEC) != 0) {
@@ -1255,6 +1295,9 @@ int run(const Options& options)
 
     stop.store(true);
     consumer.join();
+    if (trace_enabled) {
+        trace_writer.close();
+    }
 
     std::uint64_t reserve_after = 0;
     std::uint64_t pending_after = 0;
@@ -1268,7 +1311,19 @@ int run(const Options& options)
     const std::uint64_t pending_lost =
         pending_after >= pending_before ? pending_after - pending_before : 0;
 
-    print_results(options, stats, drain, reserve_failures, pending_lost);
+    print_results(options, stats, drain, reserve_failures, pending_lost,
+                  trace_enabled && !options.quiet ? &trace_writer : nullptr);
+
+    bool trace_failed = false;
+    if (trace_enabled) {
+        const std::string& trace_error =
+            stats.trace_error.empty() ? trace_writer.error() : stats.trace_error;
+        if (!trace_error.empty()) {
+            trace_failed = true;
+            std::fprintf(stderr, "写语料文件 %s 失败：%s\n",
+                         options.dump_path.c_str(), trace_error.c_str());
+        }
+    }
 
     if (drain.poll_error != 0) {
         std::fprintf(stderr, "消费 ringbuf 失败：%s\n",
@@ -1283,7 +1338,7 @@ int run(const Options& options)
                      "提示：未采集到事件，检查 tracefs 挂载、tracepoint 与"
                      "角色过滤 map\n");
     }
-    if (drain.poll_error != 0 || failed_workers > 0) {
+    if (drain.poll_error != 0 || failed_workers > 0 || trace_failed) {
         return kExitRuntimeFailure;
     }
     return 0;

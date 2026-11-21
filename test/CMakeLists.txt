@@ -352,7 +352,7 @@ endif()
 # 构建产物可直接在宿主上运行。libbpf 缺失时跳过。
 # ============================================================
 if(LIBBPF_LIB)
-    add_executable(bench_syscalls bench_syscalls.cc)
+    add_executable(bench_syscalls bench/bench_syscalls.cc)
     target_include_directories(bench_syscalls PRIVATE ${HNG_SOURCE_DIR})
     target_link_libraries(bench_syscalls PRIVATE hng_util Threads::Threads
                                                     ${LIBBPF_LIB})
