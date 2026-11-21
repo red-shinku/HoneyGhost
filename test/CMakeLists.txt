@@ -360,6 +360,19 @@ else()
     message(STATUS "libbpf 未找到，跳过 bench_syscalls")
 endif()
 
+# ============================================================
+# 事件流水线分段压测（语料回放，不依赖 BPF 与 root）
+#
+# 不注册为 ctest 用例：结果依赖宿主 CPU 与调度，不适合作为断言。
+#   build-bench/test/bench_event_pipeline --stage semantic --trace /tmp/p1.trace
+# ============================================================
+add_executable(bench_event_pipeline
+    bench/bench_event_pipeline.cc
+    bench/bench_semantic.cc)
+target_include_directories(bench_event_pipeline PRIVATE ${HNG_SOURCE_DIR})
+target_link_libraries(bench_event_pipeline PRIVATE
+    hng_semantic Threads::Threads)
+
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
