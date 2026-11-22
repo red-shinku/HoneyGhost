@@ -27,6 +27,9 @@ struct StageSpec {
 /// @brief 语义段：原始通道 → 语义聚合 → 语义通道
 const StageSpec& semantic_stage();
 
+/// @brief 引擎段：语义通道 → 运行时引擎 → 订阅端
+const StageSpec& engine_stage();
+
 }  // namespace bench
 
 #endif  // HNG_TEST_BENCH_STAGES_HPP_

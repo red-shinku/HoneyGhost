@@ -29,6 +29,7 @@ const std::vector<const bench::StageSpec*>& available_stages()
 {
     static const std::vector<const bench::StageSpec*> stages = {
         &bench::semantic_stage(),
+        &bench::engine_stage(),
     };
     return stages;
 }
