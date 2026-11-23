@@ -30,6 +30,9 @@ const std::vector<const bench::StageSpec*>& available_stages()
     static const std::vector<const bench::StageSpec*> stages = {
         &bench::semantic_stage(),
         &bench::engine_stage(),
+#ifdef HNG_BENCH_CLI_STAGE
+        &bench::cli_stage(),
+#endif
     };
     return stages;
 }
@@ -53,7 +56,7 @@ void print_usage(std::FILE* out)
                  "\n"
                  "公共选项：\n"
                  "  --stage NAME       压测段（必填）\n"
-                 "  --trace PATH       语料文件路径（必填）\n"
+                 "  --trace PATH       语料文件路径（semantic/engine 必填）\n"
                  "  --seconds N        统计窗口秒数，>0（默认 10）\n"
                  "  --warmup N         预热秒数，>=0（默认 1）\n"
                  "  --rate R           目标速率 Hz，浮点，0 表示饱和（默认 0）\n"
@@ -316,7 +319,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "\n");
         return kExitUsage;
     }
-    if (options.trace_path.empty()) {
+    if (stage->requires_trace && options.trace_path.empty()) {
         std::fprintf(stderr, "参数错误：缺少 --trace PATH\n");
         return kExitUsage;
     }
@@ -328,7 +331,9 @@ int main(int argc, char** argv)
     if (!options.quiet) {
         std::fputs(bench::machine_fingerprint().c_str(), stdout);
         std::printf("stage    : %s\n", options.stage.c_str());
-        std::printf("trace    : %s\n", options.trace_path.c_str());
+        if (!options.trace_path.empty()) {
+            std::printf("trace    : %s\n", options.trace_path.c_str());
+        }
         std::printf("seconds  : %d  warmup: %d\n", options.seconds,
                     options.warmup_seconds);
         std::printf("rate     : %g%s\n", options.rate,

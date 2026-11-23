@@ -10,6 +10,7 @@
 #ifndef HNG_TEST_BENCH_SUPPORT_HPP_
 #define HNG_TEST_BENCH_SUPPORT_HPP_
 
+#include <dirent.h>
 #include <sched.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -425,6 +426,11 @@ inline void print_human(const Result& result, const CommonOptions& options)
                 " out_peak_queue=%" PRIu64 "\n",
                 result.drops, result.raw_drops, result.out_drops, result.rss_kb,
                 result.peak_queue, result.out_peak_queue);
+    if (result.drops > 0 && options.queue <= 8192) {
+        std::printf(
+            "提示：本轮有丢弃且队列为默认大小；0 丢上限可能受队列吸收量与宿主"
+            "抖动限制，容量结论请用较大 --queue 复核\n");
+    }
 }
 
 /// @brief 一行的 TSV 文本，含行尾换行
@@ -485,6 +491,187 @@ inline bool append_tsv(const std::string& path, const Result& result)
         std::fprintf(stderr, "写入 TSV 文件 %s 失败\n", path.c_str());
         return false;
     }
+    return true;
+}
+
+namespace detail {
+
+/**
+ * @brief 解析 /proc/<pid>/stat 的 comm 与 utime/stime
+ * @param[in] content stat 文件的单行内容
+ * @param[out] comm 括号内的线程名
+ * @param[out] seconds 用户态与内核态 CPU 时间之和
+ * @param[out] error 失败原因
+ * @return 成功时为 true
+ * @note comm 可含空格与右括号，故以最后一个 ')' 为界；其后的第 11、12 个
+ *       数值字段依次是 utime/stime（state 占第 3 个字段，不参与计数）。
+ */
+inline bool parse_stat_cpu(const std::string& content, std::string& comm,
+                           double& seconds, std::string& error)
+{
+    seconds = 0.0;
+    comm.clear();
+    const std::size_t open  = content.find('(');
+    const std::size_t close = content.rfind(')');
+    if (open == std::string::npos || close == std::string::npos ||
+        close <= open) {
+        error = "stat 缺少 comm";
+        return false;
+    }
+    comm               = content.substr(open + 1, close - open - 1);
+
+    const char* cursor = content.c_str() + close + 1;
+    while (*cursor == ' ') {
+        ++cursor;
+    }
+    if (*cursor == '\0') {
+        error = "stat 缺少 state 字段";
+        return false;
+    }
+    ++cursor;  // 跳过 state 单字符
+
+    std::uint64_t utime = 0;
+    std::uint64_t stime = 0;
+    bool got_utime      = false;
+    bool got_stime      = false;
+    for (int field = 1; field <= 12; ++field) {
+        while (*cursor == ' ') {
+            ++cursor;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        errno                          = 0;
+        char* end                      = nullptr;
+        const unsigned long long value = std::strtoull(cursor, &end, 10);
+        if (end == cursor || errno != 0) {
+            error = "stat 的第 " + std::to_string(field) + " 个数值字段非法";
+            return false;
+        }
+        if (field == 11) {
+            utime     = value;
+            got_utime = true;
+        }
+        else if (field == 12) {
+            stime     = value;
+            got_stime = true;
+        }
+        cursor = end;
+    }
+    if (!got_utime || !got_stime) {
+        error = "stat 字段不足，无法取 utime/stime";
+        return false;
+    }
+
+    const long ticks = ::sysconf(_SC_CLK_TCK);
+    if (ticks <= 0) {
+        error = "无法获取 _SC_CLK_TCK";
+        return false;
+    }
+    seconds = static_cast<double>(utime + stime) / static_cast<double>(ticks);
+    error.clear();
+    return true;
+}
+
+}  // namespace detail
+
+/**
+ * @brief 读取指定进程的累计 CPU 时间
+ * @param[in] pid 进程号
+ * @param[out] seconds 该进程全部线程的用户态与内核态 CPU 时间之和
+ * @param[out] error 失败原因
+ * @return 成功时为 true
+ * @note 读 /proc/<pid>/stat 的 utime/stime；进程不存在时返回 false，不静默归零
+ */
+inline bool read_process_cpu(pid_t pid, double& seconds, std::string& error)
+{
+    seconds                = 0.0;
+    const std::string path = "/proc/" + std::to_string(pid) + "/stat";
+    std::ifstream stat(path);
+    if (!stat.is_open()) {
+        error = "无法打开 " + path;
+        return false;
+    }
+    std::string content;
+    if (!std::getline(stat, content)) {
+        error = "读取 " + path + " 失败";
+        return false;
+    }
+    std::string comm;
+    std::string parse_error;
+    if (!detail::parse_stat_cpu(content, comm, seconds, parse_error)) {
+        error = path + "：" + parse_error;
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+/**
+ * @brief 汇总指定进程内名字以给定前缀开头的线程的累计 CPU 时间
+ * @param[in] pid 进程号
+ * @param[in] comm_prefix 线程名前缀；线程名取 stat 括号内的 comm
+ * @param[out] seconds 命中线程的用户态与内核态 CPU 时间之和
+ * @param[out] error 失败原因
+ * @return 成功时为 true；一个线程都没命中视为失败
+ * @note 遍历 /proc/<pid>/task/<tid>/stat。遍历期间退出的线程被跳过，不算失败。
+ */
+inline bool read_tasks_cpu(pid_t pid, const std::string& comm_prefix,
+                           double& seconds, std::string& error)
+{
+    seconds                    = 0.0;
+    const std::string dir_path = "/proc/" + std::to_string(pid) + "/task";
+    DIR* dir                   = ::opendir(dir_path.c_str());
+    if (dir == nullptr) {
+        error = "无法打开 " + dir_path + "：" + std::strerror(errno);
+        return false;
+    }
+
+    std::size_t matched = 0;
+    bool failed         = false;
+    std::string failure;
+    for (struct dirent* entry = ::readdir(dir); entry != nullptr;
+         entry                = ::readdir(dir)) {
+        const char* name = entry->d_name;
+        if (name[0] < '0' || name[0] > '9') {
+            continue;
+        }
+        const std::string stat_path = dir_path + "/" + name + "/stat";
+        std::ifstream stat(stat_path);
+        if (!stat.is_open()) {
+            continue;  // 线程已退出
+        }
+        std::string content;
+        if (!std::getline(stat, content)) {
+            continue;
+        }
+        std::string comm;
+        double value = 0.0;
+        std::string parse_error;
+        if (!detail::parse_stat_cpu(content, comm, value, parse_error)) {
+            failed  = true;
+            failure = stat_path + "：" + parse_error;
+            break;
+        }
+        if (comm.compare(0, comm_prefix.size(), comm_prefix) != 0) {
+            continue;
+        }
+        seconds += value;
+        ++matched;
+    }
+    ::closedir(dir);
+
+    if (failed) {
+        seconds = 0.0;
+        error   = failure;
+        return false;
+    }
+    if (matched == 0) {
+        error = "在 " + dir_path + " 下未找到 comm 前缀为 \"" + comm_prefix +
+                "\" 的线程";
+        return false;
+    }
+    error.clear();
     return true;
 }
 

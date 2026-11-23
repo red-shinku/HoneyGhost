@@ -566,9 +566,10 @@ int run_semantic(const bench::CommonOptions& options,
 bench::StageSpec make_semantic_stage()
 {
     bench::StageSpec stage;
-    stage.name       = "semantic";
-    stage.extra_help = kExtraHelp;
-    stage.run        = &run_semantic;
+    stage.name           = "semantic";
+    stage.extra_help     = kExtraHelp;
+    stage.requires_trace = true;
+    stage.run            = &run_semantic;
     return stage;
 }
 
