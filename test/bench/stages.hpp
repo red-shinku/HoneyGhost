@@ -20,6 +20,8 @@ namespace bench {
 struct StageSpec {
     const char* name;        ///< stage 名，供 --stage 选择
     const char* extra_help;  ///< 私有选项的多行用法，供 --help 聚合打印
+    /// 是否要求 --trace；不读语料的段为 false
+    bool requires_trace;
     /// @brief 执行入口；rest 是入口未识别的原始参数
     int (*run)(const CommonOptions&, const std::vector<std::string>& rest);
 };
@@ -29,6 +31,11 @@ const StageSpec& semantic_stage();
 
 /// @brief 引擎段：语义通道 → 运行时引擎 → 订阅端
 const StageSpec& engine_stage();
+
+#ifdef HNG_BENCH_CLI_STAGE
+/// @brief CLI 段：子进程 CLI 服务端 + 裸 grpc++ 客户端的事件流
+const StageSpec& cli_stage();
+#endif
 
 }  // namespace bench
 

@@ -374,6 +374,17 @@ target_include_directories(bench_event_pipeline PRIVATE ${HNG_SOURCE_DIR})
 target_link_libraries(bench_event_pipeline PRIVATE
     hng_semantic hng_runtime_engine Threads::Threads)
 
+# CLI 段：子进程跑 userver CLI 服务端、父进程用裸 grpc++ 收流。
+# -DHNG_ENABLE_CLI_SERVER=OFF 时 hng_cli_server 不存在，整段跳过。
+if(TARGET hng_cli_server)
+    target_sources(bench_event_pipeline PRIVATE bench/bench_cli.cc)
+    target_compile_definitions(bench_event_pipeline PRIVATE
+        HNG_BENCH_CLI_STAGE=1)
+    # 与 e2e_cli_server 相同的链接项：userver::grpc 带出 grpc++ 与生成代码
+    target_link_libraries(bench_event_pipeline PRIVATE
+        hng_cli_server userver::grpc)
+endif()
+
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
 set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
 file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
