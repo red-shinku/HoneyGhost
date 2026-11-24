@@ -1219,7 +1219,9 @@ int run_cli(const bench::CommonOptions& options,
 
     bench::Result result;
     result.stage  = "cli";
-    result.config = "streams=" + std::to_string(cli_options.streams) +
+    result.config = std::string("fidelity=") +
+                    bench::fidelity_name(options.fidelity) +
+                    ",streams=" + std::to_string(cli_options.streams) +
                     ",batch=" + std::to_string(cli_options.batch) +
                     ",queue=" + std::to_string(queue_capacity);
     result.rate                    = options.rate;
@@ -1237,7 +1239,8 @@ int run_cli(const bench::CommonOptions& options,
     result.peak_queue              = 0;
 
     bench::print_human(result, options);
-    std::printf("config: streams=%d batch=%u queue=%d\n", cli_options.streams,
+    std::printf("config: fidelity=%s streams=%d batch=%u queue=%d\n",
+                bench::fidelity_name(options.fidelity), cli_options.streams,
                 batch, queue_capacity);
     std::printf(
         "events/s=%.1f per-stream=%.1f messages/s=%.1f "
@@ -1333,6 +1336,7 @@ bench::StageSpec make_cli_stage()
     stage.name           = "cli";
     stage.extra_help     = kExtraHelp;
     stage.requires_trace = false;
+    stage.supports_l2    = false;
     stage.run            = &run_cli;
     return stage;
 }

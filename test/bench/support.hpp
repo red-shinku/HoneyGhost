@@ -389,6 +389,21 @@ struct Result {
 };
 
 /**
+ * @brief 压测的保真度档位
+ * @details L1 用内存替身承担控制面；L2 用真实控制面组件，角色维度仍为替身。
+ */
+enum class Fidelity : std::uint8_t {
+    L1,  ///< 控制面为内存替身
+    L2   ///< 控制面为真实组件
+};
+
+/// @brief fidelity 的两字名字，用于 config 与命令行
+inline const char* fidelity_name(Fidelity fidelity)
+{
+    return fidelity == Fidelity::L2 ? "l2" : "l1";
+}
+
+/**
  * @brief 公共命令行选项
  * @details 入口只解析这些选项，其余参数原样交给 stage。
  */
@@ -403,6 +418,9 @@ struct CommonOptions {
     int pin_consumer   = -1;     ///< 消费侧绑核序号，-1 不绑
     int pin_producer   = -1;     ///< 生产侧绑核序号，-1 不绑
     bool quiet         = false;  ///< 不打印机器指纹与启动参数
+
+    /// 保真度档位，默认 L1
+    Fidelity fidelity  = Fidelity::L1;
 };
 
 /// @brief 打印人类可读的结果行

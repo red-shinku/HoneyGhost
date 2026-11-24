@@ -22,6 +22,8 @@ struct StageSpec {
     const char* extra_help;  ///< 私有选项的多行用法，供 --help 聚合打印
     /// 是否要求 --trace；不读语料的段为 false
     bool requires_trace;
+    /// 是否支持 --fidelity l2；只接真实控制面的段为 true
+    bool supports_l2;
     /// @brief 执行入口；rest 是入口未识别的原始参数
     int (*run)(const CommonOptions&, const std::vector<std::string>& rest);
 };

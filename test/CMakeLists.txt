@@ -371,8 +371,10 @@ add_executable(bench_event_pipeline
     bench/bench_semantic.cc
     bench/bench_engine.cc)
 target_include_directories(bench_event_pipeline PRIVATE ${HNG_SOURCE_DIR})
+# hng_control_plane 提供 L2 的 Process/Context 真实组件与工厂
+# （PUBLIC 带出 hng_process_manager 与 hng_context_manager）
 target_link_libraries(bench_event_pipeline PRIVATE
-    hng_semantic hng_runtime_engine Threads::Threads)
+    hng_semantic hng_runtime_engine hng_control_plane Threads::Threads)
 
 # CLI 段：子进程跑 userver CLI 服务端、父进程用裸 grpc++ 收流。
 # -DHNG_ENABLE_CLI_SERVER=OFF 时 hng_cli_server 不存在，整段跳过。

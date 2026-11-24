@@ -510,7 +510,9 @@ int run_semantic(const bench::CommonOptions& options,
 
     bench::Result result;
     result.stage  = "semantic";
-    result.config = "queue=" + std::to_string(options.queue) +
+    result.config = std::string("fidelity=") +
+                    bench::fidelity_name(options.fidelity) +
+                    ",queue=" + std::to_string(options.queue) +
                     (no_semantic ? ",no-semantic" : "");
     result.rate    = options.rate;
     result.seconds = window_seconds;
@@ -569,6 +571,7 @@ bench::StageSpec make_semantic_stage()
     stage.name           = "semantic";
     stage.extra_help     = kExtraHelp;
     stage.requires_trace = true;
+    stage.supports_l2    = false;
     stage.run            = &run_semantic;
     return stage;
 }
