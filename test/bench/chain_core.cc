@@ -3,8 +3,9 @@
  * @brief chain 段整链运行期的装配、快照与收尾
  * @details
  * 原始通道与语义通道各一条；真实语义组件、真实运行时引擎、真实 context
- * 维护器，控制面替身与语料全量种子来自 L1 头文件。ChainRuntime 启动 feeder、
- * 语义、引擎三条命名线程，并在调用方指定的时刻读取累计计数与线程 CPU；
+ * 维护器，控制面由 L1 替身或 L2 的真实 Process/Context 组件承担（见两个控制面
+ * 头文件）。ChainRuntime 启动 feeder、语义、引擎三条命名线程，并在调用方指定
+ * 的时刻读取累计计数与线程 CPU；L2 的控制面 CPU 按两条组件线程的 tid 采，
  * 通道占用峰值由随快照启停的采样线程记录，一次快照取走并重置它。
  */
 
@@ -431,12 +432,6 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         error = "failed to read engine thread CPU: " + error;
         return false;
     }
-    double process_cpu = 0.0;
-    if (!bench::read_process_cpu(::getpid(), process_cpu, error)) {
-        error = "failed to read process total CPU: " + error;
-        return false;
-    }
-
     const FeederCounters feeder_counters = feeder.counters();
     sample.consumed                      = feeder_counters.consumed;
     sample.consumed_lifecycle            = feeder_counters.consumed_lifecycle;
@@ -468,13 +463,38 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         sample.engine_idle_waits            = stats.idle_waits;
     }
 
-    // 控制面 CPU：进程总量减去三条按 tid 归属的工作线程；占用采样线程与
-    // L2 的 process/context 组件线程都只能落在这一差值里
-    const double thread_cpu =
-        sample.feeder_cpu + sample.semantic_cpu + sample.engine_cpu;
-    sample.cp_cpu = process_cpu > thread_cpu ? process_cpu - thread_cpu : 0.0;
     if (options.fidelity == bench::Fidelity::L2) {
-        sample.control = control.snapshot();
+        // 控制面 CPU 只认两条组件线程：CLI 子进程里 userver 线程很多，用进程
+        // 总量减法会把它们算进控制面
+        const bench::l2::ControlPlaneThreads threads = control.cp_threads();
+        double process_cpu                           = 0.0;
+        if (!bench::read_thread_cpu(static_cast<std::uint64_t>(threads.process),
+                                    process_cpu, error)) {
+            error = "failed to read the process component thread CPU: " + error;
+            return false;
+        }
+        double context_cpu = 0.0;
+        if (!bench::read_thread_cpu(static_cast<std::uint64_t>(threads.context),
+                                    context_cpu, error)) {
+            error = "failed to read the context component thread CPU: " + error;
+            return false;
+        }
+        sample.cp_cpu         = process_cpu + context_cpu;
+        sample.cp_threads     = 2;
+        sample.cp_process_tid = static_cast<std::int64_t>(threads.process);
+        sample.cp_context_tid = static_cast<std::int64_t>(threads.context);
+        sample.control        = control.snapshot();
+    }
+    else {
+        // L1 没有组件线程，控制面内联在引擎线程；差值只作占位，不参与呈现
+        double process_cpu = 0.0;
+        if (!bench::read_process_cpu(::getpid(), process_cpu, error)) {
+            error = "failed to read process total CPU: " + error;
+            return false;
+        }
+        const double thread_cpu =
+            sample.feeder_cpu + sample.semantic_cpu + sample.engine_cpu;
+        sample.cp_cpu = process_cpu > thread_cpu ? process_cpu - thread_cpu : 0.0;
     }
 
     // 采样已停：此刻取走的是上一次快照以来的真实峰值，随后重新开始采样

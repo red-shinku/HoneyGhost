@@ -11,6 +11,7 @@
 #define HNG_TEST_BENCH_L2_CONTROL_PLANE_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -22,6 +23,9 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/control_plane/include/context_component.hpp"
@@ -35,6 +39,16 @@
 #include "test/bench/l1_control_plane.hpp"
 
 namespace bench::l2 {
+
+/// @brief 等待组件线程发布 tid 的上限
+constexpr std::chrono::milliseconds kTidWaitLimit(1000);
+
+/// @brief 两条组件线程的 tid
+/// @details 0 表示尚未发布；start() 成功返回后两者都有效。
+struct ControlPlaneThreads {
+    pid_t process = 0;  ///< 进程组件线程
+    pid_t context = 0;  ///< context 组件线程
+};
 
 /**
  * @brief L2 的一次性 seed 结果
@@ -73,7 +87,8 @@ struct ControlPlaneSnapshot {
  * @note 组件实例由工厂限额保护，同一进程内只能有一个 L2 控制面存活；本对象的
  *       start() 也只能成功一次，失败后组件线程已收尾且不可重试，工厂名额随对象
  *       析构归还。不拥有 ContextMaintainer 与角色替身，二者须存活到 stop() 之后。
- *       stop() 可重复调用；析构时自动调用。
+ *       start() 返回前等待两条组件线程发布 tid，超时按启动失败处理；控制面 CPU
+ *       由调用方按 cp_threads() 采线程 CPU。stop() 可重复调用；析构时自动调用。
  * @see SeedReport, ControlPlaneSnapshot
  */
 class ControlPlane final {
@@ -140,10 +155,27 @@ class ControlPlane final {
      */
     ControlPlaneSnapshot snapshot() const;
 
+    /**
+     * @brief 两条组件线程的 tid
+     * @return 进程与 context 组件线程的 tid；未启动时为 0
+     * @pre start() 成功
+     * @note 控制面 CPU 按这两个 tid 采 /proc/self/task/<tid>/stat，避免把进程内
+     *       其它线程（如框架线程）算进控制面。tid 在组件线程退出前有效。
+     */
+    ControlPlaneThreads cp_threads() const;
+
     /// @brief 某条组件线程是否曾抛出异常
     bool failed() const;
 
    private:
+    /**
+     * @brief 等两条组件线程发布 tid
+     * @param[out] error 超时原因
+     * @return 两条 tid 都在 kTidWaitLimit 内发布时为 true
+     * @note 超时按启动失败处理，调用方负责 stop() 已启动的组件线程。
+     */
+    bool wait_for_thread_ids(std::string& error);
+
     void build_seed(const std::vector<hng::syscall_semantic_data>& events,
                     double settled, hng::ProcessComponent& process_component,
                     hng::ContextComponent& context_component,
@@ -166,6 +198,8 @@ class ControlPlane final {
     std::unique_ptr<hng::ContextComponent> context_component_;
     std::thread process_thread_;
     std::thread context_thread_;
+    std::atomic<pid_t> process_tid_{0};
+    std::atomic<pid_t> context_tid_{0};
     std::atomic<bool> failed_{false};
 
     SeedReport seed_{};
@@ -345,6 +379,7 @@ inline bool ControlPlane::start(
 
     try {
         process_thread_ = std::thread([this] {
+            process_tid_.store(::gettid(), std::memory_order_release);
             try {
                 process_component_->run();
             }
@@ -361,6 +396,7 @@ inline bool ControlPlane::start(
             }
         });
         context_thread_ = std::thread([this] {
+            context_tid_.store(::gettid(), std::memory_order_release);
             try {
                 context_component_->run();
             }
@@ -383,7 +419,34 @@ inline bool ControlPlane::start(
         stop();
         return false;
     }
+    if (!wait_for_thread_ids(error)) {
+        stop();
+        return false;
+    }
     error.clear();
+    return true;
+}
+
+inline ControlPlaneThreads ControlPlane::cp_threads() const
+{
+    return ControlPlaneThreads{process_tid_.load(std::memory_order_acquire),
+                               context_tid_.load(std::memory_order_acquire)};
+}
+
+inline bool ControlPlane::wait_for_thread_ids(std::string& error)
+{
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + kTidWaitLimit;
+    while (process_tid_.load(std::memory_order_acquire) == 0 ||
+           context_tid_.load(std::memory_order_acquire) == 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            error =
+                "timed out after 1s waiting for the control plane threads to "
+                "publish tid";
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     return true;
 }
 

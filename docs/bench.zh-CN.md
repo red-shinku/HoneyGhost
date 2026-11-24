@@ -49,6 +49,13 @@ feeder ──► raw EventChannel<syscall_event> ──► SemanticComponent
 - 通道都是满即丢（非阻塞），因此容量为所有接缝 0 丢的最高输入速率。
 - 每段成本按线程窗口 CPU 记账：feeder / semantic / engine 由子进程自测（侧车），
   `cli-tp` 由父进程按 comm 采集，客户端 CPU 只用于判断压测器是否成为瓶颈。
+- 控制面档位：`--fidelity l1`（默认）用内存替身，控制面成本内联在引擎线程；
+  `--fidelity l2` 用真实 Process/Context 组件，角色维度仍是替身。两个后端都支持。
+  L2 的窗口成本分两处：同步查询/入队内联在引擎线程（落在 `engine` 的 us/event
+  里），两条组件线程的开销按它们的 tid 采线程 CPU，单列为 `control` 段与
+  `cp cpu / cp util`。不再用进程总量减工作线程，CLI 子进程里的 userver 线程不会
+  被算进控制面。
+- 控制面的队列深度不可观测，容量只看流水线通道与每流队列的丢弃。
 
 输出：一次运行写五行 TSV，并打印汇总：
 
@@ -60,14 +67,20 @@ TSV chain/engine     分发数、引擎线程 CPU、语义通道接缝丢弃
 TSV chain/cli        客户端交付数、cli-tp CPU、CLI 接缝丢弃
 ```
 
-汇总同时给 input / dispatched / delivered 三个速率与 fan-out 比值
-（8 条流时每个输入事件分发到 8 条流，input 容量约为 delivered 的 1/8 再打折）。
+L2 下合并行的端到端成本含 `cp cpu`；`chain/engine` 仍只算引擎线程（内联的
+控制面调用计入其中）。汇总同时给 input / dispatched / delivered 三个速率与
+fan-out 比值（8 条流时每个输入事件分发到 8 条流，input 容量约为 delivered 的
+1/8 再打折）。
 瓶颈判定用两条独立证据：接缝丢弃落在哪（raw 丢→语义慢、语义通道丢→引擎慢、
 CLI 丢→cli-tp/客户端慢）与该段 CPU 利用率；两者冲突时标「未定」。
 
+L2 额外打印 seed 报告（进程/context 播种、exe 来源、计划方式）与 PM/CM 窗口
+增量（stale_add / late_register / tombstone_depth / parent_missing /
+duplicate_context 等）。有容量丢弃时提示：控制面成本还有一半内联在引擎线程，
+不能只看 cp CPU。
+
 已知边界：
 
-- chain 目前只 L1 控制面（`--fidelity l2` 未接入）。
 - 生命周期事件的回放会复活已退出的进程身份，触发墓碑路径；稳态容量用
   `--events syscall`，其余类别只用于看该类事件的单位成本。
 - CLI 后端看不到每流队列占用（`chain/cli` 的 peak_queue 恒 0）；
@@ -83,6 +96,11 @@ build-bench/test/bench_event_pipeline --stage chain --trace /tmp/p1.mixed.trace 
 # 全链到 CLI：8 条流、每条 2000/s 输入
 build-bench/test/bench_event_pipeline --stage chain --trace /tmp/p1.mixed.trace \
   --streams 8 --batch 64 --rate 16000 --queue 32768 --seconds 10 --out chain.tsv
+
+# 全链 L2：真实控制面，8 条流、64k/s 输入
+build-bench/test/bench_event_pipeline --stage chain --backend cli \
+  --fidelity l2 --trace /tmp/p1.mixed.trace --events syscall --streams 8 \
+  --batch 64 --rate 64000 --queue 32768 --seconds 10 --out chain.tsv
 ```
 
 ## 构建编译

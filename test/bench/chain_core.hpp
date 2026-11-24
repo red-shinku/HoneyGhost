@@ -77,8 +77,15 @@ struct ChainSnapshot {
     double feeder_cpu                    = 0.0;  ///< feeder 线程累计 CPU 秒
     double semantic_cpu                  = 0.0;  ///< 语义线程累计 CPU 秒
     double engine_cpu                    = 0.0;  ///< 引擎线程累计 CPU 秒
-    /// 控制面 CPU：进程总 CPU 减去 feeder、语义、引擎三条线程
+    /// 控制面 CPU：L2 为两条组件线程的窗口 CPU 之和；L1 为进程总量减去三条
+    /// 工作线程（控制面内联在引擎线程，该值不参与呈现）
     double cp_cpu                        = 0.0;
+    /// 归属控制面 CPU 的组件线程数；L1 为 0
+    std::uint32_t cp_threads             = 0;
+    /// 进程组件线程的 tid；L1 为 0
+    std::int64_t cp_process_tid          = 0;
+    /// context 组件线程的 tid；L1 为 0
+    std::int64_t cp_context_tid          = 0;
     /// L2 的 PM/CM 累计统计与启动期 seed 结果；L1 时为空
     bench::l2::ControlPlaneSnapshot control;
 };

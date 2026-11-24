@@ -4,11 +4,13 @@
  * @details
  * 本段把采集、语义与引擎串成一条链，测量一次输入事件走完整条链的窗口成本。
  * 生产侧没有真实采集器，用与采集器等价解析的语料回放（见 chain_feeder.hpp）；
- * 消费侧是真实语义组件、真实引擎与 L1 控制面替身（见 chain_core.hpp）。
+ * 消费侧是真实语义组件、真实引擎与控制面（L1 内存替身或 L2 真实
+ * Process/Context，见 chain_core.hpp），角色维度始终是替身。
  * --backend sink 在一进程内跑完整链，写 4 行 TSV；--backend cli 在子进程里跑
  * 同样的链并加上真实 RunCliServer。父进程先订阅并等服务端登记全部流，再发 go
  * 文件放行子进程；子进程收到 go 才取 T0、启动回放，两端按同一个 T0 对齐窗口。
- * CLI 后端写 5 行 TSV（多一行 chain/cli）。
+ * CLI 后端写 5 行 TSV（多一行 chain/cli）。L2 下两个后端都额外打印 cp CPU 与
+ * util、seed 报告与 PM/CM 窗口增量。
  */
 
 #include "test/bench/chain_core.hpp"
@@ -69,8 +71,9 @@ constexpr const char* kExtraHelp =
     "  --settled R       seed settle fraction, 0..1 (default 1); under L2 it "
     "only applies to role stubs (context is a real seed over the full trace)\n"
     "  --fidelity l1|l2  control plane fidelity (default l1); l2 uses real "
-    "Process/Context components while Role stays a stub; the sink backend "
-    "reports control-plane CPU, PM/CM window stats and the seed report\n"
+    "Process/Context components while Role stays a stub, in both backends; "
+    "l2 reports the control-plane CPU sampled from the component threads, "
+    "PM/CM window stats and the seed report\n"
     "  --streams N       concurrent subscription streams of the CLI backend, "
     "1..1024 (default 1)\n"
     "  --batch N         max events per response of the CLI backend, 1..256 "
@@ -512,6 +515,116 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot,
     return conclusion;
 }
 
+/**
+ * @brief L2 控制面内联成本的说明文本
+ * @param[in] snapshot 窗口结果
+ * @return 带行尾换行的说明；窗口内没有同步丢弃时为空
+ * @note 控制面成本一部分内联在引擎线程里，cp CPU 只是另一部分；用 cp CPU
+ *       单独下容量结论会低估控制面，故只在有丢弃时提示。
+ */
+std::string l2_control_note(const bench::chain::ChainSnapshot& snapshot)
+{
+    if (snapshot.sem_drops == 0) {
+        return {};
+    }
+    const double window = snapshot.seconds > 0.0 ? snapshot.seconds : 1.0;
+    const char* note_tail =
+        snapshot.raw_drops == 0
+            ? " the capacity drop comes mainly from the control plane, do not "
+              "judge it by cp CPU alone"
+            : " do not judge control-plane cost by cp CPU alone";
+    char text[512] = {};
+    std::snprintf(
+        text, sizeof(text),
+        "note: under L2 part of the control-plane cost runs inline on the "
+        "engine thread (compare the us/event gap with L1), the rest runs on the "
+        "cp threads (%.2f cores);%s\n",
+        snapshot.cp_cpu / window, note_tail);
+    return text;
+}
+
+/**
+ * @brief L2 控制面的 cp util、cp CPU、seed 与 PM/CM 汇总行
+ * @param[in] snapshot 窗口结果，读取 cp_cpu、dispatched 与 control
+ * @param[in] window 窗口秒数，用于换算核数
+ * @param[in] settled_text 已格式化的角色落定比例
+ * @note sink 与 cli 后端共用，保持同一套口径与顺序；只在 L2 下调用。
+ */
+void print_l2_control_tail(const bench::chain::ChainSnapshot& snapshot,
+                           double window, const char* settled_text)
+{
+    const bench::l2::ControlPlaneSnapshot& control = snapshot.control;
+    std::printf("cp util=%.2f cores (queue depth is not observable)\n",
+                snapshot.cp_cpu / window);
+    if (window > 0.0 && snapshot.cp_cpu / window > kControlCores) {
+        std::printf(
+            "signal: control plane utilization is high (%.2f cores; queue "
+            "depth is not observable)\n",
+            snapshot.cp_cpu / window);
+    }
+    std::printf(
+        "cp cpu=%.3fs (control plane; queue depth is not observable) "
+        "cp_us/event=%.3f\n",
+        snapshot.cp_cpu, us_per_event(snapshot.dispatched, snapshot.cp_cpu));
+    std::printf(
+        "seeds: role stubs settled=%s seeded=%" PRIu64
+        " (under L2 --settled only applies to role stubs; context is a real "
+        "seed, all trace processes are hit)\n",
+        settled_text, control.seed.roles);
+    std::printf("process seed: batch=%zu (supplemented parents %" PRIu64
+                "), inserted=%" PRIu64 " duplicate=%" PRIu64
+                " pid_reused=%" PRIu64 " parent_missing=%" PRIu64
+                " invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
+                control.seed.batch_entries, control.seed.supplemented,
+                control.seed.process.inserted, control.seed.process.duplicate,
+                control.seed.process.pid_reused,
+                control.seed.process.parent_missing, control.seed.process.invalid,
+                control.seed.process.rejected_state);
+    std::printf("seed exe: real=%" PRIu64 " synthetic=%" PRIu64 "\n",
+                control.seed.exe_real, control.seed.exe_synthetic);
+    std::printf("context seed: inserted=%" PRIu64 " bound=%" PRIu64
+                " plan_derive=%" PRIu64 " plan_bind=%" PRIu64
+                " duplicate=%" PRIu64 " rejected_out_of_order=%" PRIu64
+                " rejected_invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
+                control.seed.context.inserted, control.seed.context.bound,
+                control.seed.plan_derive, control.seed.plan_bind,
+                control.seed.context.duplicate,
+                control.seed.context.rejected_out_of_order,
+                control.seed.context.rejected_invalid,
+                control.seed.context.rejected_state);
+    std::printf("PM stats: pid_reused=+%" PRIu64 " stale_add=+%" PRIu64
+                " parent_missing=+%" PRIu64 " tombstone_depth=%" PRIu64 "\n",
+                control.process.pid_reused, control.process.stale_add,
+                control.process.parent_missing, control.process.tombstone_depth);
+    std::printf(
+        "CM stats: pending_deferred=+%" PRIu64 " pending_resolved=+%" PRIu64
+        " pending_rejected=+%" PRIu64 " pending_expired=+%" PRIu64
+        " pending_cancelled=+%" PRIu64 " pending_depth=%" PRIu64
+        " bind_orphaned=+%" PRIu64 " extra_orphaned=+%" PRIu64
+        " parent_missing=+%" PRIu64 " late_register=+%" PRIu64
+        " late_bind=+%" PRIu64 " duplicate_context=+%" PRIu64
+        " ownership_conflict=+%" PRIu64 " tombstone_hits=+%" PRIu64
+        " tombstone_depth=%" PRIu64 " ctxroot_parent_unsettled=+%" PRIu64
+        " unknown_unregister=+%" PRIu64 "\n",
+        control.context.pending_deferred, control.context.pending_resolved,
+        control.context.pending_rejected, control.context.pending_expired,
+        control.context.pending_cancelled, control.context.pending_depth,
+        control.context.bind_orphaned, control.context.extra_orphaned,
+        control.context.parent_missing, control.context.late_register,
+        control.context.late_bind, control.context.duplicate_context,
+        control.context.ownership_conflict, control.context.tombstone_hits,
+        control.context.tombstone_depth, control.context.ctxroot_parent_unsettled,
+        control.context.unknown_unregister);
+    if (control.process.stale_add > 0 || control.context.late_register > 0) {
+        std::printf(
+            "hint: replaying the trace in a loop resurrects exited process "
+            "identities (stale_add=+%" PRIu64 " late_register=+%" PRIu64
+            "), so this stage's lifecycle cost includes the tombstone path; "
+            "use --events syscall for steady-state capacity\n",
+            control.process.stale_add, control.context.late_register);
+    }
+}
+
 /// @brief sink 后端的 config 摘要
 std::string sink_config(const bench::CommonOptions& options,
                         const bench::chain::ChainOptions& chain_options)
@@ -542,8 +655,7 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
     const std::string config   = sink_config(options, run.chain);
 
     const bool l2              = run.chain.fidelity == bench::Fidelity::L2;
-    const bench::l2::ControlPlaneSnapshot& control = snapshot.control;
-    const std::vector<SegmentLoad> loads           = sink_segment_loads(snapshot);
+    const std::vector<SegmentLoad> loads = sink_segment_loads(snapshot);
     // 合并行纳入控制面 CPU；L1 的控制面成本已经落在引擎线程里
     const double total_cpu = snapshot.feeder_cpu + snapshot.semantic_cpu +
                              snapshot.engine_cpu + (l2 ? snapshot.cp_cpu : 0.0);
@@ -615,91 +727,10 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
         snapshot.raw_drops + snapshot.sem_drops, total_cpu, rss);
     std::printf("bottleneck: %s\n", sink_bottleneck_text(snapshot, l2).c_str());
     if (l2 && snapshot.sem_drops > 0) {
-        const char* note_tail =
-            snapshot.raw_drops == 0
-                ? " the capacity drop comes mainly from the control plane, do "
-                  "not judge it by cp CPU alone"
-                : " do not judge control-plane cost by cp CPU alone";
-        std::printf(
-            "note: under L2 part of the control-plane cost runs inline on the "
-            "engine thread (compare the us/event gap with L1), the rest runs on "
-            "the cp threads (%.2f cores);%s\n",
-            snapshot.cp_cpu / window, note_tail);
+        std::fputs(l2_control_note(snapshot).c_str(), stdout);
     }
     if (l2) {
-        std::printf("cp util=%.2f cores (queue depth is not observable)\n",
-                    snapshot.cp_cpu / window);
-    }
-    if (l2 && window > 0.0 && snapshot.cp_cpu / window > kControlCores) {
-        std::printf(
-            "signal: control plane utilization is high (%.2f cores; queue "
-            "depth is not observable)\n",
-            snapshot.cp_cpu / window);
-    }
-    if (l2) {
-        std::printf(
-            "cp cpu=%.3fs (control plane; queue depth is not observable) "
-            "cp_us/event=%.3f\n",
-            snapshot.cp_cpu, us_per_event(snapshot.dispatched, snapshot.cp_cpu));
-        std::printf(
-            "seeds: role stubs settled=%s seeded=%" PRIu64
-            " (under L2 --settled only applies to role stubs; context is a real "
-            "seed, all trace processes are hit)\n",
-            settled_text, control.seed.roles);
-        std::printf(
-            "process seed: batch=%zu (supplemented parents %" PRIu64
-            "), inserted=%" PRIu64 " duplicate=%" PRIu64 " pid_reused=%" PRIu64
-            " parent_missing=%" PRIu64 " invalid=%" PRIu64
-            " rejected_state=%" PRIu64 "\n",
-            control.seed.batch_entries, control.seed.supplemented,
-            control.seed.process.inserted, control.seed.process.duplicate,
-            control.seed.process.pid_reused, control.seed.process.parent_missing,
-            control.seed.process.invalid, control.seed.process.rejected_state);
-        std::printf("seed exe: real=%" PRIu64 " synthetic=%" PRIu64 "\n",
-                    control.seed.exe_real, control.seed.exe_synthetic);
-        std::printf("context seed: inserted=%" PRIu64 " bound=%" PRIu64
-                    " plan_derive=%" PRIu64 " plan_bind=%" PRIu64
-                    " duplicate=%" PRIu64 " rejected_out_of_order=%" PRIu64
-                    " rejected_invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
-                    control.seed.context.inserted, control.seed.context.bound,
-                    control.seed.plan_derive, control.seed.plan_bind,
-                    control.seed.context.duplicate,
-                    control.seed.context.rejected_out_of_order,
-                    control.seed.context.rejected_invalid,
-                    control.seed.context.rejected_state);
-        std::printf("PM stats: pid_reused=+%" PRIu64 " stale_add=+%" PRIu64
-                    " parent_missing=+%" PRIu64 " tombstone_depth=%" PRIu64 "\n",
-                    control.process.pid_reused, control.process.stale_add,
-                    control.process.parent_missing,
-                    control.process.tombstone_depth);
-        std::printf(
-            "CM stats: pending_deferred=+%" PRIu64 " pending_resolved=+%" PRIu64
-            " pending_rejected=+%" PRIu64 " pending_expired=+%" PRIu64
-            " pending_cancelled=+%" PRIu64 " pending_depth=%" PRIu64
-            " bind_orphaned=+%" PRIu64 " extra_orphaned=+%" PRIu64
-            " parent_missing=+%" PRIu64 " late_register=+%" PRIu64
-            " late_bind=+%" PRIu64 " duplicate_context=+%" PRIu64
-            " ownership_conflict=+%" PRIu64 " tombstone_hits=+%" PRIu64
-            " tombstone_depth=%" PRIu64 " ctxroot_parent_unsettled=+%" PRIu64
-            " unknown_unregister=+%" PRIu64 "\n",
-            control.context.pending_deferred, control.context.pending_resolved,
-            control.context.pending_rejected, control.context.pending_expired,
-            control.context.pending_cancelled, control.context.pending_depth,
-            control.context.bind_orphaned, control.context.extra_orphaned,
-            control.context.parent_missing, control.context.late_register,
-            control.context.late_bind, control.context.duplicate_context,
-            control.context.ownership_conflict, control.context.tombstone_hits,
-            control.context.tombstone_depth,
-            control.context.ctxroot_parent_unsettled,
-            control.context.unknown_unregister);
-        if (control.process.stale_add > 0 || control.context.late_register > 0) {
-            std::printf(
-                "hint: replaying the trace in a loop resurrects exited process "
-                "identities (stale_add=+%" PRIu64 " late_register=+%" PRIu64
-                "), so this stage's lifecycle cost includes the tombstone path; "
-                "use --events syscall for steady-state capacity\n",
-                control.process.stale_add, control.context.late_register);
-        }
+        print_l2_control_tail(snapshot, window, settled_text);
     }
     std::printf(
         "collector=replay feeder (equivalent parsing); CLI/wire not included\n");
@@ -941,6 +972,8 @@ bool parse_real(const std::string& text, double& value)
  * @param[in] window 窗口内的增量
  * @return 成功时为 true
  * @note 先写 <path>.tmp 再 rename，父进程轮询最终路径时不会读到半截文件。
+ *       L2 另写控制面 CPU（按两条组件线程的 tid 采）、cp.threads/tid、PM/CM
+ *       窗口增量与启动期 seed 报告；L1 不写这些键。
  */
 bool write_sidecar(const std::string& path, std::int64_t t0_ns,
                    const bench::chain::ChainOptions& chain_options,
@@ -954,6 +987,7 @@ bool write_sidecar(const std::string& path, std::int64_t t0_ns,
     file << "t0_ns=" << t0_ns << "\n"
          << "warmup_s=" << chain_options.warmup_seconds << "\n"
          << "window_s=" << chain_options.seconds << "\n"
+         << "fidelity=" << bench::fidelity_name(chain_options.fidelity) << "\n"
          << "collector.consumed=" << window.consumed << "\n"
          << "collector.malformed=" << window.malformed << "\n"
          << "collector.push_ok=" << window.push_ok << "\n"
@@ -971,6 +1005,66 @@ bool write_sidecar(const std::string& path, std::int64_t t0_ns,
          << "cpu.feeder=" << window.feeder_cpu << "\n"
          << "cpu.semantic=" << window.semantic_cpu << "\n"
          << "cpu.engine=" << window.engine_cpu << "\n";
+    if (chain_options.fidelity == bench::Fidelity::L2) {
+        const bench::l2::ControlPlaneSnapshot& control = window.control;
+        file << "cpu.cp=" << window.cp_cpu << "\n"
+             << "cp.threads=" << window.cp_threads << "\n"
+             << "cp.tid.process=" << window.cp_process_tid << "\n"
+             << "cp.tid.context=" << window.cp_context_tid << "\n"
+             << "pm.pid_reused=" << control.process.pid_reused << "\n"
+             << "pm.stale_add=" << control.process.stale_add << "\n"
+             << "pm.parent_missing=" << control.process.parent_missing << "\n"
+             << "pm.tombstone_depth=" << control.process.tombstone_depth << "\n"
+             << "cm.pending_deferred=" << control.context.pending_deferred << "\n"
+             << "cm.pending_resolved=" << control.context.pending_resolved << "\n"
+             << "cm.pending_rejected=" << control.context.pending_rejected << "\n"
+             << "cm.pending_expired=" << control.context.pending_expired << "\n"
+             << "cm.pending_cancelled=" << control.context.pending_cancelled
+             << "\n"
+             << "cm.pending_depth=" << control.context.pending_depth << "\n"
+             << "cm.bind_orphaned=" << control.context.bind_orphaned << "\n"
+             << "cm.extra_orphaned=" << control.context.extra_orphaned << "\n"
+             << "cm.parent_missing=" << control.context.parent_missing << "\n"
+             << "cm.late_register=" << control.context.late_register << "\n"
+             << "cm.late_bind=" << control.context.late_bind << "\n"
+             << "cm.duplicate_context=" << control.context.duplicate_context
+             << "\n"
+             << "cm.ownership_conflict=" << control.context.ownership_conflict
+             << "\n"
+             << "cm.tombstone_hits=" << control.context.tombstone_hits << "\n"
+             << "cm.tombstone_depth=" << control.context.tombstone_depth << "\n"
+             << "cm.ctxroot_parent_unsettled="
+             << control.context.ctxroot_parent_unsettled << "\n"
+             << "cm.unknown_unregister=" << control.context.unknown_unregister
+             << "\n"
+             << "seed.roles=" << control.seed.roles << "\n"
+             << "seed.batch_entries=" << control.seed.batch_entries << "\n"
+             << "seed.supplemented=" << control.seed.supplemented << "\n"
+             << "seed.exe_real=" << control.seed.exe_real << "\n"
+             << "seed.exe_synthetic=" << control.seed.exe_synthetic << "\n"
+             << "seed.plan_derive=" << control.seed.plan_derive << "\n"
+             << "seed.plan_bind=" << control.seed.plan_bind << "\n"
+             << "seed.process.inserted=" << control.seed.process.inserted << "\n"
+             << "seed.process.duplicate=" << control.seed.process.duplicate
+             << "\n"
+             << "seed.process.pid_reused=" << control.seed.process.pid_reused
+             << "\n"
+             << "seed.process.parent_missing="
+             << control.seed.process.parent_missing << "\n"
+             << "seed.process.invalid=" << control.seed.process.invalid << "\n"
+             << "seed.process.rejected_state="
+             << control.seed.process.rejected_state << "\n"
+             << "seed.context.inserted=" << control.seed.context.inserted << "\n"
+             << "seed.context.bound=" << control.seed.context.bound << "\n"
+             << "seed.context.duplicate=" << control.seed.context.duplicate
+             << "\n"
+             << "seed.context.rejected_out_of_order="
+             << control.seed.context.rejected_out_of_order << "\n"
+             << "seed.context.rejected_invalid="
+             << control.seed.context.rejected_invalid << "\n"
+             << "seed.context.rejected_state="
+             << control.seed.context.rejected_state << "\n";
+    }
     file.flush();
     const bool good = file.good();
     file.close();
@@ -986,7 +1080,12 @@ bool write_sidecar(const std::string& path, std::int64_t t0_ns,
 }
 
 /// @brief 读侧车并校验所有键都存在且可解析
-bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
+/// @param[in] path 侧车路径
+/// @param[in] l2 是否 L2：为 true 时额外要求控制面与 seed 的键
+/// @param[out] sidecar T0、窗口与窗口增量
+/// @param[out] error 缺失或无效键
+/// @return 成功时为 true
+bool load_sidecar(const std::string& path, bool l2, ChainSidecar& sidecar,
                   std::string& error)
 {
     std::ifstream file(path);
@@ -1057,6 +1156,17 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
     }
     take_real("warmup_s", sidecar.warmup_s);
     take_real("window_s", sidecar.window_s);
+    const std::string* fidelity_value = nullptr;
+    if (take("fidelity", fidelity_value)) {
+        const bench::Fidelity expected =
+            l2 ? bench::Fidelity::L2 : bench::Fidelity::L1;
+        if (*fidelity_value != bench::fidelity_name(expected)) {
+            if (!invalid.empty()) {
+                invalid += ",";
+            }
+            invalid += "fidelity";
+        }
+    }
 
     bench::chain::ChainSnapshot& snapshot = sidecar.snapshot;
     take_u64("collector.consumed", snapshot.consumed);
@@ -1076,6 +1186,67 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
     take_real("cpu.feeder", snapshot.feeder_cpu);
     take_real("cpu.semantic", snapshot.semantic_cpu);
     take_real("cpu.engine", snapshot.engine_cpu);
+    if (l2) {
+        bench::l2::ControlPlaneSnapshot& control = snapshot.control;
+        std::uint64_t cp_threads                 = 0;
+        std::uint64_t cp_process_tid             = 0;
+        std::uint64_t cp_context_tid             = 0;
+        take_real("cpu.cp", snapshot.cp_cpu);
+        take_u64("cp.threads", cp_threads);
+        take_u64("cp.tid.process", cp_process_tid);
+        take_u64("cp.tid.context", cp_context_tid);
+        snapshot.cp_threads     = static_cast<std::uint32_t>(cp_threads);
+        snapshot.cp_process_tid = static_cast<std::int64_t>(cp_process_tid);
+        snapshot.cp_context_tid = static_cast<std::int64_t>(cp_context_tid);
+        take_u64("pm.pid_reused", control.process.pid_reused);
+        take_u64("pm.stale_add", control.process.stale_add);
+        take_u64("pm.parent_missing", control.process.parent_missing);
+        take_u64("pm.tombstone_depth", control.process.tombstone_depth);
+        take_u64("cm.pending_deferred", control.context.pending_deferred);
+        take_u64("cm.pending_resolved", control.context.pending_resolved);
+        take_u64("cm.pending_rejected", control.context.pending_rejected);
+        take_u64("cm.pending_expired", control.context.pending_expired);
+        take_u64("cm.pending_cancelled", control.context.pending_cancelled);
+        take_u64("cm.pending_depth", control.context.pending_depth);
+        take_u64("cm.bind_orphaned", control.context.bind_orphaned);
+        take_u64("cm.extra_orphaned", control.context.extra_orphaned);
+        take_u64("cm.parent_missing", control.context.parent_missing);
+        take_u64("cm.late_register", control.context.late_register);
+        take_u64("cm.late_bind", control.context.late_bind);
+        take_u64("cm.duplicate_context", control.context.duplicate_context);
+        take_u64("cm.ownership_conflict", control.context.ownership_conflict);
+        take_u64("cm.tombstone_hits", control.context.tombstone_hits);
+        take_u64("cm.tombstone_depth", control.context.tombstone_depth);
+        take_u64("cm.ctxroot_parent_unsettled",
+                 control.context.ctxroot_parent_unsettled);
+        take_u64("cm.unknown_unregister", control.context.unknown_unregister);
+        take_u64("seed.roles", control.seed.roles);
+        std::uint64_t batch_entries = 0;
+        take_u64("seed.batch_entries", batch_entries);
+        control.seed.batch_entries = static_cast<std::size_t>(batch_entries);
+        take_u64("seed.supplemented", control.seed.supplemented);
+        take_u64("seed.exe_real", control.seed.exe_real);
+        take_u64("seed.exe_synthetic", control.seed.exe_synthetic);
+        take_u64("seed.plan_derive", control.seed.plan_derive);
+        take_u64("seed.plan_bind", control.seed.plan_bind);
+        take_u64("seed.process.inserted", control.seed.process.inserted);
+        take_u64("seed.process.duplicate", control.seed.process.duplicate);
+        take_u64("seed.process.pid_reused", control.seed.process.pid_reused);
+        take_u64("seed.process.parent_missing",
+                 control.seed.process.parent_missing);
+        take_u64("seed.process.invalid", control.seed.process.invalid);
+        take_u64("seed.process.rejected_state",
+                 control.seed.process.rejected_state);
+        take_u64("seed.context.inserted", control.seed.context.inserted);
+        take_u64("seed.context.bound", control.seed.context.bound);
+        take_u64("seed.context.duplicate", control.seed.context.duplicate);
+        take_u64("seed.context.rejected_out_of_order",
+                 control.seed.context.rejected_out_of_order);
+        take_u64("seed.context.rejected_invalid",
+                 control.seed.context.rejected_invalid);
+        take_u64("seed.context.rejected_state",
+                 control.seed.context.rejected_state);
+    }
     snapshot.seconds = sidecar.window_s;
 
     if (!missing.empty()) {
@@ -1091,7 +1262,7 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
 }
 
 /// @brief 轮询侧车直到它出现；最多等 2s，出现后立刻解析
-bool wait_for_sidecar(const std::string& path, ChainSidecar& sidecar,
+bool wait_for_sidecar(const std::string& path, bool l2, ChainSidecar& sidecar,
                       std::string& error)
 {
     const bench::Clock::time_point deadline =
@@ -1101,7 +1272,7 @@ bool wait_for_sidecar(const std::string& path, ChainSidecar& sidecar,
             std::ifstream probe(path);
             if (probe.is_open()) {
                 probe.close();
-                return load_sidecar(path, sidecar, error);
+                return load_sidecar(path, l2, sidecar, error);
             }
         }
         if (bench::Clock::now() >= deadline) {
@@ -1264,6 +1435,8 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
                                   sidecar_path, stop, control_failed);
             });
 
+            // 档位随 chain_options 传入：L2 下 context/process 解析到真实
+            // 组件，role 始终是替身
             CLIServerDeps deps;
             deps.role    = &runtime.role_lookup_service();
             deps.context = &runtime.context_lookup_service();
@@ -1338,13 +1511,24 @@ std::uint64_t read_process_rss_kb(pid_t pid)
 }
 
 /// @brief CLI 后端的瓶颈结论
+/// @param[in] snapshot 窗口结果
+/// @param[in] cli_drops CLI 接缝的丢弃数
+/// @param[in] loads 四段 CPU 利用率
+/// @param[in] client_cores 客户端 CPU 核数
+/// @param[in] cli_cores cli-tp CPU 核数
+/// @param[in] l2 是否 L2：引擎线程内联执行真实控制面调用
+/// @note L2 只给引擎段加标注；接缝归因落在 cli 时不加控制面标注。
 std::string cli_bottleneck_text(const bench::chain::ChainSnapshot& snapshot,
                                 std::uint64_t cli_drops,
                                 const std::vector<SegmentLoad>& loads,
-                                double client_cores, double cli_cores)
+                                double client_cores, double cli_cores, bool l2)
 {
     const SegmentLoad& tightest = tightest_segment(loads);
-    char text[512]              = {};
+    const char* engine_label =
+        l2 ? "engine (L2: control-plane lookups/enqueues run inline on the "
+             "engine thread)"
+           : "engine";
+    char text[512] = {};
     if (cli_drops > 0) {
         std::snprintf(
             text, sizeof(text),
@@ -1356,10 +1540,10 @@ std::string cli_bottleneck_text(const bench::chain::ChainSnapshot& snapshot,
     }
     if (snapshot.sem_drops > 0) {
         std::snprintf(text, sizeof(text),
-                      "engine stage is slow: semantic channel rejected %" PRIu64
+                      "%s stage is slow: semantic channel rejected %" PRIu64
                       " times (the engine cannot keep up with semantic); CPU "
                       "evidence: engine %.2f cores",
-                      snapshot.sem_drops, loads[2].cores);
+                      engine_label, snapshot.sem_drops, loads[2].cores);
         return text;
     }
     if (snapshot.raw_drops > 0) {
@@ -1427,6 +1611,7 @@ std::string cli_config(const bench::CommonOptions& options, const ChainRun& run)
 /// @brief CLI 后端实现
 int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
 {
+    const bool l2          = run.chain.fidelity == bench::Fidelity::L2;
     const bool owns_socket = run.socket_path.empty();
     const std::string socket_path =
         owns_socket ? bench::cli::temporary_socket_path("hng-chain-cli")
@@ -1565,7 +1750,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     const std::uint64_t child_rss_kb = read_process_rss_kb(child);
 
     ChainSidecar sidecar;
-    if (!wait_for_sidecar(sidecar_path, sidecar, error)) {
+    if (!wait_for_sidecar(sidecar_path, l2, sidecar, error)) {
         return fail("failed to read sidecar: " + error);
     }
     const std::int64_t t0_ns =
@@ -1629,8 +1814,12 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     const bench::chain::ChainSnapshot& snapshot = sidecar.snapshot;
     const double window =
         run.chain.seconds > 0 ? static_cast<double>(run.chain.seconds) : 1.0;
-    const double total_cpu = snapshot.feeder_cpu + snapshot.semantic_cpu +
-                             snapshot.engine_cpu + cli_tp_cpu;
+    // 合并行纳入控制面 CPU；L2 的 cp CPU 来自子进程的两条组件线程
+    double total_cpu = snapshot.feeder_cpu + snapshot.semantic_cpu +
+                       snapshot.engine_cpu + cli_tp_cpu;
+    if (l2) {
+        total_cpu += snapshot.cp_cpu;
+    }
     const double input_per_s = static_cast<double>(snapshot.consumed) / window;
     const double dispatched_per_s =
         static_cast<double>(snapshot.dispatched) / window;
@@ -1656,6 +1845,11 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         "stage   : chain (cli backend: replay feeder → semantic → engine → CLI "
         "server → client)\n");
     std::printf("config  : %s\n", config.c_str());
+    if (l2) {
+        std::printf(
+            "fidelity: L2 (Process/Context are real components, Role is a "
+            "stub)\n");
+    }
     std::printf("trace   : %s\n", options.trace_path.c_str());
     std::printf(
         "window  : %.3fs warmup=%d rate=%g%s (child and parent align on the "
@@ -1705,6 +1899,13 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
                 us_per_event(snapshot.dispatched, snapshot.engine_cpu),
                 snapshot.engine_cpu, loads[2].cores, snapshot.sem_drops,
                 snapshot.sem_peak);
+    if (l2) {
+        std::printf(
+            "  control    us/event=%.3f cpu=%.3fs util=%.2f cores"
+            " (queue depth is not observable)\n",
+            us_per_event(snapshot.dispatched, snapshot.cp_cpu), snapshot.cp_cpu,
+            snapshot.cp_cpu / window);
+    }
     std::printf("  cli        delivered=%" PRIu64
                 " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " drops=%" PRIu64
@@ -1724,8 +1925,17 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
                 rss);
     std::printf("bottleneck: %s\n",
                 cli_bottleneck_text(snapshot, cli_drops, loads,
-                                    client_cpu / window, loads[3].cores)
+                                    client_cpu / window, loads[3].cores, l2)
                     .c_str());
+    if (l2 && snapshot.sem_drops > 0) {
+        std::fputs(l2_control_note(snapshot).c_str(), stdout);
+    }
+    if (l2) {
+        char settled_text[32] = {};
+        std::snprintf(settled_text, sizeof(settled_text), "%g",
+                      run.chain.settled);
+        print_l2_control_tail(snapshot, window, settled_text);
+    }
     std::printf(
         "collector=replay feeder (equivalent parsing); cli stage=server cli-tp "
         "thread; delivery is counted by the parent client\n");
