@@ -703,6 +703,11 @@ int run_semantic(const bench::CommonOptions& options,
     }
     std::printf("window cpu: producer=%.3fs semantic=%.3fs drain=%.3fs\n",
                 producer_cpu, semantic_cpu, drain_cpu);
+    if (!no_semantic) {
+        std::printf(
+            "注意：本段取空线程会立即取空输出通道，唤醒按事件计；"
+            "该数字是下游零积压下的下界，生产下游（引擎）通常存在积压\n");
+    }
     if (no_semantic) {
         std::printf("no-semantic: 无语义线程\n");
     }

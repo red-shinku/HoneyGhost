@@ -34,7 +34,7 @@ const StageSpec& semantic_stage();
 /// @brief 引擎段：语义通道 → 运行时引擎 → 订阅端
 const StageSpec& engine_stage();
 
-/// @brief chain 段：语料回放 → 语义 → 运行时引擎（sink 后端）
+/// @brief chain 段：语料回放 → 语义 → 运行时引擎（sink 后端）或整链 CLI 后端
 const StageSpec& chain_stage();
 
 #ifdef HNG_BENCH_CLI_STAGE
