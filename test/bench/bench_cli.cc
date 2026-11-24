@@ -10,14 +10,14 @@
 #include "test/bench/cli_client.hpp"
 #include "test/bench/l1_control_plane.hpp"
 
-#include "agent/cli_server/include/cli_server.hpp"
-#include "agent/cli_server/include/cli_server_runner.hpp"
+// #include "agent/cli_server/include/cli_server_runner.hpp"
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/process_service.hpp"
 #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
 #include "agent/runtime_engine/include/runtime_engine_component.hpp"
+// this file is actually used, dont remove
 #include "agent/runtime_engine/include/runtime_engine_factory.hpp"
 #include "agent/runtime_engine/include/subscriber_reg_service.hpp"
 #include "agent/semantic/src/semantic.hpp"

@@ -12,14 +12,14 @@
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
 #include "agent/control_plane/include/context_component.hpp"
-#include "agent/control_plane/include/context_service.hpp"
+// #include "agent/control_plane/include/context_service.hpp"
 #include "agent/control_plane/include/context_stats.hpp"
 #include "agent/control_plane/include/control_plane_factory.hpp"
 #include "agent/control_plane/include/process_component.hpp"
 #include "agent/control_plane/include/process_seed_service.hpp"
 #include "agent/control_plane/include/process_stats.hpp"
 #include "agent/control_plane/include/process_service.hpp"
-#include "agent/control_plane/include/role_service.hpp"
+// #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
 #include "agent/event_data/include/runtime_info_filter.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
@@ -46,7 +46,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>

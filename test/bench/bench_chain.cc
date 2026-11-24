@@ -24,7 +24,6 @@
 #endif
 
 #include <cerrno>
-#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
@@ -32,10 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <map>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace {
