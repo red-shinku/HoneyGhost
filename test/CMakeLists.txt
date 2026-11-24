@@ -352,12 +352,41 @@ endif()
 # 构建产物可直接在宿主上运行。libbpf 缺失时跳过。
 # ============================================================
 if(LIBBPF_LIB)
-    add_executable(bench_syscalls bench_syscalls.cc)
+    add_executable(bench_syscalls bench/bench_syscalls.cc)
     target_include_directories(bench_syscalls PRIVATE ${HNG_SOURCE_DIR})
     target_link_libraries(bench_syscalls PRIVATE hng_util Threads::Threads
                                                     ${LIBBPF_LIB})
 else()
     message(STATUS "libbpf 未找到，跳过 bench_syscalls")
+endif()
+
+# ============================================================
+# 事件流水线分段压测（语料回放，不依赖 BPF 与 root）
+#
+# 不注册为 ctest 用例：结果依赖宿主 CPU 与调度，不适合作为断言。
+#   build-bench/test/bench_event_pipeline --stage semantic --trace /tmp/p1.trace
+# ============================================================
+add_executable(bench_event_pipeline
+    bench/bench_event_pipeline.cc
+    bench/bench_semantic.cc
+    bench/bench_engine.cc
+    bench/bench_chain.cc
+    bench/chain_core.cc)
+target_include_directories(bench_event_pipeline PRIVATE ${HNG_SOURCE_DIR})
+# hng_control_plane 提供 L2 的 Process/Context 真实组件与工厂
+# （PUBLIC 带出 hng_process_manager 与 hng_context_manager）
+target_link_libraries(bench_event_pipeline PRIVATE
+    hng_semantic hng_runtime_engine hng_control_plane Threads::Threads)
+
+# CLI 段：子进程跑 userver CLI 服务端、父进程用裸 grpc++ 收流。
+# -DHNG_ENABLE_CLI_SERVER=OFF 时 hng_cli_server 不存在，整段跳过。
+if(TARGET hng_cli_server)
+    target_sources(bench_event_pipeline PRIVATE bench/bench_cli.cc)
+    target_compile_definitions(bench_event_pipeline PRIVATE
+        HNG_BENCH_CLI_STAGE=1)
+    # 与 e2e_cli_server 相同的链接项：userver::grpc 带出 grpc++ 与生成代码
+    target_link_libraries(bench_event_pipeline PRIVATE
+        hng_cli_server userver::grpc)
 endif()
 
 # 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。

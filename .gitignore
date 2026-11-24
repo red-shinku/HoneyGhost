@@ -3,6 +3,7 @@
 *.skel.h
 build/
 build-agent/
+build-bench/
 bin/
 dist/
 *.pb.h

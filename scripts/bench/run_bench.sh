@@ -2,11 +2,13 @@
 # syscalls 探针吞吐压测的编排脚本。
 #
 # 逐 profile 调用 bench_syscalls，把每行的 TSV 结果追加到 --out，最后打印汇总表。
-# 需要 root 与 BPF 权限；构建产物在 build-agent/test/bench_syscalls。
+# 需要 root 与 BPF 权限；构建产物在 <build-dir>/test/bench_syscalls（默认
+# build-bench）。
 #
 # 用法：
 #   sudo scripts/bench/run_bench.sh [选项]
 #   sudo scripts/bench/run_bench.sh --build --seconds 5 --profiles file,exec
+#   sudo scripts/bench/run_bench.sh --profiles file --dump /tmp/file.trace
 
 set -euo pipefail
 
@@ -21,7 +23,9 @@ usage() {
   --workers N       并发 worker 数（默认 nproc/2）
   --profiles LIST   逗号分隔，默认 file,process,exec,memory,network,mixed
   --out FILE        结果写到该文件（默认 docs/plan/bench_syscalls_<UTC 日期>.tsv）
-  --build           先跑 cmake --build build-agent --target bench_syscalls
+  --build-dir DIR   构建目录（默认 build-bench，相对仓库根）
+  --build           先配置（缺 CMakeCache.txt 时）并构建 bench_syscalls
+  --dump PATH       语料路径；单 profile 原样使用，多 profile 在扩展名前插入 profile 名
   --skip-missing    允许缺失的 tracepoint 被跳过（默认总是允许，保留参数只为兼容）
 EOF
 }
@@ -46,6 +50,8 @@ obj="$repo_root/kernel/build/syscalls.bpf.o"
 seconds=10
 profiles=file,process,exec,memory,network,mixed
 out=""
+build_dir="$repo_root/build-bench"
+dump=""
 build=0
 
 while [ "$#" -gt 0 ]; do
@@ -110,6 +116,30 @@ while [ "$#" -gt 0 ]; do
             out=${1#*=}
             shift
             ;;
+        --build-dir)
+            if [ "$#" -lt 2 ]; then
+                echo "错误：--build-dir 缺少目录" >&2
+                exit 3
+            fi
+            build_dir=$2
+            shift 2
+            ;;
+        --build-dir=*)
+            build_dir=${1#*=}
+            shift
+            ;;
+        --dump)
+            if [ "$#" -lt 2 ]; then
+                echo "错误：--dump 缺少路径" >&2
+                exit 3
+            fi
+            dump=$2
+            shift 2
+            ;;
+        --dump=*)
+            dump=${1#*=}
+            shift
+            ;;
         --build)
             build=1
             shift
@@ -128,6 +158,15 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ -z "$build_dir" ]; then
+    echo "错误：--build-dir 不能为空" >&2
+    exit 3
+fi
+case "$build_dir" in
+    /*) ;;
+    *) build_dir="$repo_root/$build_dir" ;;
+esac
 
 if ! [[ "$seconds" =~ ^[1-9][0-9]*$ ]]; then
     echo "错误：--seconds 需为正整数" >&2
@@ -156,14 +195,20 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ "$build" -eq 1 ]; then
-    echo "== 构建 bench_syscalls =="
-    (cd "$repo_root" && cmake --build build-agent --target bench_syscalls)
+    echo "== 构建 bench_syscalls（$build_dir）=="
+    if [ ! -f "$build_dir/CMakeCache.txt" ]; then
+        (cd "$repo_root" && cmake -S . -B "$build_dir" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer")
+    fi
+    (cd "$repo_root" && cmake --build "$build_dir" --target bench_syscalls \
+        --parallel)
 fi
 
-bin="$repo_root/build-agent/test/bench_syscalls"
+bin="$build_dir/test/bench_syscalls"
 if [ ! -x "$bin" ]; then
     die "找不到可执行文件 $bin；先构建：
-  cmake --build build-agent --target bench_syscalls
+  cmake --build $build_dir --target bench_syscalls
 或在脚本中加 --build"
 fi
 if [ ! -r "$obj" ]; then
@@ -191,6 +236,7 @@ work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
 IFS=',' read -r -a profile_list <<< "$profiles"
+profile_count=${#profile_list[@]}
 summary=()
 index=0
 
@@ -202,8 +248,33 @@ for profile in "${profile_list[@]}"; do
     log="$work_dir/$index.log"
     echo
     echo "== profile=$profile =="
-    if ! "$bin" --obj "$obj" --profile "$profile" --seconds "$seconds" \
-        --workers "$workers" >"$log" 2>&1; then
+
+    profile_dump=$dump
+    if [ -n "$dump" ] && [ "$profile_count" -gt 1 ]; then
+        profile_dump_dir=$(dirname -- "$dump")
+        if [ "$profile_dump_dir" = "." ]; then
+            profile_dump_dir=""
+        else
+            profile_dump_dir="$profile_dump_dir/"
+        fi
+        profile_dump_base=$(basename -- "$dump")
+        case "$profile_dump_base" in
+            ?*.*)
+                profile_dump="$profile_dump_dir${profile_dump_base%.*}.$profile"
+                profile_dump="$profile_dump.${profile_dump_base##*.}"
+                ;;
+            *)
+                profile_dump="$profile_dump_dir$profile_dump_base.$profile"
+                ;;
+        esac
+    fi
+
+    bench_args=(--obj "$obj" --profile "$profile" --seconds "$seconds"
+        --workers "$workers")
+    if [ -n "$profile_dump" ]; then
+        bench_args+=(--dump "$profile_dump")
+    fi
+    if ! "$bin" "${bench_args[@]}" >"$log" 2>&1; then
         cat "$log" >&2
         fail "profile=$profile 压测失败"
     fi
