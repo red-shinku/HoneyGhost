@@ -56,7 +56,8 @@ void print_usage(std::FILE* out)
                  "\n"
                  "公共选项：\n"
                  "  --stage NAME       压测段（必填）\n"
-                 "  --fidelity l1|l2   控制面保真度，默认 l1；仅 engine 支持 l2\n"
+                 "  --fidelity l1|l2   控制面保真度，默认 l1；engine 与 cli "
+                 "支持 l2\n"
                  "  --trace PATH       语料文件路径（semantic/engine 必填）\n"
                  "  --seconds N        统计窗口秒数，>0（默认 10）\n"
                  "  --warmup N         预热秒数，>=0（默认 1）\n"
@@ -339,12 +340,8 @@ int main(int argc, char** argv)
         return kExitUsage;
     }
     if (options.fidelity == bench::Fidelity::L2 && !stage->supports_l2) {
-        std::string message = std::string("参数错误：stage ") + stage->name +
-                              " 只支持 --fidelity l1";
-        if (std::strcmp(stage->name, "cli") == 0) {
-            message += "（cli L2 尚未实现）";
-        }
-        std::fprintf(stderr, "%s\n", message.c_str());
+        std::fprintf(stderr, "参数错误：stage %s 只支持 --fidelity l1\n",
+                     stage->name);
         return kExitUsage;
     }
     if (stage->requires_trace && options.trace_path.empty()) {
