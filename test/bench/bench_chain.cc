@@ -45,6 +45,8 @@ constexpr int kExitUsage                = 3;
 constexpr double kConflictCores         = 0.10;
 /// @brief delivered/dispatched 与 streams 的允许偏差
 constexpr double kFanoutTolerance       = 0.02;
+/// @brief 控制面利用率告警阈值，占满一核为 1
+constexpr double kControlCores          = 0.80;
 
 /// @brief 客户端流数的解析上限，与服务端并发配额（64）区分
 constexpr long kMaxStreams              = 1024;
@@ -64,7 +66,11 @@ constexpr const char* kExtraHelp =
     "PROCESS and EXEC count as lifecycle; the seed always uses the full trace\n"
     "  --system-sinks K  counting system subscriptions, 1..64, also the engine "
     "dispatch count (default 1)\n"
-    "  --settled R       seed settle fraction, 0..1 (default 1)\n"
+    "  --settled R       seed settle fraction, 0..1 (default 1); under L2 it "
+    "only applies to role stubs (context is a real seed over the full trace)\n"
+    "  --fidelity l1|l2  control plane fidelity (default l1); l2 uses real "
+    "Process/Context components while Role stays a stub; the sink backend "
+    "reports control-plane CPU, PM/CM window stats and the seed report\n"
     "  --streams N       concurrent subscription streams of the CLI backend, "
     "1..1024 (default 1)\n"
     "  --batch N         max events per response of the CLI backend, 1..256 "
@@ -428,18 +434,25 @@ std::vector<SegmentLoad> sink_segment_loads(
 /**
  * @brief sink 后端的瓶颈结论
  * @param[in] snapshot 窗口结果
+ * @param[in] l2 是否 L2：引擎线程内联执行真实控制面调用
  * @return 一行结论文本
  * @note 归因规则：原始通道拒收指向语义段慢，语义通道拒收指向引擎段慢，无拒收
  *       则报未饱和并给出 CPU 利用率最高的一段；当被指向段的 CPU 明显低于最紧
- *       的一段时，标「未定」并同时给出两侧证据。
+ *       的一段时，标「未定」并同时给出两侧证据。L2 只给引擎段加标注，不改变
+ *       归因。
  */
-std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
+std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot,
+                                 bool l2)
 {
     const std::vector<SegmentLoad> loads = sink_segment_loads(snapshot);
     const SegmentLoad& tightest          = tightest_segment(loads);
     const bool semantic_slow             = snapshot.raw_drops > 0;
     const bool engine_slow               = snapshot.sem_drops > 0;
-    char text[512]                       = {};
+    const char* engine_label =
+        l2 ? "engine (L2: control-plane lookups/enqueues run inline on the "
+             "engine thread)"
+           : "engine";
+    char text[768] = {};
 
     if (!semantic_slow && !engine_slow) {
         std::snprintf(text, sizeof(text),
@@ -462,12 +475,12 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
     if (semantic_slow && engine_slow) {
         std::snprintf(
             text, sizeof(text),
-            "%sboth semantic and engine are slow: raw channel rejected %" PRIu64
+            "%sboth semantic and %s are slow: raw channel rejected %" PRIu64
             " times (the semantic stage cannot keep up with replay); the "
             "semantic channel rejected %" PRIu64
             " times (the engine cannot keep up with semantic); CPU: semantic "
             "%.2f cores, engine %.2f cores",
-            conflict ? "inconclusive: " : "", snapshot.raw_drops,
+            conflict ? "inconclusive: " : "", engine_label, snapshot.raw_drops,
             snapshot.sem_drops, loads[1].cores, loads[2].cores);
     }
     else if (semantic_slow) {
@@ -480,11 +493,11 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
     }
     else {
         std::snprintf(text, sizeof(text),
-                      "%sengine stage is slow: semantic channel rejected %" PRIu64
+                      "%s%s stage is slow: semantic channel rejected %" PRIu64
                       " times (the engine cannot keep up with semantic); CPU "
                       "evidence: engine %.2f cores",
-                      conflict ? "inconclusive: " : "", snapshot.sem_drops,
-                      loads[2].cores);
+                      conflict ? "inconclusive: " : "", engine_label,
+                      snapshot.sem_drops, loads[2].cores);
     }
 
     std::string conclusion = text;
@@ -528,14 +541,24 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
     const std::size_t capacity = queue_capacity(run.chain.queue);
     const std::string config   = sink_config(options, run.chain);
 
-    const std::vector<SegmentLoad> loads = sink_segment_loads(snapshot);
-    const double total_cpu =
-        snapshot.feeder_cpu + snapshot.semantic_cpu + snapshot.engine_cpu;
+    const bool l2              = run.chain.fidelity == bench::Fidelity::L2;
+    const bench::l2::ControlPlaneSnapshot& control = snapshot.control;
+    const std::vector<SegmentLoad> loads           = sink_segment_loads(snapshot);
+    // 合并行纳入控制面 CPU；L1 的控制面成本已经落在引擎线程里
+    const double total_cpu = snapshot.feeder_cpu + snapshot.semantic_cpu +
+                             snapshot.engine_cpu + (l2 ? snapshot.cp_cpu : 0.0);
     const std::uint64_t rss = bench::rss_kb();
+    char settled_text[32]   = {};
+    std::snprintf(settled_text, sizeof(settled_text), "%g", run.chain.settled);
 
     std::printf(
         "stage   : chain (sink backend: replay feeder → semantic → engine)\n");
     std::printf("config  : %s\n", config.c_str());
+    if (l2) {
+        std::printf(
+            "fidelity: L2 (Process/Context are real components, Role is a "
+            "stub)\n");
+    }
     std::printf("trace   : %s\n", options.trace_path.c_str());
     std::printf("corpus  : records=%" PRIu64 " playback=%" PRIu64
                 " malformed=%" PRIu64 "\n",
@@ -571,6 +594,13 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
                 us_per_event(snapshot.dispatched, snapshot.engine_cpu),
                 snapshot.engine_cpu, loads[2].cores, snapshot.sem_drops,
                 snapshot.sem_peak);
+    if (l2) {
+        std::printf(
+            "  control    us/event=%.3f cpu=%.3fs util=%.2f cores"
+            " (queue depth is not observable)\n",
+            us_per_event(snapshot.dispatched, snapshot.cp_cpu), snapshot.cp_cpu,
+            snapshot.cp_cpu / window);
+    }
     std::printf("queues  : raw peak=%" PRIu64 "/%zu sem peak=%" PRIu64
                 "/%zu system_sinks=%d unsettled=%" PRIu64 "\n",
                 snapshot.raw_peak, capacity, snapshot.sem_peak, capacity,
@@ -583,7 +613,94 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
         window > 0.0 ? static_cast<double>(snapshot.dispatched) / window : 0.0,
         us_per_event(snapshot.dispatched, total_cpu),
         snapshot.raw_drops + snapshot.sem_drops, total_cpu, rss);
-    std::printf("bottleneck: %s\n", sink_bottleneck_text(snapshot).c_str());
+    std::printf("bottleneck: %s\n", sink_bottleneck_text(snapshot, l2).c_str());
+    if (l2 && snapshot.sem_drops > 0) {
+        const char* note_tail =
+            snapshot.raw_drops == 0
+                ? " the capacity drop comes mainly from the control plane, do "
+                  "not judge it by cp CPU alone"
+                : " do not judge control-plane cost by cp CPU alone";
+        std::printf(
+            "note: under L2 part of the control-plane cost runs inline on the "
+            "engine thread (compare the us/event gap with L1), the rest runs on "
+            "the cp threads (%.2f cores);%s\n",
+            snapshot.cp_cpu / window, note_tail);
+    }
+    if (l2) {
+        std::printf("cp util=%.2f cores (queue depth is not observable)\n",
+                    snapshot.cp_cpu / window);
+    }
+    if (l2 && window > 0.0 && snapshot.cp_cpu / window > kControlCores) {
+        std::printf(
+            "signal: control plane utilization is high (%.2f cores; queue "
+            "depth is not observable)\n",
+            snapshot.cp_cpu / window);
+    }
+    if (l2) {
+        std::printf(
+            "cp cpu=%.3fs (control plane; queue depth is not observable) "
+            "cp_us/event=%.3f\n",
+            snapshot.cp_cpu, us_per_event(snapshot.dispatched, snapshot.cp_cpu));
+        std::printf(
+            "seeds: role stubs settled=%s seeded=%" PRIu64
+            " (under L2 --settled only applies to role stubs; context is a real "
+            "seed, all trace processes are hit)\n",
+            settled_text, control.seed.roles);
+        std::printf(
+            "process seed: batch=%zu (supplemented parents %" PRIu64
+            "), inserted=%" PRIu64 " duplicate=%" PRIu64 " pid_reused=%" PRIu64
+            " parent_missing=%" PRIu64 " invalid=%" PRIu64
+            " rejected_state=%" PRIu64 "\n",
+            control.seed.batch_entries, control.seed.supplemented,
+            control.seed.process.inserted, control.seed.process.duplicate,
+            control.seed.process.pid_reused, control.seed.process.parent_missing,
+            control.seed.process.invalid, control.seed.process.rejected_state);
+        std::printf("seed exe: real=%" PRIu64 " synthetic=%" PRIu64 "\n",
+                    control.seed.exe_real, control.seed.exe_synthetic);
+        std::printf("context seed: inserted=%" PRIu64 " bound=%" PRIu64
+                    " plan_derive=%" PRIu64 " plan_bind=%" PRIu64
+                    " duplicate=%" PRIu64 " rejected_out_of_order=%" PRIu64
+                    " rejected_invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
+                    control.seed.context.inserted, control.seed.context.bound,
+                    control.seed.plan_derive, control.seed.plan_bind,
+                    control.seed.context.duplicate,
+                    control.seed.context.rejected_out_of_order,
+                    control.seed.context.rejected_invalid,
+                    control.seed.context.rejected_state);
+        std::printf("PM stats: pid_reused=+%" PRIu64 " stale_add=+%" PRIu64
+                    " parent_missing=+%" PRIu64 " tombstone_depth=%" PRIu64 "\n",
+                    control.process.pid_reused, control.process.stale_add,
+                    control.process.parent_missing,
+                    control.process.tombstone_depth);
+        std::printf(
+            "CM stats: pending_deferred=+%" PRIu64 " pending_resolved=+%" PRIu64
+            " pending_rejected=+%" PRIu64 " pending_expired=+%" PRIu64
+            " pending_cancelled=+%" PRIu64 " pending_depth=%" PRIu64
+            " bind_orphaned=+%" PRIu64 " extra_orphaned=+%" PRIu64
+            " parent_missing=+%" PRIu64 " late_register=+%" PRIu64
+            " late_bind=+%" PRIu64 " duplicate_context=+%" PRIu64
+            " ownership_conflict=+%" PRIu64 " tombstone_hits=+%" PRIu64
+            " tombstone_depth=%" PRIu64 " ctxroot_parent_unsettled=+%" PRIu64
+            " unknown_unregister=+%" PRIu64 "\n",
+            control.context.pending_deferred, control.context.pending_resolved,
+            control.context.pending_rejected, control.context.pending_expired,
+            control.context.pending_cancelled, control.context.pending_depth,
+            control.context.bind_orphaned, control.context.extra_orphaned,
+            control.context.parent_missing, control.context.late_register,
+            control.context.late_bind, control.context.duplicate_context,
+            control.context.ownership_conflict, control.context.tombstone_hits,
+            control.context.tombstone_depth,
+            control.context.ctxroot_parent_unsettled,
+            control.context.unknown_unregister);
+        if (control.process.stale_add > 0 || control.context.late_register > 0) {
+            std::printf(
+                "hint: replaying the trace in a loop resurrects exited process "
+                "identities (stale_add=+%" PRIu64 " late_register=+%" PRIu64
+                "), so this stage's lifecycle cost includes the tombstone path; "
+                "use --events syscall for steady-state capacity\n",
+                control.process.stale_add, control.context.late_register);
+        }
+    }
     std::printf(
         "collector=replay feeder (equivalent parsing); CLI/wire not included\n");
     std::printf(
@@ -1714,6 +1831,7 @@ int run_chain(const bench::CommonOptions& options,
     run.chain.seconds        = options.seconds;
     run.chain.warmup_seconds = options.warmup_seconds;
     run.chain.queue          = options.queue;
+    run.chain.fidelity       = options.fidelity;
 
     std::string error;
     if (!parse_rest(rest, run, error)) {
@@ -1741,7 +1859,7 @@ bench::StageSpec make_chain_stage()
     stage.name           = "chain";
     stage.extra_help     = kExtraHelp;
     stage.requires_trace = true;
-    stage.supports_l2    = false;
+    stage.supports_l2    = true;
     stage.run            = &run_chain;
     return stage;
 }

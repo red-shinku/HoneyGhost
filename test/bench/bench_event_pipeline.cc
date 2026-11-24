@@ -52,25 +52,31 @@ const bench::StageSpec* find_stage(const std::string& name)
 /// @brief 打印公共选项与各 stage 聚合的私有选项
 void print_usage(std::FILE* out)
 {
-    std::fprintf(out,
-                 "usage: bench_event_pipeline --stage NAME [options]\n"
-                 "\n"
-                 "common options:\n"
-                 "  --stage NAME       benchmark stage (required)\n"
-                 "  --fidelity l1|l2   control plane fidelity, default l1; engine and cli "
-                 "support l2\n"
-                 "  --trace PATH       trace file (required for semantic/engine/chain)\n"
-                 "  --seconds N        measurement window in seconds, >0 (default 10)\n"
-                 "  --warmup N         warmup seconds, >=0 (default 1)\n"
-                 "  --rate R           target rate in Hz, floating point, 0 means saturated (default 0)\n"
-                 "  --queue N          channel capacity, >=2 (default 8192)\n"
-                 "  --pin-consumer N   consumer side CPU index, -1 means no pinning (default -1)\n"
-                 "  --pin-producer N   producer side CPU index, -1 means no pinning (default -1)\n"
-                 "  --out PATH         file to append TSV to; empty writes to stdout\n"
-                 "  --quiet            do not print the machine fingerprint and startup parameters\n"
-                 "  --help             show this help\n"
-                 "\n"
-                 "per-stage private options:\n");
+    std::fprintf(
+        out,
+        "usage: bench_event_pipeline --stage NAME [options]\n"
+        "\n"
+        "common options:\n"
+        "  --stage NAME       benchmark stage (required)\n"
+        "  --fidelity l1|l2   control plane fidelity, default l1; engine and "
+        "chain "
+        "support l2 (see the cli stage for cli l2)\n"
+        "  --trace PATH       trace file (required for semantic/engine/chain)\n"
+        "  --seconds N        measurement window in seconds, >0 (default 10)\n"
+        "  --warmup N         warmup seconds, >=0 (default 1)\n"
+        "  --rate R           target rate in Hz, floating point, 0 means "
+        "saturated (default 0)\n"
+        "  --queue N          channel capacity, >=2 (default 8192)\n"
+        "  --pin-consumer N   consumer side CPU index, -1 means no pinning "
+        "(default -1)\n"
+        "  --pin-producer N   producer side CPU index, -1 means no pinning "
+        "(default -1)\n"
+        "  --out PATH         file to append TSV to; empty writes to stdout\n"
+        "  --quiet            do not print the machine fingerprint and startup "
+        "parameters\n"
+        "  --help             show this help\n"
+        "\n"
+        "per-stage private options:\n");
     for (const bench::StageSpec* stage : available_stages()) {
         std::fprintf(out, "\n[%s]\n%s", stage->name, stage->extra_help);
     }
@@ -256,7 +262,8 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
             std::string text;
             int value = -1;
             if (!take_value(text) || !parse_integer(text, -1, 1048576, value)) {
-                error = std::string(name) + " must be -1 or a non-negative integer";
+                error =
+                    std::string(name) + " must be -1 or a non-negative integer";
                 return false;
             }
             if (name == "--pin-consumer") {
@@ -342,9 +349,9 @@ int main(int argc, char** argv)
         return kExitUsage;
     }
     if (options.fidelity == bench::Fidelity::L2 && !stage->supports_l2) {
-        std::fprintf(
-            stderr, "parameter error: stage %s supports only --fidelity l1\n",
-            stage->name);
+        std::fprintf(stderr,
+                     "parameter error: stage %s supports only --fidelity l1\n",
+                     stage->name);
         return kExitUsage;
     }
     if (stage->requires_trace && options.trace_path.empty()) {

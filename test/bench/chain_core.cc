@@ -160,6 +160,8 @@ struct ChainRuntime::Impl final : hng::PipelineStatsService {
     bench::l1::FakeRoleJoin role_join;
     bench::l1::FakeRoleLookup role_lookup;
     bench::l1::FakeContextService context_service;
+    /// L2 的真实 Process/Context 组件与组件线程；声明在维护器之前
+    bench::l2::ControlPlane control;
     ContextMaintainer maintainer;
 
     std::vector<std::unique_ptr<CountSystemSink>> system_sinks;
@@ -199,7 +201,7 @@ struct ChainRuntime::Impl final : hng::PipelineStatsService {
     bool failed() const
     {
         return semantic_failed.load(std::memory_order_acquire) ||
-               engine_failed.load(std::memory_order_acquire);
+               engine_failed.load(std::memory_order_acquire) || control.failed();
     }
 
     /// @brief PipelineStatsService 入口：collector/semantic/engine 三段累计计数
@@ -244,11 +246,27 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
     sem_channel = std::make_unique<hng::EventChannel<hng::syscall_semantic_data>>(
         static_cast<std::size_t>(options.queue));
 
-    maintainer.set_context_service(&context_service, &context_service,
-                                   &context_service);
-    bench::l1::SeedCounts seeds;
-    bench::l1::seed_services(seed_events, options.settled, process_lookup,
-                             role_lookup, context_service, seeds);
+    // 引擎注入点：L1 全部指向内存替身，L2 的进程与 context 维度指向真实组件
+    ProcessJoinService* process_join_target     = &process_join;
+    ProcessUpdateService* process_update_target = &process_update;
+    ProcessLookupService* process_lookup_target = &process_lookup;
+
+    if (options.fidelity == bench::Fidelity::L2) {
+        if (!control.start(seed_events, options.settled, maintainer, role_join,
+                           role_lookup, error)) {
+            return false;
+        }
+        process_join_target   = &control.process_join();
+        process_update_target = &control.process_update();
+        process_lookup_target = &control.process_lookup();
+    }
+    else {
+        maintainer.set_context_service(&context_service, &context_service,
+                                       &context_service);
+        bench::l1::SeedCounts seeds;
+        bench::l1::seed_services(seed_events, options.settled, process_lookup,
+                                 role_lookup, context_service, seeds);
+    }
     seed_events.clear();
     seed_events.shrink_to_fit();
 
@@ -272,9 +290,9 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
         hng::RuntimeEngineOptions engine_settings;
         engine_settings.syscall_input  = &sem_channel->reader();
         engine_settings.ctx_maintainer = &maintainer;
-        engine_settings.process_join   = &process_join;
-        engine_settings.process_update = &process_update;
-        engine_settings.process_lookup = &process_lookup;
+        engine_settings.process_join   = process_join_target;
+        engine_settings.process_update = process_update_target;
+        engine_settings.process_lookup = process_lookup_target;
         engine_settings.role_join      = &role_join;
         engine_settings.role_lookup    = &role_lookup;
         engine = hng::RuntimeEngineFactory::create(engine_settings);
@@ -413,6 +431,11 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         error = "failed to read engine thread CPU: " + error;
         return false;
     }
+    double process_cpu = 0.0;
+    if (!bench::read_process_cpu(::getpid(), process_cpu, error)) {
+        error = "failed to read process total CPU: " + error;
+        return false;
+    }
 
     const FeederCounters feeder_counters = feeder.counters();
     sample.consumed                      = feeder_counters.consumed;
@@ -443,6 +466,15 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         sample.unsettled                    = stats.unsettled_events;
         sample.engine_syscall_dropped       = stats.syscall_dropped;
         sample.engine_idle_waits            = stats.idle_waits;
+    }
+
+    // 控制面 CPU：进程总量减去三条按 tid 归属的工作线程；占用采样线程与
+    // L2 的 process/context 组件线程都只能落在这一差值里
+    const double thread_cpu =
+        sample.feeder_cpu + sample.semantic_cpu + sample.engine_cpu;
+    sample.cp_cpu = process_cpu > thread_cpu ? process_cpu - thread_cpu : 0.0;
+    if (options.fidelity == bench::Fidelity::L2) {
+        sample.control = control.snapshot();
     }
 
     // 采样已停：此刻取走的是上一次快照以来的真实峰值，随后重新开始采样
@@ -547,6 +579,7 @@ void ChainRuntime::Impl::stop()
     if (sem_channel) {
         sem_channel->writer().close();
     }
+    control.stop();
 }
 
 hng::PipelineStats ChainRuntime::Impl::snapshot() const
@@ -616,11 +649,17 @@ RoleLookupService& ChainRuntime::role_lookup_service()
 
 ContextLookupService& ChainRuntime::context_lookup_service()
 {
+    if (impl_->options.fidelity == bench::Fidelity::L2) {
+        return impl_->control.context_lookup();
+    }
     return impl_->context_service;
 }
 
 ProcessLookupService& ChainRuntime::process_lookup_service()
 {
+    if (impl_->options.fidelity == bench::Fidelity::L2) {
+        return impl_->control.process_lookup();
+    }
     return impl_->process_lookup;
 }
 
@@ -651,9 +690,46 @@ ChainSnapshot window_delta(const ChainSnapshot& begin, const ChainSnapshot& end)
         delta(end.engine_syscall_dropped, begin.engine_syscall_dropped);
     window.engine_idle_waits =
         delta(end.engine_idle_waits, begin.engine_idle_waits);
-    window.feeder_cpu   = cpu_delta(end.feeder_cpu, begin.feeder_cpu);
-    window.semantic_cpu = cpu_delta(end.semantic_cpu, begin.semantic_cpu);
-    window.engine_cpu   = cpu_delta(end.engine_cpu, begin.engine_cpu);
+    window.feeder_cpu       = cpu_delta(end.feeder_cpu, begin.feeder_cpu);
+    window.semantic_cpu     = cpu_delta(end.semantic_cpu, begin.semantic_cpu);
+    window.engine_cpu       = cpu_delta(end.engine_cpu, begin.engine_cpu);
+    window.cp_cpu           = cpu_delta(end.cp_cpu, begin.cp_cpu);
+
+    // 控制面统计：累计字段取窗口增量，深度字段保留窗口终点的当前值
+    ProcessManagerStats& pm = window.control.process;
+    pm.pid_reused =
+        delta(end.control.process.pid_reused, begin.control.process.pid_reused);
+    pm.stale_add =
+        delta(end.control.process.stale_add, begin.control.process.stale_add);
+    pm.parent_missing                 = delta(end.control.process.parent_missing,
+                                              begin.control.process.parent_missing);
+
+    ContextManagerStats& cm           = window.control.context;
+    const ContextManagerStats& cm_end = end.control.context;
+    const ContextManagerStats& cm_begin = begin.control.context;
+    cm.pending_deferred =
+        delta(cm_end.pending_deferred, cm_begin.pending_deferred);
+    cm.pending_resolved =
+        delta(cm_end.pending_resolved, cm_begin.pending_resolved);
+    cm.pending_rejected =
+        delta(cm_end.pending_rejected, cm_begin.pending_rejected);
+    cm.pending_expired = delta(cm_end.pending_expired, cm_begin.pending_expired);
+    cm.pending_cancelled =
+        delta(cm_end.pending_cancelled, cm_begin.pending_cancelled);
+    cm.bind_orphaned  = delta(cm_end.bind_orphaned, cm_begin.bind_orphaned);
+    cm.extra_orphaned = delta(cm_end.extra_orphaned, cm_begin.extra_orphaned);
+    cm.parent_missing = delta(cm_end.parent_missing, cm_begin.parent_missing);
+    cm.late_register  = delta(cm_end.late_register, cm_begin.late_register);
+    cm.late_bind      = delta(cm_end.late_bind, cm_begin.late_bind);
+    cm.duplicate_context =
+        delta(cm_end.duplicate_context, cm_begin.duplicate_context);
+    cm.ownership_conflict =
+        delta(cm_end.ownership_conflict, cm_begin.ownership_conflict);
+    cm.tombstone_hits = delta(cm_end.tombstone_hits, cm_begin.tombstone_hits);
+    cm.ctxroot_parent_unsettled =
+        delta(cm_end.ctxroot_parent_unsettled, cm_begin.ctxroot_parent_unsettled);
+    cm.unknown_unregister =
+        delta(cm_end.unknown_unregister, cm_begin.unknown_unregister);
     return window;
 }
 
@@ -688,7 +764,7 @@ bool run_chain_sink(const ChainOptions& options, ChainSnapshot& snapshot,
     runtime.stop();
 
     if (runtime.failed()) {
-        error = "semantic or engine thread failed; no result generated";
+        error = "a worker thread failed; no result generated";
         return false;
     }
 

@@ -9,17 +9,10 @@
 #include "test/bench/stages.hpp"
 #include "test/bench/bench_trace.hpp"
 #include "test/bench/l1_control_plane.hpp"
+#include "test/bench/l2_control_plane.hpp"
 
 #include "agent/context_maintainer/include/context_maintainer.hpp"
-#include "agent/control_plane/include/context_component.hpp"
-// #include "agent/control_plane/include/context_service.hpp"
-#include "agent/control_plane/include/context_stats.hpp"
-#include "agent/control_plane/include/control_plane_factory.hpp"
-#include "agent/control_plane/include/process_component.hpp"
-#include "agent/control_plane/include/process_seed_service.hpp"
-#include "agent/control_plane/include/process_stats.hpp"
 #include "agent/control_plane/include/process_service.hpp"
-// #include "agent/control_plane/include/role_service.hpp"
 #include "agent/event_data/include/runtime_event.hpp"
 #include "agent/event_data/include/runtime_info_filter.hpp"
 #include "agent/event_data/include/syscall_event.hpp"
@@ -434,139 +427,6 @@ bool load_trace(const std::string& path, std::uint32_t pid_mod, TraceData& data,
     return true;
 }
 
-/// @brief L2 的一次性 seed 结果
-struct L2SeedCounts {
-    hng::ProcessSeedBatch batch;      ///< 由语料构造的进程批次
-    std::uint64_t supplemented  = 0;  ///< 只作为父出现而补成条目的进程数
-    std::uint64_t roles         = 0;  ///< 角色替身播种的进程数
-    std::uint64_t exe_real      = 0;  ///< 用真实 exec 镜像的条目数
-    std::uint64_t exe_synthetic = 0;  ///< 镜像未知而按 pid 合成的条目数
-    std::uint64_t plan_derive   = 0;  ///< context 计划中 DERIVE 的条目数
-    std::uint64_t plan_bind     = 0;  ///< context 计划中 BIND 的条目数
-    ProcessSeedReport process{};      ///< 进程组件 seed 报告
-    ContextSeedReport context{};      ///< context 组件 seed 报告
-};
-
-/**
- * @brief 收集全量语料里每个进程最近一次 exec 的真实镜像路径
- * @param[in] events 语义事件
- * @param[out] images 进程身份到镜像绝对路径的映射；空镜像不记录
- * @note 同名进程多次 exec 时以最后一次为准；身份按事件头取 (pid, pid_start_time)
- */
-void collect_exec_images(const std::vector<hng::syscall_semantic_data>& events,
-                         std::unordered_map<hng::Process, std::string>& images)
-{
-    for (const hng::syscall_semantic_data& event : events) {
-        const auto* exec = std::get_if<hng::exec_semantic_data>(&event.data);
-        if (exec == nullptr || exec->image().empty()) {
-            continue;
-        }
-        images[hng::Process{event.head.pid, event.head.pid_start_time}] =
-            exec->image();
-    }
-}
-
-/// @brief 为一条 seed 条目填入镜像：优先真实 exec 路径，取不到才按 pid 合成
-void fill_seed_exe(hng::ProcessSeedEntry& entry,
-                   const std::unordered_map<hng::Process, std::string>& images,
-                   L2SeedCounts& counts)
-{
-    const auto it = images.find(entry.process);
-    if (it != images.end() && !it->second.empty()) {
-        entry.exe = it->second;
-        ++counts.exe_real;
-        return;
-    }
-    entry.exe = "/usr/bin/proc-" + std::to_string(entry.process.pid);
-    ++counts.exe_synthetic;
-}
-
-/**
- * @brief 由语料事件头构造进程初始化批次
- * @param[in] events 语义事件
- * @param[in] images 进程身份到真实 exec 镜像的映射
- * @param[in,out] counts 批次条目数与镜像来源计数
- * @note 主体身份取 (pid, pid_start_time)；ppid 取事件头，为 0 时不补父条目。
- *       父身份同样按 (ppid, ppid_start_time) 去重，补出的条目 ppid 置 0。
- *       ppid_start_time 为 0 的父身份仍补条目，由 seed 计 invalid。
- */
-void build_seed_batch(const std::vector<hng::syscall_semantic_data>& events,
-                      const std::unordered_map<hng::Process, std::string>& images,
-                      L2SeedCounts& counts)
-{
-    std::unordered_set<hng::Process> subjects;
-    std::unordered_set<hng::Process> parents;
-    std::vector<hng::ProcessSeedEntry> entries;
-    entries.reserve(events.size());
-    for (const hng::syscall_semantic_data& event : events) {
-        const hng::Process self{event.head.pid, event.head.pid_start_time};
-        const hng::Process parent{event.head.ppid, event.head.ppid_start_time};
-        if (self.pid == 0) {
-            continue;
-        }
-        if (subjects.insert(self).second) {
-            hng::ProcessSeedEntry entry;
-            entry.process         = self;
-            entry.ppid            = event.head.ppid;
-            entry.ppid_start_time = event.head.ppid_start_time;
-            fill_seed_exe(entry, images, counts);
-            entries.push_back(std::move(entry));
-        }
-        if (parent.pid != 0) {
-            parents.insert(parent);
-        }
-    }
-    for (const hng::Process& parent : parents) {
-        if (subjects.count(parent) != 0) {
-            continue;
-        }
-        hng::ProcessSeedEntry entry;
-        entry.process = parent;
-        fill_seed_exe(entry, images, counts);
-        entries.push_back(std::move(entry));
-        ++counts.supplemented;
-    }
-    counts.batch.entries  = std::move(entries);
-    counts.batch.complete = true;
-}
-
-/**
- * @brief L2 的一次性 seed：真实 Process/Context 组件加角色替身
- * @param[in] events 全量语义事件，不受 --events 回放类别影响
- * @param[in] settled 角色替身的落定比例
- * @param[in,out] process_component 真实进程管理组件
- * @param[in,out] context_component 真实上下文管理组件
- * @param[in,out] maintainer 已注入真实 context 服务的维护器
- * @param[in,out] role_lookup 角色查询替身
- * @param[out] counts seed 结果与报告
- * @pre 两个组件的 run() 尚未启动；maintainer 已注入真实 context 服务
- * @note 先落地进程批次，再由维护器生成 context 计划并落地；此时所有语料进程
- *       都已有 context 归属，--settled 只影响角色替身。
- */
-void seed_l2(const std::vector<hng::syscall_semantic_data>& events,
-             double settled, hng::ProcessComponent& process_component,
-             hng::ContextComponent& context_component,
-             ContextMaintainer& maintainer,
-             bench::l1::FakeRoleLookup& role_lookup, L2SeedCounts& counts)
-{
-    std::unordered_map<hng::Process, std::string> images;
-    images.reserve(events.size() / 4);
-    collect_exec_images(events, images);
-    build_seed_batch(events, images, counts);
-    counts.process = process_component.seed_service().seed(counts.batch);
-    counts.roles = bench::l1::seed_role_substitutes(events, settled, role_lookup);
-    const ContextSeedPlan plan = maintainer.build_seed_plan(counts.batch);
-    for (const ContextSeedEntry& entry : plan.entries) {
-        if (entry.kind == ContextSeedKind::DERIVE) {
-            ++counts.plan_derive;
-        }
-        else {
-            ++counts.plan_bind;
-        }
-    }
-    counts.context = context_component.seed_service().seed(plan);
-}
-
 // ---- 订阅端 ----
 
 /// @brief 按过滤器模式构造一份过滤器
@@ -760,10 +620,7 @@ struct CounterSnapshot {
 };
 
 /// @brief L2 控制面的窗口统计快照
-struct ControlSnapshot {
-    ProcessManagerStats process{};  ///< 进程管理器统计
-    ContextManagerStats context{};  ///< 上下文管理器统计
-};
+using ControlSnapshot = bench::l2::ControlPlaneSnapshot;
 
 /// @brief 引擎段实现
 int run_engine(const bench::CommonOptions& options,
@@ -822,9 +679,8 @@ int run_engine(const bench::CommonOptions& options,
     hng::EventChannel<hng::syscall_semantic_data> channel(
         static_cast<std::size_t>(options.queue));
 
-    // L2 的真实控制面组件；声明在引擎与替身之前，收尾后引擎先析构
-    std::unique_ptr<hng::ContextComponent> context_component;
-    std::unique_ptr<hng::ProcessComponent> process_component;
+    // L2 控制面；声明在维护器之前，收尾后维护器先于组件析构
+    bench::l2::ControlPlane l2_control;
 
     bench::l1::FakeProcessJoin process_join;
     bench::l1::FakeProcessUpdate process_update;
@@ -843,40 +699,15 @@ int run_engine(const bench::CommonOptions& options,
     ProcessUpdateService* process_update_target = &process_update;
     ProcessLookupService* process_lookup_target = &process_lookup;
 
-    L2SeedCounts l2_seeds;
     if (l2) {
-        try {
-            process_component = hng::ControlPlaneFactory::create_process();
-            context_component = hng::ControlPlaneFactory::create_context();
-        }
-        catch (const std::exception& failure) {
-            std::fprintf(stderr,
-                         "failed to construct the control plane component: %s\n",
-                         failure.what());
+        if (!l2_control.start(trace.events, engine_options.settled, maintainer,
+                              role_join, role_lookup, error)) {
+            std::fprintf(stderr, "%s\n", error.c_str());
             return kExitRuntimeFailure;
         }
-        // 与装配层一致：进程组件接角色替身与真实 context 的生命周期出口
-        process_component->set_role_join_service(&role_join);
-        process_component->add_process_lifecycle_sink(
-            &context_component->lifecycle_sink());
-        maintainer.set_context_service(&context_component->lookup_service(),
-                                       &context_component->join_service(),
-                                       &context_component->update_service());
-        process_join_target   = &process_component->join_service();
-        process_update_target = &process_component->update_service();
-        process_lookup_target = &process_component->lookup_service();
-
-        seed_l2(trace.events, engine_options.settled, *process_component,
-                *context_component, maintainer, role_lookup, l2_seeds);
-        if (l2_seeds.process.rejected_state != 0 ||
-            l2_seeds.context.rejected_state != 0) {
-            std::fprintf(stderr,
-                         "L2 seed rejected: the component is not CONSTRUCTED"
-                         " (process %" PRIu64 ", context %" PRIu64 ")\n",
-                         l2_seeds.process.rejected_state,
-                         l2_seeds.context.rejected_state);
-            return kExitRuntimeFailure;
-        }
+        process_join_target   = &l2_control.process_join();
+        process_update_target = &l2_control.process_update();
+        process_lookup_target = &l2_control.process_lookup();
     }
 
     bench::l1::SeedCounts seeds;
@@ -931,45 +762,6 @@ int run_engine(const bench::CommonOptions& options,
                 return kExitRuntimeFailure;
             }
         }
-    }
-
-    // L2 控制面线程先于引擎启动：引擎消费时两个组件的 run() 已进入
-    std::atomic<bool> control_failed{false};
-    std::thread process_thread;
-    std::thread context_thread;
-    if (l2) {
-        process_thread = std::thread([&] {
-            try {
-                process_component->run();
-            }
-            catch (const std::exception& failure) {
-                std::fprintf(stderr, "process component thread failed: %s\n",
-                             failure.what());
-                control_failed.store(true, std::memory_order_release);
-            }
-            catch (...) {
-                std::fprintf(
-                    stderr,
-                    "process component thread failed: unknown exception\n");
-                control_failed.store(true, std::memory_order_release);
-            }
-        });
-        context_thread = std::thread([&] {
-            try {
-                context_component->run();
-            }
-            catch (const std::exception& failure) {
-                std::fprintf(stderr, "context component thread failed: %s\n",
-                             failure.what());
-                control_failed.store(true, std::memory_order_release);
-            }
-            catch (...) {
-                std::fprintf(
-                    stderr,
-                    "context component thread failed: unknown exception\n");
-                control_failed.store(true, std::memory_order_release);
-            }
-        });
     }
 
     std::atomic<bool> producer_stop{false};
@@ -1114,18 +906,7 @@ int run_engine(const bench::CommonOptions& options,
             }
         }
         // 引擎停稳后再停控制面，顺序与装配层一致：先 process，再 context
-        if (process_component) {
-            process_component->stop();
-            if (process_thread.joinable()) {
-                process_thread.join();
-            }
-        }
-        if (context_component) {
-            context_component->stop();
-            if (context_thread.joinable()) {
-                context_thread.join();
-            }
-        }
+        l2_control.stop();
     };
 
     if (!wait_for_tids(producer_tid, consumer_tid, error)) {
@@ -1202,11 +983,9 @@ int run_engine(const bench::CommonOptions& options,
     };
 
     const auto sample_control = [&](ControlSnapshot& snapshot) {
-        if (!l2) {
-            return;
+        if (l2) {
+            snapshot = l2_control.snapshot();
         }
-        snapshot.process = process_component->stats();
-        snapshot.context = context_component->stats();
     };
 
     std::this_thread::sleep_until(measure_start);
@@ -1250,7 +1029,7 @@ int run_engine(const bench::CommonOptions& options,
         std::fprintf(stderr, "engine thread failed, no result produced\n");
         return kExitRuntimeFailure;
     }
-    if (control_failed.load(std::memory_order_acquire)) {
+    if (l2_control.failed()) {
         std::fprintf(
             stderr,
             "control plane component thread failed, no result produced\n");
@@ -1355,7 +1134,8 @@ int run_engine(const bench::CommonOptions& options,
         delta(control_end.context.unknown_unregister,
               control_start.context.unknown_unregister);
 
-    char settled_text[32] = {};
+    const bench::l2::SeedReport& l2_seeds = control_end.seed;
+    char settled_text[32]                 = {};
     std::snprintf(settled_text, sizeof(settled_text), "%g",
                   engine_options.settled);
     const std::string config =
@@ -1433,7 +1213,7 @@ int run_engine(const bench::CommonOptions& options,
                     "), inserted=%" PRIu64 " duplicate=%" PRIu64
                     " pid_reused=%" PRIu64 " parent_missing=%" PRIu64
                     " invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
-                    l2_seeds.batch.entries.size(), l2_seeds.supplemented,
+                    l2_seeds.batch_entries, l2_seeds.supplemented,
                     l2_seeds.process.inserted, l2_seeds.process.duplicate,
                     l2_seeds.process.pid_reused, l2_seeds.process.parent_missing,
                     l2_seeds.process.invalid, l2_seeds.process.rejected_state);

@@ -3,16 +3,18 @@
  * @brief chain 段的可复用整链装配：replay feeder → 语义 → 运行时引擎
  * @details
  * 原始通道与语义通道各一条，真实语义组件、真实运行时引擎与真实 context
- * 维护器，控制面替身与「trace 全量种子」来自 test/bench/l1_control_plane.hpp。
- * ChainRuntime 持有装配与三条工作线程的生命周期，窗口的起止时刻、睡眠与快照
- * 次数由调用方决定；sink 后端用 run_chain_sink() 封装，CLI 后端在子进程里直接
- * 持有 ChainRuntime 并由控制线程在窗口两端取快照。
+ * 维护器，控制面与「trace 全量种子」来自两个控制面头文件：L1 用内存替身，
+ * L2 用真实 Process/Context 组件，角色维度始终是替身。ChainRuntime 持有装配、
+ * 四条工作线程与两条组件线程的生命周期，窗口的起止时刻、睡眠与快照次数由调用
+ * 方决定；sink 后端用 run_chain_sink() 封装，CLI 后端在子进程里直接持有
+ * ChainRuntime 并由控制线程在窗口两端取快照。
  */
 
 #ifndef HNG_TEST_BENCH_CHAIN_CORE_HPP_
 #define HNG_TEST_BENCH_CHAIN_CORE_HPP_
 
 #include "test/bench/chain_feeder.hpp"
+#include "test/bench/l2_control_plane.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -31,19 +33,22 @@ namespace bench::chain {
 
 /// @brief chain 段的运行参数
 struct ChainOptions {
-    std::string trace_path;                ///< 语料路径
-    double rate        = 0.0;              ///< collector 输入记录/s，0 表示全速
-    int seconds        = 10;               ///< 统计窗口秒数
-    int warmup_seconds = 1;                ///< 预热秒数
-    int queue          = 8192;             ///< 两条通道的容量
-    EventClass events  = EventClass::ALL;  ///< 回放类别
-    int system_sinks   = 1;                ///< 计数系统订阅数，兼作分发计数
-    double settled     = 1.0;              ///< 种子落定比例
+    std::string trace_path;           ///< 语料路径
+    double rate              = 0.0;   ///< collector 输入记录/s，0 表示全速
+    int seconds              = 10;    ///< 统计窗口秒数
+    int warmup_seconds       = 1;     ///< 预热秒数
+    int queue                = 8192;  ///< 两条通道的容量
+    EventClass events        = EventClass::ALL;  ///< 回放类别
+    int system_sinks         = 1;                ///< 计数系统订阅数，兼作分发计数
+    double settled           = 1.0;              ///< 种子落定比例
+    /// 控制面档位；L2 下 settled 只作用于角色替身
+    bench::Fidelity fidelity = bench::Fidelity::L1;
 };
 
 /**
  * @brief 某一时刻的累计快照
- * @details 计数与 CPU 是自启动以来的累计值，调用方用 window_delta() 取窗口增量。
+ * @details 计数、CPU 与控制面统计是自启动以来的累计值，调用方用 window_delta()
+ *          取窗口增量；seed 报告是启动期结果，不随窗口变化。
  *          raw_peak/sem_peak 是「上一次 snapshot() 以来」的通道占用峰值：快照
  *          取走它并把采样窗口重置到当前时刻，因此窗口起点的一次快照会丢弃
  *          预热期峰值。records/playback/malformed 是加载期全量值，不随窗口变化。
@@ -72,15 +77,21 @@ struct ChainSnapshot {
     double feeder_cpu                    = 0.0;  ///< feeder 线程累计 CPU 秒
     double semantic_cpu                  = 0.0;  ///< 语义线程累计 CPU 秒
     double engine_cpu                    = 0.0;  ///< 引擎线程累计 CPU 秒
+    /// 控制面 CPU：进程总 CPU 减去 feeder、语义、引擎三条线程
+    double cp_cpu                        = 0.0;
+    /// L2 的 PM/CM 累计统计与启动期 seed 结果；L1 时为空
+    bench::l2::ControlPlaneSnapshot control;
 };
 
 /**
  * @brief 整链运行期：装配、窗口快照与停机
- * @details start() 装配组件并启动 semantic/engine 两条消费线程，defer_feeder
- *          为 false 时再启动 feeder；start_feeder() 供“服务端就绪后再放行回放”
- *          的 CLI 握手使用。snapshot() 读取累计计数、线程 CPU 与自上次快照以来
- *          的通道占用峰值；stop() 按 feeder → semantic → engine 的顺序停机并
- *          关闭两条通道。窗口的起止时刻与睡眠由调用方负责。
+ * @details start() 装配组件并启动 semantic/engine 两条消费线程；L2 在它们之前
+ *          启动 Process/Context 两条组件线程并绑定维护器。defer_feeder 为 false
+ *          时再启动 feeder；start_feeder() 供“服务端就绪后再放行回放”的 CLI
+ *          握手使用。snapshot() 读取累计计数、线程 CPU、控制面统计与自上次快照
+ *          以来的通道占用峰值；stop() 按 feeder → semantic → engine → 控制面
+ *          （先 process 后 context）的顺序停机并关闭两条通道。窗口的起止时刻与
+ *          睡眠由调用方负责。
  * @note start() 成功后才可调用 snapshot() 与各服务访问器；stop() 可重复调用，
  *       未 start() 也可安全析构。snapshot() 只应由一条线程调用：峰值取走与
  *       采样重启有副作用。CLI 子进程须在 fork 之后、创建任何线程之前构造本类。
@@ -137,13 +148,15 @@ class ChainRuntime final {
     /// @brief 控制面角色查询替身，CLI 后端传给 CLIServerDeps::role
     RoleLookupService& role_lookup_service();
 
-    /// @brief 控制面上下文查询替身，CLI 后端传给 CLIServerDeps::context
+    /// @brief 控制面上下文查询服务，CLI 后端传给 CLIServerDeps::context
+    /// @pre start() 成功；L2 返回真实组件的查询服务，L1 返回内存替身
     ContextLookupService& context_lookup_service();
 
-    /// @brief 控制面进程查询替身，CLI 后端传给 CLIServerDeps::process
+    /// @brief 控制面进程查询服务，CLI 后端传给 CLIServerDeps::process
+    /// @pre start() 成功；L2 返回真实组件的查询服务，L1 返回内存替身
     ProcessLookupService& process_lookup_service();
 
-    /// @brief 语义或引擎线程是否曾抛出异常
+    /// @brief semantic/engine/控制面组件线程是否曾抛出异常
     bool failed() const;
 
    private:
@@ -156,8 +169,8 @@ class ChainRuntime final {
  * @brief 两个快照之间的窗口增量
  * @param[in] begin 窗口起点快照
  * @param[in] end 窗口终点快照
- * @return 计数与 CPU 为 end 减 begin；峰值与加载期字段取 end；seconds 置 0，
- *         由调用方填写
+ * @return 计数、CPU 与控制面的累计统计为 end 减 begin；峰值、深度字段、seed
+ *         报告与加载期字段取 end；seconds 置 0，由调用方填写
  */
 ChainSnapshot window_delta(const ChainSnapshot& begin, const ChainSnapshot& end);
 
