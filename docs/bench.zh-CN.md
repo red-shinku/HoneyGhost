@@ -1,121 +1,153 @@
 ## 事件流压测
 
-`test/bench` 下的用户态事件流水线压测：分段（semantic / engine / cli）与全链（chain，replay）。
-容量口径统一为「0 丢的最高限速」，并用饱和读数作参考；丢弃一律以流水线自带计数器为准。
+test/bench 里有两组压测：
+
+- **分段压测**：分别压语义化（semantic）、运行时引擎（engine）、CLI 投递（cli）三段；
+- **全链压测（chain）**：在一个进程里把「采集解析 → 语义化 → 引擎 → CLI 投递」串起来跑。
+
+容量一律指「**不丢事件时的最高输入速率**」；饱和时的吞吐只作参考，不当作能力上限。
+所有丢弃都以程序自己的计数器为准，不用估算。
 
 ## 语料文件
 
-语料是真实 ringbuf 记录的原始字节，供不加载 BPF 的压测复用。
+语料是**录下来的真实事件**，让压测不用加载 BPF 也能复现同一批事件。
 
-生成语料文件（需 root 与 BPF 权限，只导出统计窗口内的记录）：  
-```bash
-# 两种方式等价
-bench_syscalls --dump PATH
-scripts/bench/run_bench.sh --dump PATH
-```
-不同事件类型分为不同 profile。
-多个 profile 时在扩展名前插入 profile 名（`t.trace` → `t.file.trace`）。
+需要 root 与 BPF 权限；只导出统计窗口内的记录：
 
-格式（`test/bench/bench_trace.hpp`，是本机字节序、需同机使用）：
+    bench_syscalls --dump PATH
+    scripts/bench/run_bench.sh --dump PATH
+
+不同事件类型按 profile 区分；多个 profile 时在扩展名前插入 profile 名
+（t.trace → t.file.trace）。
+
+格式（test/bench/bench_trace.hpp；按本机字节序保存，只能同一台机器用）：
 
 | 部分 | 内容 |
 |---|---|
-| 文件头 | 8 字节 magic `HNGTRACE` + uint32 version=1 + uint32 保留 0 |
-| 记录 | uint32 size（1..65535）+ size 字节负载 |
-| 结束 | EOF；无尾记录 |
+| 文件头 | 8 字节标记 HNGTRACE + 版本号 1 + 4 字节保留 |
+| 每条记录 | 4 字节长度 + 该长度的原始记录 |
+| 结束 | 文件末尾；没有结尾标记 |
 
-负载就是 ringbuf 记录原文：`syscall_event_head`（80 字节）+ 该 subtype 的定长载荷；
+原始记录就是内核 ringbuf 里的一条：80 字节事件头 + 该类型固定长度的载荷。
+每条记录的长度由生产侧同一张长度表（hng::detail::SyscallRecordSize）决定，
+chain 回放时用它逐条校验，长度不符的记为 malformed 并跳过。
 
-## chain 压测架构
+## 全链压测
 
-chain 为 agent 用户态的完整事件流处理。
+chain 是**回放式**的：必须给 --trace，按 --rate（每秒送入采集解析的记录数）回放。
 
-chain 需从语料回放事件：要指定 `--trace`，按 `--rate`（输入侧collector，事件每秒）回放。
+    回放线程 ──► 原始事件队列 ──► 语义化组件
+       ──► 语义事件队列 ──► 运行时引擎
+       ──► 每条订阅流的队列 ──► CLI 服务端（gRPC）──► 客户端
 
-```
-feeder ──► raw EventChannel<syscall_event> ──► SemanticComponent
-   ──► semantic EventChannel<syscall_semantic_data> ──► RuntimeEngineComponent
-   ──► CLIStream（真实队列/唤醒） ──► userver gRPC ──► 客户端
-```
+- 采集段是**等价实现**：用生产侧同一张长度表校验，再按同样方式把头与载荷拷进
+  用户态结构；它不是 collector 的代码，所以输出里标 collector=replay feeder（等价解析）。
+- 两种运行方式：
+  - --backend sink：只跑到引擎，引擎后面接一个计数订阅（不需要 userver）；
+  - --backend cli：完整跑到 CLI。CLI 服务端放在子进程，父进程只当客户端。
+  有 userver 的构建默认用 cli，没有则默认 sink。
+- **启动对齐**：CLI 服务端启动要几秒。如果一回放就开始计时，测量窗口里会混进
+  建流的时间。所以由父进程在「服务端就绪、所有订阅都建好」之后，写一个临时
+  标记文件通知子进程；子进程看到标记才开始回放并记下起点时间，父子双方用这个
+  起点对齐同一个测量窗口（父进程用它算客户端侧，子进程用它算各段 CPU 和计数）。
+  --warmup 从这个起点开始算。
+- 队列都是**满了就丢**、不阻塞，所以「容量」= 所有环节都不丢时的最高输入速率。
+- CPU 按线程分别记：回放/语义/引擎三条线程由子进程按线程号采；CLI 服务端的工作
+  线程由父进程按线程名采；控制面（L2）的两条线程用它们自己的线程号采，单独列为
+  control 段；结果里「控制面 CPU」那一项（字段名 cp cpu）就是这两条线程的耗时。
+  控制面线程不会和 CLI 服务端的框架线程混在一起。
+- --fidelity l1（默认）控制面用内存替身；--fidelity l2 控制面用真实组件，
+  角色维度仍是替身。L2 的成本分两处：同步查询/入队发生在**引擎线程里**（算进
+  engine 的每事件成本），另两条控制面线程的 CPU 单独列 control。
+- 控制面的内部队列深度没有对外统计，所以只能从 CPU 和它的计数间接判断是否积压。
 
-- 采集段是 **等价解析**：生产侧同一张 `SyscallRecordSize` 校验 + head/载荷两段 memcpy，
-  输出里标注 `collector=replay feeder（等价解析）`，不是 collector 代码本身。
-- 两个后端：`--backend sink`（无 userver，链路到引擎为止，计数订阅）与
-  `--backend cli`（子进程跑完整链 + 真实 `RunCliServer`，父进程只做客户端）。
-  有 userver 构建默认 cli，无则默认 sink；`--backend cli` 在无 userver 构建下报错。
-- 窗口对齐用 go 文件握手：父进程等服务端就绪且所有订阅流登记完成后写 go；
-  子进程收到 go 才取 T0、启动 feeder，写 T0、按 T0 在窗口两端快照并写侧车。
-  父进程用同一 T0 采客户端计数与 `cli-tp` 的 CPU。`--warmup` 从 T0 起算。
-- 通道都是满即丢（非阻塞），因此容量为所有接缝 0 丢的最高输入速率。
-- 每段成本按线程窗口 CPU 记账：feeder / semantic / engine 由子进程自测（侧车），
-  `cli-tp` 由父进程按 comm 采集，客户端 CPU 只用于判断压测器是否成为瓶颈。
-- 控制面档位：`--fidelity l1`（默认）用内存替身，控制面成本内联在引擎线程；
-  `--fidelity l2` 用真实 Process/Context 组件，角色维度仍是替身。两个后端都支持。
-  L2 的窗口成本分两处：同步查询/入队内联在引擎线程（落在 `engine` 的 us/event
-  里），两条组件线程的开销按它们的 tid 采线程 CPU，单列为 `control` 段与
-  `cp cpu / cp util`。不再用进程总量减工作线程，CLI 子进程里的 userver 线程不会
-  被算进控制面。
-- 控制面的队列深度不可观测，容量只看流水线通道与每流队列的丢弃。
+### 输出怎么读
 
-输出：一次运行写五行 TSV，并打印汇总：
+一次运行写五行制表符分隔的结果（TSV），并打印一段汇总：
 
-```
-TSV chain            合并行：dispatched、端到端 µs/输入事件、接缝丢弃合计
-TSV chain/collector  已消费记录数、feeder CPU、raw 通道峰值
-TSV chain/semantic   语义已处理数、语义线程 CPU、raw 接缝丢弃
-TSV chain/engine     分发数、引擎线程 CPU、语义通道接缝丢弃
-TSV chain/cli        客户端交付数、cli-tp CPU、CLI 接缝丢弃
-```
+    chain            合并行：引擎分发数、端到端每输入事件 CPU、所有环节丢弃合计
+    chain/collector  已解析的记录数、回放线程 CPU、原始事件队列峰值占用
+    chain/semantic   语义已处理数、语义线程 CPU、原始事件队列的丢弃
+    chain/engine     引擎分发数、引擎线程 CPU、语义事件队列的丢弃
+    chain/cli        客户端交付数、CLI 工作线程 CPU、每流队列的丢弃
 
-L2 下合并行的端到端成本含 `cp cpu`；`chain/engine` 仍只算引擎线程（内联的
-控制面调用计入其中）。汇总同时给 input / dispatched / delivered 三个速率与
-fan-out 比值（8 条流时每个输入事件分发到 8 条流，input 容量约为 delivered 的
-1/8 再打折）。
-瓶颈判定用两条独立证据：接缝丢弃落在哪（raw 丢→语义慢、语义通道丢→引擎慢、
-CLI 丢→cli-tp/客户端慢）与该段 CPU 利用率；两者冲突时标「未定」。
+- 三个速率要分清：**输入**（回放记录/秒）、**分发**（引擎处理完/秒）、**交付**
+  （客户端收到/秒）。到 CLI 时一份输入会复制给每条订阅流，所以 8 条流时
+  交付数约为输入数的 8 倍再打折；只说其中一个会误导。
+- 结果字段与上面的词对应：events 是该段处理的事件数，events_per_s 是每秒事件数，
+  us_per_event 是每事件 CPU，drops 是该环节的丢弃，peak_queue 是队列峰值占用。
+- 瓶颈判定看两件事：丢弃发生在哪个环节（原始队列丢→语义化慢；语义队列丢→引擎慢；
+  每流队列丢→CLI 服务端或客户端慢），以及该环节的 CPU 利用率。两者冲突时标「未定」。
+- L2 会额外打印初始化报告（进程/上下文装了多少、可执行文件路径来自语料还是合成、
+  上下文是派生还是挂靠）以及控制面的窗口计数（stale_add、late_register、
+  tombstone_depth 等）。有丢弃时会提示：控制面成本还有一半在引擎线程里，
+  不能只看控制面线程的 CPU。
 
-L2 额外打印 seed 报告（进程/context 播种、exe 来源、计划方式）与 PM/CM 窗口
-增量（stale_add / late_register / tombstone_depth / parent_missing /
-duplicate_context 等）。有容量丢弃时提示：控制面成本还有一半内联在引擎线程，
-不能只看 cp CPU。
+## 2026/11/24 压测结果
 
-已知边界：
+以下数字来自 16 vCPU 的开发容器（共享宿主），窗口 3–10 秒、显式指定队列容量。
 
-- 生命周期事件的回放会复活已退出的进程身份，触发墓碑路径；稳态容量用
-  `--events syscall`，其余类别只用于看该类事件的单位成本。
-- CLI 后端看不到每流队列占用（`chain/cli` 的 peak_queue 恒 0）；
-  低速率下 `us/event` 偏高是每事件唤醒成本，不是组件变慢。
+**分段（单进程）**
 
-几个典型用法：
+| 段 | 事件构成 | 不丢的最高速率 | 每事件 CPU |
+|---|---|---|---|
+| 语义化 | 系统调用类 | ~1.0M/s | 1.0–1.2 µs |
+| 语义化 | 全部（含 exec/生命周期） | ~0.75M/s | 1.3–1.5 µs |
+| 语义化 | 生命周期 | ~0.66M/s | 1.3–1.5 µs |
+| 引擎 L1 | 系统调用类 | ~1.4–1.6M/s | 0.6–0.9 µs |
+| 引擎 L1 | 全部 / 生命周期 | ~1.1M/s | 0.8–1.1 µs |
+| 引擎 L2 | 系统调用类 | ~1.5M/s | 0.6–0.9 µs（控制面空闲） |
+| 引擎 L2 | 生命周期 | ~0.3M/s | 引擎 ~3–5 µs + 控制面 ~2–3 µs |
+| CLI 投递（8 条流） | 任意 | — | 交付 ~1.0M/s |
+| CLI 投递（1 条流，batch 64） | 任意 | — | 交付 ~0.28–0.3M/s |
+| CLI 投递（1 条流，batch 1） | 任意 | — | 交付 ~8k/s（受消息数限制） |
 
-```sh
-# 至引擎（无 userver 也可用），找 0 丢容量
-build-bench/test/bench_event_pipeline --stage chain --trace /tmp/p1.mixed.trace \
-  --backend sink --events syscall --queue 32768 --rate 1000000
+注意：单段语义化那组数字是「下游零积压」的下界——它的取空线程会立即把输出队列取空，
+每个事件都要唤醒一次；生产里的下游（引擎）通常有积压，所以同一组件在全链里更便宜。
 
-# 全链到 CLI：8 条流、每条 2000/s 输入
-build-bench/test/bench_event_pipeline --stage chain --trace /tmp/p1.mixed.trace \
-  --streams 8 --batch 64 --rate 16000 --queue 32768 --seconds 10 --out chain.tsv
+**全链**
 
-# 全链 L2：真实控制面，8 条流、64k/s 输入
-build-bench/test/bench_event_pipeline --stage chain --backend cli \
-  --fidelity l2 --trace /tmp/p1.mixed.trace --events syscall --streams 8 \
-  --batch 64 --rate 64000 --queue 32768 --seconds 10 --out chain.tsv
-```
+| 配置 | 不丢的最高输入速率 | 客户端交付 |
+|---|---|---|
+| 只到引擎，系统调用类（L1/L2） | ~1.2–1.4M/s | — |
+| 只到引擎，全部（L1） | ~1.05–1.1M/s | — |
+| 只到引擎，生命周期（L1） | ~0.95–1.0M/s | — |
+| 到 CLI，1 条订阅 | ~200k/s | ~200k/s |
+| 到 CLI，8 条订阅 | ~64k/s（96k 是边缘） | ~512k–768k/s |
+| 到 CLI 的交付总量 | — | 约 770k/s 的硬顶 |
+
+到 CLI 时真正的上限常常是**交付总量**（gRPC 序列化 + 客户端收包，两个工作线程），
+不是控制面或引擎；输入容量随订阅流数下降，8 条流时每个输入事件要被复制八次。
+
+几条使用经验：
+
+- 队列容量要显式给（如 --queue 32768）。默认 8192 在宿主抖动下可能提前丢，
+  工具会提示「队列为默认大小，容量结论请用较大 --queue 复核」。
+- 稳态能力一律用 --events syscall 测；生命周期事件的回放会复活已经退出的进程身份，
+  数字里含墓碑处理路径，只适合看该类的单位成本。
+- 8 条订阅、96k/s 输入在默认每流队列 8192 下是边缘；加大 --cli-queue 或把
+  --batch 调到 256 可以稳定 0 丢。
 
 ## 构建编译
 
-在 devcontainer 内构建（userver/libbpf 等依赖在容器里）。压测用独立的构建输出目录
-`build-bench`：RelWithDebInfo 与发布档一致，并带 frame pointer 以便 perf 取调用栈。
+在 devcontainer 内构建（userver、libbpf 等依赖都在容器里）。压测用独立的
+build-bench：优化级别与发布档一致，并保留帧指针，方便 perf 抓调用栈。
 
-```sh
-cmake -S . -B build-bench \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer"
-cmake --build build-bench --target bench_event_pipeline bench_syscalls --parallel
-```
+    cmake -S . -B build-bench \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer"
+    cmake --build build-bench --target bench_event_pipeline bench_syscalls --parallel
 
-- `-DHNG_ENABLE_CLI_SERVER=OFF`：不构建 CLI 段与 userver 依赖；chain 默认 `--backend sink`。
-- 采集吞吐工具需要 root 与 BPF（`make ebpf` 产出 `kernel/build/syscalls.bpf.o`）
-- 构建目录是 devcontainer 配置的，在 WSL 宿主直接 `cmake --build` 会因源码路径不一致失败；
-  换环境时重新跑 configure。
+- -DHNG_ENABLE_CLI_SERVER=OFF：不构建 CLI 段与 userver 依赖；全链默认只到引擎。
+- 采集吞吐工具需要 root 与 BPF（make ebpf 产出 kernel/build/syscalls.bpf.o）；
+  全链回放不需要 root。
+- 构建目录是在 devcontainer 里配置的；换到 WSL 宿主直接 cmake --build 会因源码
+  路径不一致失败，需要重新 configure。
+
+## 已知限制
+
+- 全链目前是回放，不加载内核探针；真采集路径仍由 hng_agent 与 e2e 脚本覆盖。
+- CLI 的每流队列占用不可观测（chain/cli 的队列峰值恒为 0）。
+- 控制面内部队列深度没有统计，L2 是否积压只能从 CPU 和计数间接判断。
+- 低速率下每事件 CPU 偏高是「每个事件唤醒一次」的成本，不是组件变慢；
+  比较成本要在相近速率下比。
