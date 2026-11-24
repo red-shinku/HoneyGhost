@@ -13,6 +13,7 @@
 
 #include "test/bench/stages.hpp"
 #include "test/bench/bench_trace.hpp"
+#include "test/bench/cli_client.hpp"
 #include "test/bench/l1_control_plane.hpp"
 
 #include "agent/cli_server/include/cli_server.hpp"
@@ -60,51 +61,43 @@
 namespace {
 
 /// @brief 退出码：运行期失败
-constexpr int kExitRuntimeFailure = 1;
+constexpr int kExitRuntimeFailure        = 1;
 /// @brief 退出码：参数错误
-constexpr int kExitUsage          = 3;
+constexpr int kExitUsage                 = 3;
 
 /// @brief 客户端流数的解析上限；超过服务端并发配额（64）用于触发配额错误
-constexpr long kMaxStreams        = 1024;
+constexpr long kMaxStreams               = 1024;
 /// @brief 服务端生成的临时配置里的并发流上限
-constexpr long kServerMaxStreams  = 64;
+constexpr long kServerMaxStreams         = 64;
 /// @brief 单批事件数的上界，与服务端钳制一致
-constexpr long kMaxBatch          = 256;
-/// @brief 等待服务端就绪的上限
-constexpr std::chrono::seconds kReadyLimit(20);
-/// @brief 等待子进程退出的上限；超过后 SIGKILL
-constexpr std::chrono::seconds kShutdownLimit(20);
-/// @brief 等待客户端流线程发布 tid 的上限
-constexpr std::chrono::milliseconds kTidWaitLimit(2000);
+constexpr long kMaxBatch                 = 256;
 /// @brief 服务端 cli-tp 线程的 comm 前缀
-constexpr char kCliTaskProcessor[]         = "cli-tp";
+constexpr char kCliTaskProcessor[]       = "cli-tp";
 /// @brief 合成事件的进程镜像路径，长度约 30 字符
-constexpr char kEventExe[]                 = "/usr/lib/honeyghost/bench-evt";
+constexpr char kEventExe[]               = "/usr/lib/honeyghost/bench-evt";
 /// @brief CLONE_NEWNS，命名空间载荷的一个 CLONE_* 位
-constexpr std::uint64_t kCloneNewNs        = 0x00020000ull;
+constexpr std::uint64_t kCloneNewNs      = 0x00020000ull;
 /// @brief AT_FDCWD，文件载荷的 dirfd 取值
-constexpr std::int32_t kAtFdcwd            = -100;
-/// @brief 报文尺寸的采样间隔：每 64 条 batch 消息调一次 ByteSizeLong
-constexpr std::uint64_t kBytesSampleStride = 64;
+constexpr std::int32_t kAtFdcwd          = -100;
 
 /// @brief 引擎语义通道容量的默认值与合法区间
-constexpr int kEngineQueueDefault          = 8192;
-constexpr long kEngineQueueMin             = 2;
-constexpr long kEngineQueueMax             = 1048576;
+constexpr int kEngineQueueDefault        = 8192;
+constexpr long kEngineQueueMin           = 2;
+constexpr long kEngineQueueMax           = 1048576;
 /// @brief 合成语料的事件条数
-constexpr std::size_t kSyntheticEvents     = 4096;
+constexpr std::size_t kSyntheticEvents   = 4096;
 /// @brief 引擎线程名；PR_SET_NAME 只保留前 15 字节，归因时用截断后的前缀
-constexpr char kBenchEngineThread[]        = "hng-bench-engine";
-constexpr char kBenchEngineComm[]          = "hng-bench-engin";
+constexpr char kBenchEngineThread[]      = "hng-bench-engine";
+constexpr char kBenchEngineComm[]        = "hng-bench-engin";
 /// @brief 源线程名；同样按 15 字节前的窗口归因
-constexpr char kBenchSourceThread[]        = "hng-bench-source";
-constexpr char kBenchSourceComm[]          = "hng-bench-sourc";
+constexpr char kBenchSourceThread[]      = "hng-bench-source";
+constexpr char kBenchSourceComm[]        = "hng-bench-sourc";
 /// @brief --filter role 的 roleID 集合，落在合成语料的 roleID 1..8 内
-constexpr std::uint32_t kRoleFilterFirst   = 1;
-constexpr std::uint32_t kRoleFilterLast    = 4;
+constexpr std::uint32_t kRoleFilterFirst = 1;
+constexpr std::uint32_t kRoleFilterLast  = 4;
 /// @brief --filter miss 的 roleID 集合，与合成语料无交集
-constexpr std::uint32_t kMissFilterFirst   = 9;
-constexpr std::uint32_t kMissFilterLast    = 12;
+constexpr std::uint32_t kMissFilterFirst = 9;
+constexpr std::uint32_t kMissFilterLast  = 12;
 
 /// @brief CLI 段私有选项的多行用法
 constexpr const char* kExtraHelp =
@@ -921,396 +914,85 @@ class EngineProducer final {
 };
 
 /**
- * @brief 子进程入口：写临时配置、装配 L1 或 L2 生产者并跑 CLI 服务端
+ * @brief 子进程入口：装配 L1 或 L2 生产者并跑 CLI 服务端
  * @param[in] options 公共选项（fidelity、rate、trace）
  * @param[in] cli_options CLI 段私有选项
  * @param[in] socket_path 最终生效的 Unix socket 路径
  * @param[in] queue_capacity 每流队列容量，写进临时配置
  * @param[in] per_stream_rate L1 每条订阅流的目标事件率 Hz；0 表示全速
  * @note 调用点必须已 fork 且尚未创建任何线程：引擎、替身与 userver 都会建
- *       线程。L2 的收尾顺序是先源线程、再引擎，最后才析构替身与维护器。
+ *       线程。临时配置、PDEATHSIG 与退出码由 bench::cli::run_cli_server_child
+ *       处理；L2 的收尾顺序是先源线程、再引擎，最后才析构替身与维护器。
  */
 [[noreturn]] void run_server_child(const bench::CommonOptions& options,
                                    const CliOptions& cli_options,
                                    const std::string& socket_path,
                                    int queue_capacity, double per_stream_rate)
 {
-    // 父进程异常退出时由内核补发 SIGTERM，子进程不会成为孤儿常驻
-    if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
-        std::fprintf(stderr, "设置 PR_SET_PDEATHSIG 失败：%s\n",
-                     std::strerror(errno));
-    }
+    bench::cli::ServerConfigSpec spec;
+    spec.socket_path            = socket_path;
+    spec.config_path            = cli_options.server_config;
+    spec.queue_capacity         = queue_capacity;
+    spec.max_concurrent_streams = kServerMaxStreams;
 
-    std::string temporary_config;
-    try {
-        CLIServerOptions server_options;
-        server_options.unix_socket_path = socket_path;
-        if (cli_options.server_config.empty()) {
-            temporary_config = "/tmp/hng-bench-cli-" +
-                               std::to_string(static_cast<long>(::getpid())) +
-                               ".conf";
-            std::ofstream file(temporary_config);
-            if (!file.is_open()) {
-                std::fprintf(stderr, "写临时配置 %s 失败：%s\n",
-                             temporary_config.c_str(), std::strerror(errno));
-                ::_exit(kExitRuntimeFailure);
-            }
-            file << "[cli_server]\n"
-                 << "max_concurrent_streams = " << kServerMaxStreams << "\n"
-                 << "queue_capacity = " << queue_capacity << "\n"
-                 << "drain_timeout = 5s\n"
-                 << "socket_path = " << socket_path << "\n";
-            file.close();
-            if (!file.good()) {
-                std::fprintf(stderr, "写临时配置 %s 失败\n",
-                             temporary_config.c_str());
-                ::_exit(kExitRuntimeFailure);
-            }
-            server_options.config_path = temporary_config;
-        }
-        else {
-            server_options.config_path = cli_options.server_config;
-        }
+    bench::cli::run_cli_server_child(
+        spec, [&](const PreparedCliServerConfig& prepared) {
+            if (options.fidelity == bench::Fidelity::L2) {
+                std::vector<hng::syscall_semantic_data> corpus;
+                if (options.trace_path.empty()) {
+                    corpus = make_synthetic_corpus();
+                }
+                else {
+                    TraceCorpus trace;
+                    std::string trace_error;
+                    if (!load_trace_corpus(options.trace_path, trace,
+                                           trace_error)) {
+                        std::fprintf(stderr, "%s\n", trace_error.c_str());
+                        ::_exit(kExitRuntimeFailure);
+                    }
+                    corpus = std::move(trace.events);
+                }
 
-        const PreparedCliServerConfig prepared =
-            prepare_cli_server_config(server_options);
-        if (!temporary_config.empty()) {
-            ::unlink(temporary_config.c_str());
-            temporary_config.clear();
-        }
+                EngineProducer producer(per_stream_rate, std::move(corpus),
+                                        cli_options.engine_queue);
+                CLIServerDeps deps;
+                deps.role    = &producer.role_lookup_service();
+                deps.context = &producer.context_lookup_service();
+                deps.process = &producer.process_lookup_service();
+                deps.subs    = &producer.subscriber_service();
+                deps.stats   = &producer.stats_service();
 
-        if (options.fidelity == bench::Fidelity::L2) {
-            std::vector<hng::syscall_semantic_data> corpus;
-            if (options.trace_path.empty()) {
-                corpus = make_synthetic_corpus();
-            }
-            else {
-                TraceCorpus trace;
-                std::string trace_error;
-                if (!load_trace_corpus(options.trace_path, trace, trace_error)) {
-                    std::fprintf(stderr, "%s\n", trace_error.c_str());
+                producer.start();
+                RunCliServer(deps, prepared);
+                producer.stop();  // 注销命令已在 RunCliServer 内落地
+                if (producer.engine_failed()) {
+                    std::fprintf(stderr, "引擎线程失败，未正常收尾\n");
                     ::_exit(kExitRuntimeFailure);
                 }
-                corpus = std::move(trace.events);
             }
+            else {
+                RoleStub role;
+                ContextStub context;
+                ProcessStub process;
+                StatsStub stats;
+                RateLimitedEngine engine(per_stream_rate);
 
-            EngineProducer producer(per_stream_rate, std::move(corpus),
-                                    cli_options.engine_queue);
-            CLIServerDeps deps;
-            deps.role    = &producer.role_lookup_service();
-            deps.context = &producer.context_lookup_service();
-            deps.process = &producer.process_lookup_service();
-            deps.subs    = &producer.subscriber_service();
-            deps.stats   = &producer.stats_service();
+                CLIServerDeps deps;
+                deps.role    = &role;
+                deps.context = &context;
+                deps.process = &process;
+                deps.subs    = &engine;
+                deps.stats   = &stats;
 
-            producer.start();
-            RunCliServer(deps, prepared);
-            producer.stop();  // 注销命令已在 RunCliServer 内落地
-            if (producer.engine_failed()) {
-                std::fprintf(stderr, "引擎线程失败，未正常收尾\n");
-                ::_exit(kExitRuntimeFailure);
+                RunCliServer(deps, prepared);
+                engine.stop();
             }
-        }
-        else {
-            RoleStub role;
-            ContextStub context;
-            ProcessStub process;
-            StatsStub stats;
-            RateLimitedEngine engine(per_stream_rate);
-
-            CLIServerDeps deps;
-            deps.role    = &role;
-            deps.context = &context;
-            deps.process = &process;
-            deps.subs    = &engine;
-            deps.stats   = &stats;
-
-            RunCliServer(deps, prepared);
-            engine.stop();
-        }
-    }
-    catch (const std::exception& failure) {
-        if (!temporary_config.empty()) {
-            ::unlink(temporary_config.c_str());
-        }
-        std::fprintf(stderr, "cli 服务端子进程失败：%s\n", failure.what());
-        ::_exit(kExitRuntimeFailure);
-    }
-    ::_exit(0);
+        });
 }
 
 // ============================================================
 // 父进程：客户端
 // ============================================================
-
-/// @brief 子进程退出码/信号的可读描述
-std::string describe_exit(int code)
-{
-    if (code >= 0) {
-        return "退出码 " + std::to_string(code);
-    }
-    return "信号 " + std::to_string(-code);
-}
-
-/// @brief gRPC 状态码的可读名字
-const char* status_code_name(grpc::StatusCode code)
-{
-    switch (code) {
-        case grpc::StatusCode::OK:
-            return "OK";
-        case grpc::StatusCode::CANCELLED:
-            return "CANCELLED";
-        case grpc::StatusCode::UNKNOWN:
-            return "UNKNOWN";
-        case grpc::StatusCode::INVALID_ARGUMENT:
-            return "INVALID_ARGUMENT";
-        case grpc::StatusCode::DEADLINE_EXCEEDED:
-            return "DEADLINE_EXCEEDED";
-        case grpc::StatusCode::NOT_FOUND:
-            return "NOT_FOUND";
-        case grpc::StatusCode::ALREADY_EXISTS:
-            return "ALREADY_EXISTS";
-        case grpc::StatusCode::PERMISSION_DENIED:
-            return "PERMISSION_DENIED";
-        case grpc::StatusCode::RESOURCE_EXHAUSTED:
-            return "RESOURCE_EXHAUSTED";
-        case grpc::StatusCode::FAILED_PRECONDITION:
-            return "FAILED_PRECONDITION";
-        case grpc::StatusCode::ABORTED:
-            return "ABORTED";
-        case grpc::StatusCode::OUT_OF_RANGE:
-            return "OUT_OF_RANGE";
-        case grpc::StatusCode::UNIMPLEMENTED:
-            return "UNIMPLEMENTED";
-        case grpc::StatusCode::INTERNAL:
-            return "INTERNAL";
-        case grpc::StatusCode::UNAVAILABLE:
-            return "UNAVAILABLE";
-        case grpc::StatusCode::DATA_LOSS:
-            return "DATA_LOSS";
-        case grpc::StatusCode::UNAUTHENTICATED:
-            return "UNAUTHENTICATED";
-        case grpc::StatusCode::DO_NOT_USE:
-            break;
-    }
-    return "UNKNOWN_CODE";
-}
-
-/**
- * @brief 子进程句柄：析构时保证 SIGTERM 并 waitpid
- * @note 拒绝拷贝；父进程任何退出路径都不会留下常驻子进程。
- */
-class ServerProcess final {
-   public:
-    explicit ServerProcess(pid_t pid) : pid_(pid) {}
-
-    ~ServerProcess()
-    {
-        std::string ignored;
-        (void)shutdown(ignored);
-    }
-
-    ServerProcess(const ServerProcess&)            = delete;
-    ServerProcess& operator=(const ServerProcess&) = delete;
-
-    pid_t pid() const { return pid_; }
-
-    /**
-     * @brief 子进程是否仍在运行
-     * @param[out] code 已退出时给出退出码（非负）或终止信号（为负）
-     * @return 仍在运行时为 true
-     */
-    bool alive(int& code)
-    {
-        if (reaped_) {
-            code = code_;
-            return false;
-        }
-        int status         = 0;
-        const pid_t reaped = ::waitpid(pid_, &status, WNOHANG);
-        if (reaped == pid_) {
-            reaped_ = true;
-            code_   = exit_code_of(status);
-            code    = code_;
-            return false;
-        }
-        if (reaped < 0 && errno != EINTR) {
-            reaped_ = true;
-            code_   = -1;
-            code    = -1;
-            return false;
-        }
-        code = -1;
-        return true;
-    }
-
-    /**
-     * @brief SIGTERM 并等待退出；超时 SIGKILL
-     * @param[out] error 失败原因；成功时清空
-     * @return 在期限内正常退出时为 true
-     */
-    bool shutdown(std::string& error)
-    {
-        error.clear();
-        if (reaped_) {
-            return true;
-        }
-        if (::kill(pid_, SIGTERM) != 0 && errno != ESRCH) {
-            error =
-                "向子进程发 SIGTERM 失败：" + std::string(std::strerror(errno));
-        }
-
-        const bench::Clock::time_point deadline =
-            bench::Clock::now() + kShutdownLimit;
-        int status = 0;
-        for (;;) {
-            const pid_t reaped = ::waitpid(pid_, &status, WNOHANG);
-            if (reaped == pid_) {
-                reaped_ = true;
-                code_   = exit_code_of(status);
-                return error.empty();
-            }
-            if (reaped < 0 && errno != EINTR) {
-                reaped_ = true;
-                code_   = -1;
-                if (error.empty()) {
-                    error =
-                        "等待子进程失败：" + std::string(std::strerror(errno));
-                }
-                return false;
-            }
-            if (bench::Clock::now() >= deadline) {
-                (void)::kill(pid_, SIGKILL);
-                (void)::waitpid(pid_, &status, 0);
-                reaped_ = true;
-                code_   = exit_code_of(status);
-                error   = "子进程未在 20s 内退出，已 SIGKILL";
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-
-    /// @brief 已退出时的退出码（非负）或终止信号（为负）；未退出时为 -1
-    int exit_code() const { return code_; }
-
-   private:
-    /// @brief waitpid 状态字 → 退出码 / 终止信号
-    static int exit_code_of(int status)
-    {
-        if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
-        }
-        if (WIFSIGNALED(status)) {
-            return -WTERMSIG(status);
-        }
-        return -1;
-    }
-
-    pid_t pid_;
-    bool reaped_ = false;
-    int code_    = -1;
-};
-
-/// @brief GetPipelineStats 的 CLI 段与引擎段快照
-struct CliStatsSnapshot {
-    bool valid                    = false;  ///< 成功取到 cli 段
-    std::uint64_t dropped         = 0;      ///< 所有流累计的队列拒收
-    std::uint64_t active          = 0;      ///< 当前活跃流数
-    std::uint64_t peak            = 0;      ///< 历史活跃流峰值
-
-    bool engine_valid             = false;  ///< 成功取到 engine 段
-    std::uint64_t unsettled       = 0;      ///< 累计未落定事件数
-    std::uint64_t peak_streams    = 0;      ///< 峰值 CLI 订阅流数
-    std::uint64_t queue_rejected  = 0;      ///< 累计命令入队被拒
-    std::uint64_t idle_waits      = 0;      ///< 累计空闲等待
-    std::uint64_t syscall_dropped = 0;      ///< 累计语义通道丢弃
-};
-
-/**
- * @brief 取一次 GetPipelineStats 的 cli 段与 engine 段
- * @param[in,out] stub 客户端 stub
- * @param[out] snapshot 快照
- * @param[out] error 失败原因
- * @return 成功时为 true
- */
-bool fetch_cli_stats(hng::clisv::RuntimeService::Stub& stub,
-                     CliStatsSnapshot& snapshot, std::string& error)
-{
-    snapshot = CliStatsSnapshot{};
-    grpc::ClientContext context;
-    context.set_deadline(std::chrono::system_clock::now() +
-                         std::chrono::seconds(10));
-    hng::clisv::GetPipelineStatsRequest request;
-    hng::clisv::GetPipelineStatsResponse response;
-    const grpc::Status status =
-        stub.GetPipelineStats(&context, request, &response);
-    if (!status.ok()) {
-        error = status.error_message();
-        return false;
-    }
-    if (!response.has_stats()) {
-        error = "响应缺少 stats";
-        return false;
-    }
-    if (!response.stats().has_cli()) {
-        error = "响应缺少 cli 段";
-        return false;
-    }
-    snapshot.dropped = response.stats().cli().dropped();
-    snapshot.active  = response.stats().cli().active();
-    snapshot.peak    = response.stats().cli().peak();
-    snapshot.valid   = true;
-    if (response.stats().has_engine()) {
-        const hng::clisv::engine_stats& engine = response.stats().engine();
-        snapshot.unsettled                     = engine.unsettled_events();
-        snapshot.peak_streams                  = engine.peak_cli_streams();
-        snapshot.queue_rejected                = engine.queue_rejected();
-        snapshot.idle_waits                    = engine.idle_waits();
-        snapshot.syscall_dropped               = engine.syscall_dropped();
-        snapshot.engine_valid                  = true;
-    }
-    error.clear();
-    return true;
-}
-
-/**
- * @brief 轮询 GetPipelineStats 直到服务端应答
- * @param[in,out] stub 客户端 stub
- * @param[in,out] server 子进程句柄，用于在服务端早退时立即失败
- * @param[in] socket_path 便于报错的 socket 路径
- * @param[out] error 失败原因
- * @return 在 20s 内应答时为 true
- */
-bool wait_for_server(hng::clisv::RuntimeService::Stub& stub,
-                     ServerProcess& server, const std::string& socket_path,
-                     std::string& error)
-{
-    const bench::Clock::time_point deadline = bench::Clock::now() + kReadyLimit;
-    std::string last_error                  = "尚未应答";
-    while (bench::Clock::now() < deadline) {
-        int code = 0;
-        if (!server.alive(code)) {
-            error = "服务端子进程在就绪前退出（" + describe_exit(code) + "）";
-            return false;
-        }
-        grpc::ClientContext context;
-        context.set_deadline(std::chrono::system_clock::now() +
-                             std::chrono::seconds(1));
-        hng::clisv::GetPipelineStatsRequest request;
-        hng::clisv::GetPipelineStatsResponse response;
-        const grpc::Status status =
-            stub.GetPipelineStats(&context, request, &response);
-        if (status.ok() && response.has_stats()) {
-            error.clear();
-            return true;
-        }
-        last_error = status.ok() ? "响应缺少 stats" : status.error_message();
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    error = "服务端未在 20s 内就绪（socket=" + socket_path + "）：" + last_error;
-    return false;
-}
 
 /// @brief 读取指定进程的常驻内存，单位 KiB；读取失败返回 0
 std::uint64_t read_process_rss_kb(pid_t pid)
@@ -1336,96 +1018,6 @@ std::uint64_t read_process_rss_kb(pid_t pid)
     return 0;
 }
 
-/// @brief 一条客户端订阅流的累计计数
-struct StreamCounts {
-    std::uint64_t records        = 0;  ///< 事件记录数
-    std::uint64_t batch_messages = 0;  ///< batch 消息数
-    std::uint64_t stats_messages = 0;  ///< stats 消息数
-    std::uint64_t bytes          = 0;  ///< 响应报文的 ByteSizeLong 之和
-    std::uint64_t drops          = 0;  ///< 最近一条 streamstats 的累计丢弃
-};
-
-/// @brief 一条客户端订阅流的运行状态
-struct StreamState {
-    std::unique_ptr<grpc::ClientContext> context;  ///< 本流独立上下文
-    std::thread thread;                            ///< 收包线程
-    std::atomic<pid_t> tid{0};                     ///< 收包线程的 tid
-    std::atomic<bool> finished{false};             ///< 线程已退出
-    std::atomic<std::uint64_t> records{0};
-    std::atomic<std::uint64_t> batch_messages{0};
-    std::atomic<std::uint64_t> stats_messages{0};
-    std::atomic<std::uint64_t> bytes{0};
-    std::atomic<std::uint64_t> drops{0};
-    grpc::StatusCode code = grpc::StatusCode::OK;  ///< Finish 的状态码
-    std::string message;                           ///< Finish 的错误消息
-};
-
-/// @brief 读一条客户端流的计数快照
-StreamCounts read_counts(const StreamState& state)
-{
-    StreamCounts counts;
-    counts.records        = state.records.load(std::memory_order_relaxed);
-    counts.batch_messages = state.batch_messages.load(std::memory_order_relaxed);
-    counts.stats_messages = state.stats_messages.load(std::memory_order_relaxed);
-    counts.bytes          = state.bytes.load(std::memory_order_relaxed);
-    counts.drops          = state.drops.load(std::memory_order_relaxed);
-    return counts;
-}
-
-/**
- * @brief 一条客户端流的收包循环
- * @param[in,out] stub 客户端 stub
- * @param[in,out] state 本流状态；counter 字段只由本线程写
- * @param[in] batch_size 请求的批大小
- * @param[in] role_ids 订阅的角色集合；空表示不下发角色过滤
- * @note 读到流结束（含被 TryCancel 取消）为止；Finish 的状态留给调用方判断。
- */
-void run_stream(hng::clisv::RuntimeService::Stub& stub, StreamState& state,
-                std::uint32_t batch_size,
-                const std::vector<std::uint32_t>& role_ids)
-{
-    state.tid.store(::gettid(), std::memory_order_release);
-    hng::clisv::ReceiveEventRequest request;
-    request.set_batch_size(batch_size);
-    if (!role_ids.empty()) {
-        hng::clisv::runtimeinfo* info = request.mutable_info();
-        for (const std::uint32_t role_id : role_ids) {
-            info->add_roleid(role_id);
-        }
-    }
-    std::unique_ptr<grpc::ClientReader<hng::clisv::ReceiveEventResponse>> reader =
-        stub.ReceiveEvent(state.context.get(), request);
-
-    hng::clisv::ReceiveEventResponse message;
-    while (reader->Read(&message)) {
-        if (message.has_batch()) {
-            const std::uint64_t index =
-                state.batch_messages.fetch_add(1, std::memory_order_relaxed);
-            state.records.fetch_add(
-                static_cast<std::uint64_t>(message.batch().records_size()),
-                std::memory_order_relaxed);
-            // ByteSizeLong 会遍历整条报文；按 1/64 采样再折算，避免压测器的
-            // 字节统计本身把客户端 CPU 抬高到掩盖真实瓶颈
-            if (index % kBytesSampleStride == 0) {
-                state.bytes.fetch_add(
-                    static_cast<std::uint64_t>(message.ByteSizeLong()) *
-                        kBytesSampleStride,
-                    std::memory_order_relaxed);
-            }
-        }
-        else if (message.has_stats()) {
-            state.stats_messages.fetch_add(1, std::memory_order_relaxed);
-            state.drops.store(message.stats().dropped_events(),
-                              std::memory_order_relaxed);
-        }
-        message.Clear();
-    }
-    const grpc::Status status = reader->Finish();
-    state.code                = status.error_code();
-    state.message             = status.error_message();
-    state.finished.store(true, std::memory_order_release);
-}
-
 /// @brief 服务端 CPU 快照
 struct ServerCpuSnapshot {
     double process = 0.0;  ///< 进程总 CPU（含 gRPC 与其他线程）
@@ -1433,22 +1025,6 @@ struct ServerCpuSnapshot {
     double engine  = 0.0;  ///< comm 前缀 hng-bench-engine 的线程 CPU 之和
     double source  = 0.0;  ///< comm 前缀 hng-bench-source 的线程 CPU 之和
 };
-
-/**
- * @brief 读一个 comm 前缀的线程 CPU；没有命中时按 0 计
- * @param[in] pid 进程号
- * @param[in] comm_prefix 已按 PR_SET_NAME 的 15 字节截断后的前缀
- * @param[out] seconds 命中线程的 CPU 时间之和
- * @note L1 没有引擎与源线程，缺失是预期状态，不报错。
- */
-void read_optional_tasks_cpu(pid_t pid, const char* comm_prefix, double& seconds)
-{
-    std::string ignored;
-    seconds = 0.0;
-    if (!bench::read_tasks_cpu(pid, comm_prefix, seconds, ignored)) {
-        seconds = 0.0;
-    }
-}
 
 /// @brief CLI 段实现
 int run_cli(const bench::CommonOptions& options,
@@ -1484,8 +1060,7 @@ int run_cli(const bench::CommonOptions& options,
 
     const std::string socket_path =
         cli_options.socket_path.empty()
-            ? "/tmp/hng-bench-cli-" +
-                  std::to_string(static_cast<long>(::getpid())) + ".sock"
+            ? bench::cli::temporary_socket_path("hng-bench-cli")
             : cli_options.socket_path;
     const bool owns_socket = cli_options.socket_path.empty();
     if (owns_socket) {
@@ -1501,11 +1076,8 @@ int run_cli(const bench::CommonOptions& options,
         l2 ? filter_role_ids(cli_options.filter) : std::vector<std::uint32_t>{};
 
     // 子进程必须在任何线程创建之前 fork；引擎、替身与 userver 都会建线程
-    std::fflush(stdout);
-    std::fflush(stderr);
-    const pid_t child = ::fork();
+    const pid_t child = bench::cli::fork_server_process();
     if (child < 0) {
-        std::fprintf(stderr, "fork 失败：%s\n", std::strerror(errno));
         return kExitRuntimeFailure;
     }
     if (child == 0) {
@@ -1514,24 +1086,12 @@ int run_cli(const bench::CommonOptions& options,
     }
 
     // 声明顺序：server 先析构（SIGTERM + waitpid），再清理由本进程创建的 socket
-    ServerProcess server(child);
-    struct SocketFile {
-        std::string path;
-        bool owned;
-        ~SocketFile()
-        {
-            if (owned) {
-                (void)::unlink(path.c_str());
-            }
-        }
-    } socket_file{socket_path, owns_socket};
+    bench::cli::ServerProcess server(child);
+    bench::cli::SocketFile socket_file(socket_path, owns_socket);
+    bench::cli::Client client              = bench::cli::make_client(socket_path);
+    hng::clisv::RuntimeService::Stub& stub = *client.stub;
 
-    const std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel(
-        "unix:" + socket_path, grpc::InsecureChannelCredentials());
-    const std::unique_ptr<hng::clisv::RuntimeService::Stub> stub =
-        hng::clisv::RuntimeService::NewStub(channel);
-
-    if (!wait_for_server(*stub, server, socket_path, error)) {
+    if (!bench::cli::wait_for_server(stub, server, socket_path, error)) {
         std::fprintf(stderr, "运行期失败：%s\n", error.c_str());
         return kExitRuntimeFailure;
     }
@@ -1544,33 +1104,11 @@ int run_cli(const bench::CommonOptions& options,
         return kExitRuntimeFailure;
     }
 
-    std::vector<std::unique_ptr<StreamState>> streams;
-    streams.reserve(static_cast<std::size_t>(cli_options.streams));
-    for (int index = 0; index < cli_options.streams; ++index) {
-        std::unique_ptr<StreamState> state = std::make_unique<StreamState>();
-        state->context = std::make_unique<grpc::ClientContext>();
-        streams.push_back(std::move(state));
-    }
+    bench::cli::StreamList streams =
+        bench::cli::make_streams(cli_options.streams);
 
-    bool streams_stopped    = false;
-    const auto stop_streams = [&streams, &streams_stopped] {
-        if (streams_stopped) {
-            return;
-        }
-        streams_stopped = true;
-        for (const std::unique_ptr<StreamState>& state : streams) {
-            if (state->context) {
-                state->context->TryCancel();
-            }
-        }
-        for (const std::unique_ptr<StreamState>& state : streams) {
-            if (state->thread.joinable()) {
-                state->thread.join();
-            }
-        }
-    };
-    const auto fail = [&stop_streams](const std::string& message) {
-        stop_streams();
+    const auto fail = [&streams](const std::string& message) {
+        bench::cli::stop_streams(streams);
         std::fprintf(stderr, "运行期失败：%s\n", message.c_str());
         return kExitRuntimeFailure;
     };
@@ -1581,51 +1119,11 @@ int run_cli(const bench::CommonOptions& options,
     const bench::Clock::time_point measure_end =
         measure_start + std::chrono::seconds(options.seconds);
 
-    hng::clisv::RuntimeService::Stub* const stub_ptr = stub.get();
-    try {
-        for (const std::unique_ptr<StreamState>& state : streams) {
-            state->thread = std::thread(
-                [stub_ptr, state_ptr = state.get(), batch, &role_ids] {
-                    run_stream(*stub_ptr, *state_ptr, batch, role_ids);
-                });
-        }
-    }
-    catch (const std::exception& failure) {
-        stop_streams();
-        throw std::runtime_error(std::string("创建客户端流线程失败：") +
-                                 failure.what());
-    }
+    bench::cli::start_streams(stub, streams, batch, role_ids);
 
-    const bench::Clock::time_point tid_deadline =
-        bench::Clock::now() + kTidWaitLimit;
-    for (const std::unique_ptr<StreamState>& state : streams) {
-        while (state->tid.load(std::memory_order_acquire) == 0) {
-            if (bench::Clock::now() >= tid_deadline) {
-                return fail("等待客户端流线程发布 tid 超时");
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+    if (!bench::cli::wait_stream_tids(streams)) {
+        return fail("等待客户端流线程发布 tid 超时");
     }
-
-    const auto sample_client_cpu = [&streams](double& total,
-                                              std::string& sample_error) -> bool {
-        total = 0.0;
-        for (std::size_t index = 0; index < streams.size(); ++index) {
-            if (streams[index]->finished.load(std::memory_order_acquire)) {
-                continue;  // 线程已退出：其 CPU 已计入更早的采样点
-            }
-            double seconds          = 0.0;
-            const std::uint64_t tid = static_cast<std::uint64_t>(
-                streams[index]->tid.load(std::memory_order_acquire));
-            if (!bench::read_thread_cpu(tid, seconds, sample_error)) {
-                sample_error = "读取客户端流 " + std::to_string(index) +
-                               " 线程 CPU 失败：" + sample_error;
-                return false;
-            }
-            total += seconds;
-        }
-        return true;
-    };
 
     const auto sample_server_cpu = [&server](ServerCpuSnapshot& snapshot,
                                              std::string& sample_error) -> bool {
@@ -1639,45 +1137,47 @@ int run_cli(const bench::CommonOptions& options,
             sample_error = "读取服务端 cli-tp CPU 失败：" + sample_error;
             return false;
         }
-        read_optional_tasks_cpu(server.pid(), kBenchEngineComm, snapshot.engine);
-        read_optional_tasks_cpu(server.pid(), kBenchSourceComm, snapshot.source);
+        snapshot.engine =
+            bench::cli::thread_cpu_by_comm(server.pid(), kBenchEngineComm);
+        snapshot.source =
+            bench::cli::thread_cpu_by_comm(server.pid(), kBenchSourceComm);
         return true;
     };
 
     std::this_thread::sleep_until(measure_start);
     double client_cpu_start = 0.0;
     ServerCpuSnapshot server_start;
-    std::vector<StreamCounts> counts_start(streams.size());
-    if (!sample_client_cpu(client_cpu_start, error) ||
+    std::vector<bench::cli::StreamCounts> counts_start(streams.size());
+    if (!bench::cli::sample_client_cpu(streams, client_cpu_start, error) ||
         !sample_server_cpu(server_start, error)) {
         return fail(error);
     }
     for (std::size_t index = 0; index < streams.size(); ++index) {
-        counts_start[index] = read_counts(*streams[index]);
+        counts_start[index] = bench::cli::read_counts(*streams[index]);
     }
 
-    CliStatsSnapshot stats_pre;
-    if (!fetch_cli_stats(*stub, stats_pre, error)) {
+    bench::cli::PipelineStatsSnapshot stats_pre;
+    if (!bench::cli::fetch_pipeline_stats(stub, stats_pre, error)) {
         return fail("窗口起点 GetPipelineStats 失败：" + error);
     }
 
     std::this_thread::sleep_until(measure_end);
     double client_cpu_end = 0.0;
     ServerCpuSnapshot server_end;
-    std::vector<StreamCounts> counts_end(streams.size());
-    if (!sample_client_cpu(client_cpu_end, error) ||
+    std::vector<bench::cli::StreamCounts> counts_end(streams.size());
+    if (!bench::cli::sample_client_cpu(streams, client_cpu_end, error) ||
         !sample_server_cpu(server_end, error)) {
         return fail(error);
     }
     for (std::size_t index = 0; index < streams.size(); ++index) {
-        counts_end[index] = read_counts(*streams[index]);
+        counts_end[index] = bench::cli::read_counts(*streams[index]);
     }
     const std::uint64_t child_rss_kb = read_process_rss_kb(server.pid());
 
-    CliStatsSnapshot stats_post;
+    bench::cli::PipelineStatsSnapshot stats_post;
     std::string stats_post_error;
     const bool stats_post_ok =
-        fetch_cli_stats(*stub, stats_post, stats_post_error);
+        bench::cli::fetch_pipeline_stats(stub, stats_post, stats_post_error);
 
     // drops 以服务端流水线计数器为准：streamstats 在持续过载时不上报（服务端
     // 只在队列取空的分支检查并发送丢弃计数），不能作为容量判据
@@ -1686,7 +1186,7 @@ int run_cli(const bench::CommonOptions& options,
         stats_drops = stats_post.dropped - stats_pre.dropped;
     }
 
-    stop_streams();
+    bench::cli::stop_streams(streams);
 
     // 逐流状态：正常结束只有取消（CANCELLED）与 OK；其余按失败上报
     std::vector<std::string> stream_failures;
@@ -1696,7 +1196,7 @@ int run_cli(const bench::CommonOptions& options,
             continue;
         }
         stream_failures.push_back("流 " + std::to_string(index) + "：" +
-                                  status_code_name(code) + "(" +
+                                  bench::cli::status_code_name(code) + "(" +
                                   std::to_string(static_cast<int>(code)) + ") " +
                                   streams[index]->message);
     }
@@ -1936,7 +1436,8 @@ int run_cli(const bench::CommonOptions& options,
         std::printf("提示：%s\n", shutdown_error.c_str());
     }
     if (child_code != 0) {
-        std::printf("警告：服务端子进程%s\n", describe_exit(child_code).c_str());
+        std::printf("警告：服务端子进程%s\n",
+                    bench::cli::describe_exit(child_code).c_str());
     }
     if (!stream_failures.empty()) {
         std::fprintf(stderr, "运行期失败：%zu 条流未正常结束\n",
