@@ -30,6 +30,7 @@ const std::vector<const bench::StageSpec*>& available_stages()
     static const std::vector<const bench::StageSpec*> stages = {
         &bench::semantic_stage(),
         &bench::engine_stage(),
+        &bench::chain_stage(),
 #ifdef HNG_BENCH_CLI_STAGE
         &bench::cli_stage(),
 #endif
@@ -58,7 +59,7 @@ void print_usage(std::FILE* out)
                  "  --stage NAME       压测段（必填）\n"
                  "  --fidelity l1|l2   控制面保真度，默认 l1；engine 与 cli "
                  "支持 l2\n"
-                 "  --trace PATH       语料文件路径（semantic/engine 必填）\n"
+                 "  --trace PATH       语料文件（semantic/engine/chain 必填）\n"
                  "  --seconds N        统计窗口秒数，>0（默认 10）\n"
                  "  --warmup N         预热秒数，>=0（默认 1）\n"
                  "  --rate R           目标速率 Hz，浮点，0 表示饱和（默认 0）\n"

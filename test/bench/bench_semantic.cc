@@ -55,7 +55,52 @@ constexpr std::chrono::milliseconds kTidWaitLimit(1000);
 
 /// @brief 语义段私有选项的多行用法
 constexpr const char* kExtraHelp =
+    "  --events MODE     回放类别：all|syscall|lifecycle（默认 all）；PROCESS 与 "
+    "EXEC 归为 lifecycle，在转换前按原始记录过滤\n"
     "  --no-semantic     只跑生产者与原始通道取空线程，测生产者天花板\n";
+
+/// @brief 回放的事件类别
+enum class EventClass : std::uint8_t { ALL, SYSCALL, LIFECYCLE };
+
+/// @brief 类别在命令行与结果配置里的名字
+const char* event_class_name(EventClass value)
+{
+    switch (value) {
+        case EventClass::SYSCALL:
+            return "syscall";
+        case EventClass::LIFECYCLE:
+            return "lifecycle";
+        case EventClass::ALL:
+            break;
+    }
+    return "all";
+}
+
+/// @brief 语义子类型是否属于生命周期类（进程与 exec）
+bool is_lifecycle_class(enum syscall_event_type subtype)
+{
+    return subtype == PROCESS_EVENT || subtype == EXEC_EVENT;
+}
+
+/// @brief 该子类型是否落在所选类别里
+bool class_selected(EventClass mode, enum syscall_event_type subtype)
+{
+    switch (mode) {
+        case EventClass::SYSCALL:
+            return !is_lifecycle_class(subtype);
+        case EventClass::LIFECYCLE:
+            return is_lifecycle_class(subtype);
+        case EventClass::ALL:
+            break;
+    }
+    return true;
+}
+
+/// @brief 语义段私有选项
+struct SemanticStageOptions {
+    EventClass events = EventClass::ALL;  ///< 回放类别
+    bool no_semantic  = false;            ///< 跳过语义组件
+};
 
 /// @brief 读入内存的语料
 struct TraceData {
@@ -64,15 +109,17 @@ struct TraceData {
 };
 
 /**
- * @brief 读入并校验语料
+ * @brief 读入并校验语料，在转换前按类别过滤记录
  * @param[in] path 语料路径
+ * @param[in] events 参与回放的类别；被排除的记录不进入生产者
  * @param[out] data 读入结果
  * @param[out] error 失败原因
  * @return 成功时为 true
- * @note 记录尺寸须不小于 syscall_event_head 且不大于 syscall_event；不合法的
- *       记录跳过并计数，全部不合法等同空语料。
+ * @note 记录尺寸须不小于 syscall_event_head 且不大于 syscall_event；尺寸非法
+ *       的记录跳过并计数。全部尺寸非法或所选类别为空时返回 false。
  */
-bool load_trace(const std::string& path, TraceData& data, std::string& error)
+bool load_trace(const std::string& path, EventClass events, TraceData& data,
+                std::string& error)
 {
     bench::TraceReader reader;
     std::string reader_error;
@@ -88,6 +135,11 @@ bool load_trace(const std::string& path, TraceData& data, std::string& error)
             ++data.skipped;
             continue;
         }
+        struct syscall_event_head head;
+        std::memcpy(&head, record.data(), sizeof(head));
+        if (!class_selected(events, head.subtype)) {
+            continue;
+        }
         data.records.push_back(record);
     }
     if (!reader_error.empty()) {
@@ -95,8 +147,9 @@ bool load_trace(const std::string& path, TraceData& data, std::string& error)
         return false;
     }
     if (data.records.empty()) {
-        error = "语料 " + path + " 没有可用记录（跳过 " +
-                std::to_string(data.skipped) + " 条）";
+        error = "语料 " + path + " 在 --events " + event_class_name(events) +
+                " 下没有可回放的事件（尺寸非法 " + std::to_string(data.skipped) +
+                " 条）";
         return false;
     }
     return true;
@@ -215,23 +268,97 @@ struct CpuSnapshot {
 
 /// @brief 窗口计数快照
 struct CounterSnapshot {
-    std::uint64_t events     = 0;  ///< 语义 processed 或 push 成功
-    std::uint64_t raw_drops  = 0;  ///< 原始通道 dropped + rejected
-    std::uint64_t out_drops  = 0;  ///< 语义通道 dropped + rejected
-    std::uint64_t push_calls = 0;  ///< 生产者 push 尝试次数
-    std::uint64_t push_ok    = 0;  ///< 生产者 push 成功次数
+    std::uint64_t events            = 0;  ///< 语义 processed 或 push 成功
+    std::uint64_t raw_drops         = 0;  ///< 原始通道 dropped + rejected
+    std::uint64_t out_drops         = 0;  ///< 语义通道 dropped + rejected
+    std::uint64_t push_calls        = 0;  ///< 生产者 push 尝试次数
+    std::uint64_t push_ok           = 0;  ///< 生产者 push 成功次数
+    std::uint64_t push_ok_syscall   = 0;  ///< 成功入队的 syscall 类记录数
+    std::uint64_t push_ok_lifecycle = 0;  ///< 成功入队的 lifecycle 类记录数
 };
 
-/// @brief 解析语义段私有选项
-bool parse_rest(const std::vector<std::string>& rest, bool& no_semantic,
-                std::string& error)
+/// @brief 拆出 --name 或 --name=value；不是长选项时返回 false
+bool split_option(const std::string& raw, std::string& name, std::string& value,
+                  bool& has_value)
 {
-    for (const std::string& argument : rest) {
-        if (argument == "--no-semantic") {
-            no_semantic = true;
+    if (raw.size() < 2 || raw[0] != '-' || raw[1] != '-') {
+        return false;
+    }
+    const std::size_t equals = raw.find('=');
+    if (equals == std::string::npos) {
+        name = raw;
+        value.clear();
+        has_value = false;
+        return true;
+    }
+    name.assign(raw, 0, equals);
+    value.assign(raw, equals + 1, std::string::npos);
+    has_value = true;
+    return true;
+}
+
+/**
+ * @brief 解析语义段私有选项
+ * @param[in] rest 入口未识别的参数，保持原序
+ * @param[out] options 解析结果
+ * @param[out] error 失败原因
+ * @return 解析成功时为 true
+ * @note 支持 --name value 与 --name=value 两种写法。
+ */
+bool parse_rest(const std::vector<std::string>& rest,
+                SemanticStageOptions& options, std::string& error)
+{
+    for (std::size_t index = 0; index < rest.size(); ++index) {
+        std::string name;
+        std::string inline_value;
+        bool has_inline = false;
+        if (!split_option(rest[index], name, inline_value, has_inline)) {
+            error = "未知选项 " + rest[index];
+            return false;
+        }
+
+        const auto take_value = [&](std::string& out) -> bool {
+            if (has_inline) {
+                out = inline_value;
+                return true;
+            }
+            if (index + 1 >= rest.size()) {
+                return false;
+            }
+            out = rest[++index];
+            return true;
+        };
+
+        if (name == "--no-semantic") {
+            if (has_inline) {
+                error = "--no-semantic 不接受取值";
+                return false;
+            }
+            options.no_semantic = true;
             continue;
         }
-        error = "未知选项 " + argument;
+        if (name == "--events") {
+            std::string text;
+            if (!take_value(text)) {
+                error = "--events 缺少取值";
+                return false;
+            }
+            if (text == "all") {
+                options.events = EventClass::ALL;
+            }
+            else if (text == "syscall") {
+                options.events = EventClass::SYSCALL;
+            }
+            else if (text == "lifecycle") {
+                options.events = EventClass::LIFECYCLE;
+            }
+            else {
+                error = "--events 需为 all|syscall|lifecycle";
+                return false;
+            }
+            continue;
+        }
+        error = "未知选项 " + name;
         return false;
     }
     return true;
@@ -241,16 +368,17 @@ bool parse_rest(const std::vector<std::string>& rest, bool& no_semantic,
 int run_semantic(const bench::CommonOptions& options,
                  const std::vector<std::string>& rest)
 {
-    bool no_semantic = false;
+    SemanticStageOptions stage_options;
     std::string error;
-    if (!parse_rest(rest, no_semantic, error)) {
+    if (!parse_rest(rest, stage_options, error)) {
         std::fprintf(stderr, "参数错误：%s\n", error.c_str());
         std::fprintf(stderr, "semantic 段选项：\n%s", kExtraHelp);
         return kExitUsage;
     }
+    const bool no_semantic = stage_options.no_semantic;
 
     TraceData trace;
-    if (!load_trace(options.trace_path, trace, error)) {
+    if (!load_trace(options.trace_path, stage_options.events, trace, error)) {
         std::fprintf(stderr, "%s\n", error.c_str());
         return kExitRuntimeFailure;
     }
@@ -278,6 +406,9 @@ int run_semantic(const bench::CommonOptions& options,
     std::atomic<std::uint64_t> push_calls{0};
     std::atomic<std::uint64_t> push_ok{0};
     std::atomic<std::uint64_t> push_failed{0};
+    // 成功入队记录的类别计数，用于人类输出的 events by class
+    std::atomic<std::uint64_t> push_ok_syscall{0};
+    std::atomic<std::uint64_t> push_ok_lifecycle{0};
     std::atomic<pid_t> producer_tid{0};
     std::atomic<pid_t> semantic_tid{0};
     std::atomic<pid_t> drain_tid{0};
@@ -314,9 +445,16 @@ int run_semantic(const bench::CommonOptions& options,
 
                 struct syscall_event event;
                 rebuild_event(record, event);
+                const bool lifecycle = is_lifecycle_class(event.hdr.subtype);
                 push_calls.fetch_add(1, std::memory_order_relaxed);
                 if (raw.writer().push(std::move(event))) {
                     push_ok.fetch_add(1, std::memory_order_relaxed);
+                    if (lifecycle) {
+                        push_ok_lifecycle.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    else {
+                        push_ok_syscall.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
                 else {
                     push_failed.fetch_add(1, std::memory_order_relaxed);
@@ -432,6 +570,10 @@ int run_semantic(const bench::CommonOptions& options,
             no_semantic ? 0 : out.reader().dropped() + out.reader().rejected();
         snapshot.push_calls = push_calls.load(std::memory_order_relaxed);
         snapshot.push_ok    = push_ok.load(std::memory_order_relaxed);
+        snapshot.push_ok_syscall =
+            push_ok_syscall.load(std::memory_order_relaxed);
+        snapshot.push_ok_lifecycle =
+            push_ok_lifecycle.load(std::memory_order_relaxed);
         snapshot.events =
             no_semantic ? snapshot.push_ok : semantic->stats().processed_syscall;
     };
@@ -503,6 +645,10 @@ int run_semantic(const bench::CommonOptions& options,
         delta(counter_end.push_ok, counter_start.push_ok);
     const std::uint64_t pushes_failed =
         calls >= pushes_ok ? calls - pushes_ok : 0;
+    const std::uint64_t syscall_events =
+        delta(counter_end.push_ok_syscall, counter_start.push_ok_syscall);
+    const std::uint64_t lifecycle_events =
+        delta(counter_end.push_ok_lifecycle, counter_start.push_ok_lifecycle);
     const double producer_cpu   = cpu_delta(cpu_end.producer, cpu_start.producer);
     const double semantic_cpu   = cpu_delta(cpu_end.semantic, cpu_start.semantic);
     const double drain_cpu      = cpu_delta(cpu_end.drain, cpu_start.drain);
@@ -512,6 +658,7 @@ int run_semantic(const bench::CommonOptions& options,
     result.stage  = "semantic";
     result.config = std::string("fidelity=") +
                     bench::fidelity_name(options.fidelity) +
+                    ",events=" + event_class_name(stage_options.events) +
                     ",queue=" + std::to_string(options.queue) +
                     (no_semantic ? ",no-semantic" : "");
     result.rate    = options.rate;
@@ -534,6 +681,9 @@ int run_semantic(const bench::CommonOptions& options,
     result.out_peak_queue = out_occupancy ? out_occupancy->peak() : 0;
 
     bench::print_human(result, options);
+    std::printf("events by class: syscall=%" PRIu64 " lifecycle=%" PRIu64
+                "（按成功入队记录统计）\n",
+                syscall_events, lifecycle_events);
     if (out_drops > 0) {
         std::fprintf(stderr,
                      "提示：out 通道丢弃 %" PRIu64

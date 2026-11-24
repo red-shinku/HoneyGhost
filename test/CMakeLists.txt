@@ -369,7 +369,9 @@ endif()
 add_executable(bench_event_pipeline
     bench/bench_event_pipeline.cc
     bench/bench_semantic.cc
-    bench/bench_engine.cc)
+    bench/bench_engine.cc
+    bench/bench_chain.cc
+    bench/chain_core.cc)
 target_include_directories(bench_event_pipeline PRIVATE ${HNG_SOURCE_DIR})
 # hng_control_plane 提供 L2 的 Process/Context 真实组件与工厂
 # （PUBLIC 带出 hng_process_manager 与 hng_context_manager）
