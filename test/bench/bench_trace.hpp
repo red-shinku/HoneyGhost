@@ -119,7 +119,7 @@ inline bool TraceWriter::open(const std::string& path, std::string& error)
 
     stream_.open(path, std::ios::binary | std::ios::trunc);
     if (!stream_.is_open()) {
-        error_ = "无法打开语料文件";
+        error_ = "cannot open trace file";
         error  = error_;
         return false;
     }
@@ -131,7 +131,7 @@ inline bool TraceWriter::open(const std::string& path, std::string& error)
     stream_.write(reinterpret_cast<const char*>(header),
                   static_cast<std::streamsize>(kTraceHeaderSize));
     if (!stream_.good()) {
-        error_ = "写入语料文件头失败";
+        error_ = "failed to write trace file header";
         error  = error_;
         stream_.close();
         return false;
@@ -143,11 +143,11 @@ inline bool TraceWriter::open(const std::string& path, std::string& error)
 inline bool TraceWriter::write(const void* data, std::size_t size)
 {
     if (size < 1 || size > kTraceMaxPayloadSize) {
-        error_ = "记录长度必须在 [1, 65535] 字节";
+        error_ = "record length must be in [1, 65535] bytes";
         return false;
     }
     if (!stream_.is_open()) {
-        error_ = "语料文件未打开";
+        error_ = "trace file is not open";
         return false;
     }
     if (!error_.empty()) {
@@ -159,7 +159,7 @@ inline bool TraceWriter::write(const void* data, std::size_t size)
     stream_.write(static_cast<const char*>(data),
                   static_cast<std::streamsize>(size));
     if (!stream_.good()) {
-        error_ = "写入语料记录失败";
+        error_ = "failed to write trace record";
         return false;
     }
     ++records_;
@@ -174,7 +174,7 @@ inline void TraceWriter::close()
     }
     stream_.flush();
     if (!stream_.good() && error_.empty()) {
-        error_ = "冲刷语料文件失败";
+        error_ = "failed to flush trace file";
     }
     stream_.close();
 }
@@ -196,7 +196,7 @@ inline bool TraceReader::open(const std::string& path, std::string& error)
 
     stream_.open(path, std::ios::binary);
     if (!stream_.is_open()) {
-        error = "无法打开语料文件";
+        error = "cannot open trace file";
         return false;
     }
 
@@ -204,19 +204,19 @@ inline bool TraceReader::open(const std::string& path, std::string& error)
     stream_.read(reinterpret_cast<char*>(header),
                  static_cast<std::streamsize>(kTraceHeaderSize));
     if (stream_.gcount() != static_cast<std::streamsize>(kTraceHeaderSize)) {
-        error = "语料文件头不完整";
+        error = "trace file header is incomplete";
         stream_.close();
         return false;
     }
     if (std::memcmp(header, kTraceMagic, sizeof(kTraceMagic)) != 0) {
-        error = "语料文件头 magic 不匹配";
+        error = "trace file header magic does not match";
         stream_.close();
         return false;
     }
     std::uint32_t version = 0;
     std::memcpy(&version, header + sizeof(kTraceMagic), sizeof(version));
     if (version != kTraceVersion) {
-        error = "不支持的语料版本 " + std::to_string(version);
+        error = "unsupported trace version " + std::to_string(version);
         stream_.close();
         return false;
     }
@@ -229,7 +229,7 @@ inline bool TraceReader::next(std::vector<char>& out, std::string& error)
     error.clear();
     out.clear();
     if (!stream_.is_open()) {
-        error = "语料文件未打开";
+        error = "trace file is not open";
         return false;
     }
 
@@ -241,25 +241,25 @@ inline bool TraceReader::next(std::vector<char>& out, std::string& error)
         if (stream_.eof()) {
             return false;
         }
-        error = "读取记录长度失败";
+        error = "failed to read record length";
         return false;
     }
     if (got != static_cast<std::streamsize>(sizeof(length_bytes))) {
-        error = "记录长度不完整";
+        error = "record length is incomplete";
         return false;
     }
 
     std::uint32_t length = 0;
     std::memcpy(&length, length_bytes, sizeof(length));
     if (length == 0 || length > kTraceMaxPayloadSize) {
-        error = "记录长度非法";
+        error = "invalid record length";
         return false;
     }
 
     out.resize(length);
     stream_.read(out.data(), static_cast<std::streamsize>(length));
     if (stream_.gcount() != static_cast<std::streamsize>(length)) {
-        error = "记录负载不完整";
+        error = "record payload is incomplete";
         return false;
     }
     ++records_;

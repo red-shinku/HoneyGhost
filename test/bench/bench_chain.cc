@@ -62,28 +62,39 @@ constexpr const char* kCliTaskProcessor = "cli-tp";
 
 /// @brief chain 段私有选项的多行用法
 constexpr const char* kExtraHelp =
-    "  --backend MODE    后端：cli|sink（默认：本构建有 CLI 服务端时为 cli，"
-    "否则 sink）\n"
-    "  --events MODE     回放类别：all|syscall|lifecycle（默认 all）；PROCESS "
-    "与 EXEC 归为 lifecycle，种子始终用全量语料\n"
-    "  --system-sinks K  计数系统订阅数，1..64，兼作引擎分发计数（默认 1）\n"
-    "  --settled R       种子落定比例，0..1（默认 1）\n"
-    "  --streams N       CLI 后端的并发订阅流数，1..1024（默认 1）\n"
-    "  --batch N         CLI 后端单条响应的事件数上限，1..256（默认 64）\n"
-    "  --cli-queue N     CLI 服务端每流队列容量，2..1048576（默认 8192）\n"
-    "  --socket PATH     CLI 后端子进程的 Unix socket 绝对路径；空则 "
+    "  --backend MODE    backend: cli|sink (default: cli when this build has a "
+    "CLI server, sink otherwise)\n"
+    "  --events MODE     replay class: all|syscall|lifecycle (default all); "
+    "PROCESS and EXEC count as lifecycle; the seed always uses the full trace\n"
+    "  --system-sinks K  counting system subscriptions, 1..64, also the engine "
+    "dispatch count (default 1)\n"
+    "  --settled R       seed settle fraction, 0..1 (default 1)\n"
+    "  --streams N       concurrent subscription streams of the CLI backend, "
+    "1..1024 (default 1)\n"
+    "  --batch N         max events per response of the CLI backend, 1..256 "
+    "(default 64)\n"
+    "  --cli-queue N     per-stream queue capacity of the CLI server, 2..1048576 "
+    "(default 8192)\n"
+    "  --socket PATH     absolute Unix socket path of the CLI backend child "
+    "process; empty means "
     "/tmp/hng-chain-cli-<pid>.sock\n"
-    "  --filter MODE     订阅过滤器，v1 只支持 none；role/miss 尚未接入\n"
-    "  sink 后端在一进程内跑 replay feeder → 语义 → 引擎，不含 CLI 与线缆；"
-    "--backend sink 时拒绝 --streams/--batch/--filter/--cli-queue/--socket。\n"
+    "  --filter MODE     subscription filter, v1 supports only none; role/miss "
+    "are not yet wired up\n"
+    "  the sink backend runs replay feeder → semantic → engine in one process, "
+    "without CLI or wire; "
+    "--backend sink rejects --streams/--batch/--filter/--cli-queue/--socket.\n"
 #ifdef HNG_BENCH_CLI_STAGE
-    "  cli 后端在子进程里跑同一条链加真实 RunCliServer；父进程先订阅、等服务"
-    "端登记全部流后发 go，子进程收到 go 才取 T0 并启动回放，两端按同一个 T0 "
-    "对齐窗口，--warmup 从 T0 起算。\n"
+    "  the cli backend runs the same chain plus the real RunCliServer in a child "
+    "process; the parent "
+    "subscribes first, waits until the server has registered all streams, then "
+    "sends go; the child takes "
+    "T0 and starts replay only after receiving go; both ends align the window on "
+    "the same T0, with --warmup counted from T0.\n"
 #else
-    "  本构建未启用 CLI 服务端（userver），--backend cli 会报参数错误。\n"
+    "  this build has no CLI server (userver); --backend cli reports a parameter "
+    "error.\n"
 #endif
-    "  本段不使用 --pin-consumer 与 --pin-producer。\n";
+    "  this stage does not use --pin-consumer or --pin-producer.\n";
 
 /// @brief 后端选择
 enum class ChainBackend : std::uint8_t { CLI, SINK };
@@ -188,7 +199,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         std::string inline_value;
         bool has_inline = false;
         if (!split_option(rest[index], name, inline_value, has_inline)) {
-            error = "未知选项 " + rest[index];
+            error = "unknown option " + rest[index];
             return false;
         }
 
@@ -207,7 +218,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         if (name == "--backend") {
             std::string text;
             if (!take_value(text)) {
-                error = "--backend 缺少取值";
+                error = "--backend is missing a value";
                 return false;
             }
             if (text == "sink") {
@@ -218,14 +229,14 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
                 run.backend = ChainBackend::CLI;
 #else
                 error =
-                    "本构建未启用 CLI 服务端（userver），--backend cli 不可用；"
-                    "请用 --backend sink，或用 -DHNG_ENABLE_CLI_SERVER=ON "
-                    "重新构建";
+                    "this build has no CLI server (userver), --backend cli is "
+                    "unavailable; use --backend sink, or "
+                    "rebuild with -DHNG_ENABLE_CLI_SERVER=ON";
                 return false;
 #endif
             }
             else {
-                error = "--backend 需为 cli|sink";
+                error = "--backend must be cli|sink";
                 return false;
             }
             run.backend_set = true;
@@ -235,8 +246,8 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, kMaxStreams, run.streams)) {
-                error = "--streams 需为 1.." + std::to_string(kMaxStreams) +
-                        " 的整数";
+                error = "--streams must be an integer in 1.." +
+                        std::to_string(kMaxStreams) + " (inclusive)";
                 return false;
             }
             run.streams_set = true;
@@ -246,8 +257,8 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, kMaxBatch, run.batch)) {
-                error =
-                    "--batch 需为 1.." + std::to_string(kMaxBatch) + " 的整数";
+                error = "--batch must be an integer in 1.." +
+                        std::to_string(kMaxBatch) + " (inclusive)";
                 return false;
             }
             run.batch_set = true;
@@ -257,8 +268,9 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, kCliQueueMin, kCliQueueMax, run.cli_queue)) {
-                error = "--cli-queue 需为 " + std::to_string(kCliQueueMin) +
-                        ".." + std::to_string(kCliQueueMax) + " 的整数";
+                error = "--cli-queue must be an integer in " +
+                        std::to_string(kCliQueueMin) + ".." +
+                        std::to_string(kCliQueueMax) + " (inclusive)";
                 return false;
             }
             run.cli_queue_set = true;
@@ -267,7 +279,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         if (name == "--socket") {
             if (!take_value(run.socket_path) || run.socket_path.empty() ||
                 run.socket_path.front() != '/') {
-                error = "--socket 需为绝对路径";
+                error = "--socket must be an absolute path";
                 return false;
             }
             run.socket_set = true;
@@ -276,13 +288,14 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         if (name == "--filter") {
             std::string text;
             if (!take_value(text)) {
-                error = "--filter 缺少取值";
+                error = "--filter is missing a value";
                 return false;
             }
             if (text != "none") {
                 error =
-                    "--filter 在 v1 只支持 none；role/miss 会改变交付比例，"
-                    "尚未接入 chain 后端";
+                    "--filter supports only none in v1; role/miss change the "
+                    "delivery ratio and are not yet wired up in the chain "
+                    "backend";
                 return false;
             }
             run.filter_set = true;
@@ -291,7 +304,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         if (name == "--events") {
             std::string text;
             if (!take_value(text)) {
-                error = "--events 缺少取值";
+                error = "--events is missing a value";
                 return false;
             }
             if (text == "all") {
@@ -304,7 +317,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
                 run.chain.events = bench::chain::EventClass::LIFECYCLE;
             }
             else {
-                error = "--events 需为 all|syscall|lifecycle";
+                error = "--events must be all|syscall|lifecycle";
                 return false;
             }
             continue;
@@ -313,7 +326,7 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, 64, run.chain.system_sinks)) {
-                error = "--system-sinks 需为 1..64 的整数";
+                error = "--system-sinks must be an integer in 1..64";
                 return false;
             }
             continue;
@@ -321,12 +334,12 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
         if (name == "--settled") {
             std::string text;
             if (!take_value(text) || !parse_fraction(text, run.chain.settled)) {
-                error = "--settled 需为 0..1 的浮点数";
+                error = "--settled must be a float in 0..1";
                 return false;
             }
             continue;
         }
-        error = "未知选项 " + name;
+        error = "unknown option " + name;
         return false;
     }
 
@@ -354,7 +367,10 @@ bool parse_rest(const std::vector<std::string>& rest, ChainRun& run,
             note("--filter");
         }
         if (!used.empty()) {
-            error = "--backend sink 只跑进程内整链，不接受 CLI 后端选项：" + used;
+            error =
+                "--backend sink runs only the in-process whole chain and takes "
+                "no CLI backend options: " +
+                used;
             return false;
         }
     }
@@ -431,7 +447,8 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
 
     if (!semantic_slow && !engine_slow) {
         std::snprintf(text, sizeof(text),
-                      "未饱和（无丢）；最紧的一段=%s（CPU 利用率 %.2f 核）",
+                      "not saturated (no drops); tightest stage=%s (CPU "
+                      "utilization %.2f cores)",
                       tightest.name, tightest.cores);
         return text;
     }
@@ -449,24 +466,28 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
     if (semantic_slow && engine_slow) {
         std::snprintf(
             text, sizeof(text),
-            "%s语义与引擎均慢：raw 通道拒收 %" PRIu64
-            " 次（语义消费不及回放），语义通道拒收 %" PRIu64
-            " 次（引擎消费不及语义）；CPU：semantic %.2f 核、engine %.2f 核",
-            conflict ? "未定：" : "", snapshot.raw_drops, snapshot.sem_drops,
-            loads[1].cores, loads[2].cores);
+            "%sboth semantic and engine are slow: raw channel rejected %" PRIu64
+            " times (the semantic stage cannot keep up with replay); the "
+            "semantic channel rejected %" PRIu64
+            " times (the engine cannot keep up with semantic); CPU: semantic "
+            "%.2f cores, engine %.2f cores",
+            conflict ? "inconclusive: " : "", snapshot.raw_drops,
+            snapshot.sem_drops, loads[1].cores, loads[2].cores);
     }
     else if (semantic_slow) {
         std::snprintf(text, sizeof(text),
-                      "%s语义段慢：raw 通道拒收 %" PRIu64
-                      " 次（语义消费不及回放）；CPU 证据：semantic %.2f 核",
-                      conflict ? "未定：" : "", snapshot.raw_drops,
+                      "%ssemantic stage is slow: raw channel rejected %" PRIu64
+                      " times (the semantic stage cannot keep up with replay); "
+                      "CPU evidence: semantic %.2f cores",
+                      conflict ? "inconclusive: " : "", snapshot.raw_drops,
                       loads[1].cores);
     }
     else {
         std::snprintf(text, sizeof(text),
-                      "%s引擎段慢：语义通道拒收 %" PRIu64
-                      " 次（引擎消费不及语义）；CPU 证据：engine %.2f 核",
-                      conflict ? "未定：" : "", snapshot.sem_drops,
+                      "%sengine stage is slow: semantic channel rejected %" PRIu64
+                      " times (the engine cannot keep up with semantic); CPU "
+                      "evidence: engine %.2f cores",
+                      conflict ? "inconclusive: " : "", snapshot.sem_drops,
                       loads[2].cores);
     }
 
@@ -474,7 +495,8 @@ std::string sink_bottleneck_text(const bench::chain::ChainSnapshot& snapshot)
     if (conflict) {
         char evidence[256] = {};
         std::snprintf(evidence, sizeof(evidence),
-                      "；CPU 最紧的一段=%s（%.2f 核），与丢包归因冲突，判为未定",
+                      "; the tightest stage by CPU=%s (%.2f cores) conflicts "
+                      "with the drop attribution, so the result is inconclusive",
                       tightest.name, tightest.cores);
         conclusion += evidence;
     }
@@ -515,37 +537,39 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
         snapshot.feeder_cpu + snapshot.semantic_cpu + snapshot.engine_cpu;
     const std::uint64_t rss = bench::rss_kb();
 
-    std::printf("stage   : chain（sink 后端：replay feeder → 语义 → 引擎）\n");
+    std::printf(
+        "stage   : chain (sink backend: replay feeder → semantic → engine)\n");
     std::printf("config  : %s\n", config.c_str());
     std::printf("trace   : %s\n", options.trace_path.c_str());
     std::printf("corpus  : records=%" PRIu64 " playback=%" PRIu64
                 " malformed=%" PRIu64 "\n",
                 snapshot.records, snapshot.playback, snapshot.malformed);
-    std::printf("window  : %.3fs warmup=%d rate=%g%s\n", snapshot.seconds,
-                options.warmup_seconds, options.rate,
-                options.rate == 0.0 ? "（全速）" : "（collector 输入记录/s）");
-    std::printf("input   : %.1f 记录/s consumed=%" PRIu64 "\n", input_per_s,
+    std::printf(
+        "window  : %.3fs warmup=%d rate=%g%s\n", snapshot.seconds,
+        options.warmup_seconds, options.rate,
+        options.rate == 0.0 ? " (full speed)" : " (collector input records/s)");
+    std::printf("input   : %.1f records/s consumed=%" PRIu64 "\n", input_per_s,
                 snapshot.consumed);
     std::printf("events by class: syscall=%" PRIu64 " lifecycle=%" PRIu64
-                "（feeder 侧窗口计数）\n",
+                " (feeder-side window counts)\n",
                 snapshot.consumed - snapshot.consumed_lifecycle,
                 snapshot.consumed_lifecycle);
-    std::printf("segments（us/事件, 核利用率）:\n");
+    std::printf("segments (us/event, core utilization):\n");
     std::printf("  collector  consumed=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " peak_queue=%" PRIu64 "\n",
                 snapshot.consumed,
                 us_per_event(snapshot.consumed, snapshot.feeder_cpu),
                 snapshot.feeder_cpu, loads[0].cores, snapshot.raw_peak);
     std::printf("  semantic   processed=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " drops=%" PRIu64 " peak_queue=%" PRIu64 "\n",
                 snapshot.processed,
                 us_per_event(snapshot.processed, snapshot.semantic_cpu),
                 snapshot.semantic_cpu, loads[1].cores, snapshot.raw_drops,
                 snapshot.sem_peak);
     std::printf("  engine     dispatched=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " drops=%" PRIu64 " peak_queue=%" PRIu64 "\n",
                 snapshot.dispatched,
                 us_per_event(snapshot.dispatched, snapshot.engine_cpu),
@@ -564,9 +588,11 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
         us_per_event(snapshot.dispatched, total_cpu),
         snapshot.raw_drops + snapshot.sem_drops, total_cpu, rss);
     std::printf("bottleneck: %s\n", sink_bottleneck_text(snapshot).c_str());
-    std::printf("collector=replay feeder（等价解析）；未含 CLI/线缆\n");
     std::printf(
-        "对照提示：与单段 semantic 比较时，注意其取空线程为零积压口径（下界）\n");
+        "collector=replay feeder (equivalent parsing); CLI/wire not included\n");
+    std::printf(
+        "hint: when compared with the standalone semantic stage, note that its "
+        "drain thread uses zero-backlog accounting (a lower bound)\n");
 
     const auto build_result =
         [&](const std::string& stage, std::uint64_t events, double cpu_seconds,
@@ -610,7 +636,7 @@ int run_sink(const bench::CommonOptions& options, const ChainRun& run)
     for (const bench::Result& result : results) {
         if (!bench::append_tsv(options.out_path, result)) {
             std::fprintf(
-                stderr, "写 TSV 失败：%s\n",
+                stderr, "failed to write TSV: %s\n",
                 options.out_path.empty() ? "stdout" : options.out_path.c_str());
             return kExitRuntimeFailure;
         }
@@ -654,8 +680,8 @@ bool read_t0_file(const std::string& path, bench::cli::ServerProcess& server,
     for (;;) {
         int code = 0;
         if (!server.alive(code)) {
-            error = "子进程在写 T0 文件前退出（" +
-                    bench::cli::describe_exit(code) + "）";
+            error = "child process exited before writing the T0 file (" +
+                    bench::cli::describe_exit(code) + ")";
             return false;
         }
         std::ifstream file(path);
@@ -678,7 +704,8 @@ bool read_t0_file(const std::string& path, bench::cli::ServerProcess& server,
             }
         }
         if (bench::Clock::now() >= deadline) {
-            error = "等待 T0 文件 " + path + " 超时（20s）或内容非法";
+            error = "timed out after 20s waiting for T0 file " + path +
+                    ", or its content is invalid";
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -727,12 +754,12 @@ bool wait_for_go_file(const std::string& path, const std::atomic<bool>& stop,
             }
         }
         if (bench::Clock::now() >= deadline) {
-            error = "等待 go 文件 " + path + " 超时（20s）";
+            error = "timed out waiting for go file " + path + " after 20s";
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    error = "收到停止信号，未等到 go 文件";
+    error = "received a stop signal before the go file appeared";
     return false;
 }
 
@@ -851,7 +878,7 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
 {
     std::ifstream file(path);
     if (!file.is_open()) {
-        error = "无法打开 " + path;
+        error = "cannot open " + path;
         return false;
     }
     std::map<std::string, std::string> fields;
@@ -862,13 +889,13 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
         }
         const std::size_t equals = line.find('=');
         if (equals == std::string::npos) {
-            error = "侧车行缺少 '='：" + line;
+            error = "sidecar line is missing '=': " + line;
             return false;
         }
         fields[line.substr(0, equals)] = line.substr(equals + 1);
     }
     if (file.bad()) {
-        error = "读取侧车失败：" + path;
+        error = "failed to read sidecar: " + path;
         return false;
     }
 
@@ -939,11 +966,11 @@ bool load_sidecar(const std::string& path, ChainSidecar& sidecar,
     snapshot.seconds = sidecar.window_s;
 
     if (!missing.empty()) {
-        error = "侧车缺少键：" + missing;
+        error = "sidecar is missing keys: " + missing;
         return false;
     }
     if (!invalid.empty()) {
-        error = "侧车取值非法：" + invalid;
+        error = "sidecar has invalid values: " + invalid;
         return false;
     }
     error.clear();
@@ -965,7 +992,7 @@ bool wait_for_sidecar(const std::string& path, ChainSidecar& sidecar,
             }
         }
         if (bench::Clock::now() >= deadline) {
-            error = "等待侧车 " + path + " 超时（2s）";
+            error = "timed out waiting for sidecar " + path + " after 2s";
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1012,15 +1039,17 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
         if (stop.load(std::memory_order_acquire)) {
             return;
         }
-        std::fprintf(stderr, "chain 控制线程：%s\n", error.c_str());
+        std::fprintf(stderr, "chain control thread: %s\n", error.c_str());
         failed.store(true, std::memory_order_release);
         ::_exit(kExitRuntimeFailure);
     }
 
     const bench::Clock::time_point t0 = bench::Clock::now();
     if (!runtime.start_feeder(error)) {
-        std::fprintf(stderr, "chain 控制线程：启动回放线程失败：%s\n",
-                     error.c_str());
+        std::fprintf(
+            stderr,
+            "chain control thread: failed to start the replay thread: %s\n",
+            error.c_str());
         failed.store(true, std::memory_order_release);
         ::_exit(kExitRuntimeFailure);
     }
@@ -1029,7 +1058,7 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
             t0.time_since_epoch())
             .count();
     if (!write_text_file(t0_path, "t0_ns=" + std::to_string(t0_ns) + "\n")) {
-        std::fprintf(stderr, "chain 控制线程：写 T0 文件 %s 失败\n",
+        std::fprintf(stderr, "chain control thread: failed to write T0 file %s\n",
                      t0_path.c_str());
         failed.store(true, std::memory_order_release);
         ::_exit(kExitRuntimeFailure);
@@ -1045,8 +1074,10 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
     }
     bench::chain::ChainSnapshot begin;
     if (!runtime.snapshot(begin, error)) {
-        std::fprintf(stderr, "chain 控制线程：窗口起点快照失败：%s\n",
-                     error.c_str());
+        std::fprintf(
+            stderr,
+            "chain control thread: failed to snapshot the window start: %s\n",
+            error.c_str());
         failed.store(true, std::memory_order_release);
         return;
     }
@@ -1055,8 +1086,10 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
     }
     bench::chain::ChainSnapshot end;
     if (!runtime.snapshot(end, error)) {
-        std::fprintf(stderr, "chain 控制线程：窗口终点快照失败：%s\n",
-                     error.c_str());
+        std::fprintf(
+            stderr,
+            "chain control thread: failed to snapshot the window end: %s\n",
+            error.c_str());
         failed.store(true, std::memory_order_release);
         return;
     }
@@ -1064,7 +1097,7 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
     const bench::chain::ChainSnapshot window =
         bench::chain::window_delta(begin, end);
     if (!write_sidecar(sidecar_path, t0_ns, chain_options, window)) {
-        std::fprintf(stderr, "chain 控制线程：写侧车 %s 失败\n",
+        std::fprintf(stderr, "chain control thread: failed to write sidecar %s\n",
                      sidecar_path.c_str());
         failed.store(true, std::memory_order_release);
         return;
@@ -1105,7 +1138,9 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
             bench::chain::ChainRuntime runtime;
             std::string error;
             if (!runtime.start(chain_options, error, /*defer_feeder=*/true)) {
-                std::fprintf(stderr, "chain 子进程启动失败：%s\n", error.c_str());
+                std::fprintf(stderr,
+                             "failed to start the chain child process: %s\n",
+                             error.c_str());
                 ::_exit(kExitRuntimeFailure);
             }
 
@@ -1135,7 +1170,8 @@ void run_chain_control(bench::chain::ChainRuntime& runtime,
             (void)::unlink(sidecar_path.c_str());
             if (control_failed.load(std::memory_order_acquire)) {
                 std::fprintf(stderr,
-                             "chain 子进程控制线程失败（go/T0/侧车见 stderr）\n");
+                             "chain child control thread failed (see stderr for "
+                             "go/T0/sidecar)\n");
                 ::_exit(kExitRuntimeFailure);
             }
         });
@@ -1199,28 +1235,31 @@ std::string cli_bottleneck_text(const bench::chain::ChainSnapshot& snapshot,
     if (cli_drops > 0) {
         std::snprintf(
             text, sizeof(text),
-            "cli 接缝慢：cli 队列拒收 %" PRIu64
-            " 次（客户端取用不及服务端交付）；CPU 证据：cli-tp %.2f 核、"
-            "client %.2f 核",
+            "cli seam is slow: cli queue rejected %" PRIu64
+            " times (the client cannot drain as fast as the server delivers); "
+            "CPU evidence: cli-tp %.2f cores, client %.2f cores",
             cli_drops, cli_cores, client_cores);
         return text;
     }
     if (snapshot.sem_drops > 0) {
         std::snprintf(text, sizeof(text),
-                      "引擎段慢：语义通道拒收 %" PRIu64
-                      " 次（引擎消费不及语义）；CPU 证据：engine %.2f 核",
+                      "engine stage is slow: semantic channel rejected %" PRIu64
+                      " times (the engine cannot keep up with semantic); CPU "
+                      "evidence: engine %.2f cores",
                       snapshot.sem_drops, loads[2].cores);
         return text;
     }
     if (snapshot.raw_drops > 0) {
         std::snprintf(text, sizeof(text),
-                      "语义段慢：raw 通道拒收 %" PRIu64
-                      " 次（语义消费不及回放）；CPU 证据：semantic %.2f 核",
+                      "semantic stage is slow: raw channel rejected %" PRIu64
+                      " times (the semantic stage cannot keep up with replay); "
+                      "CPU evidence: semantic %.2f cores",
                       snapshot.raw_drops, loads[1].cores);
         return text;
     }
     std::snprintf(text, sizeof(text),
-                  "未饱和（无丢）；最紧的一段=%s（CPU 利用率 %.2f 核）",
+                  "not saturated (no drops); tightest stage=%s (CPU utilization "
+                  "%.2f cores)",
                   tightest.name, tightest.cores);
     return text;
 }
@@ -1250,9 +1289,10 @@ bool wait_for_active_streams(hng::clisv::RuntimeService::Stub& stub, int streams
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    error = "服务端在 5s 内未登记全部订阅流（active=" +
-            std::to_string(snapshot.active) + "/" + std::to_string(streams) +
-            (last_error.empty() ? "" : "：" + last_error) + "）";
+    error =
+        "server did not register all subscription streams within 5s (active=" +
+        std::to_string(snapshot.active) + "/" + std::to_string(streams) +
+        (last_error.empty() ? "" : ": " + last_error) + ")";
     return false;
 }
 
@@ -1316,7 +1356,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         bench::cli::stop_streams(streams);
         std::string ignored;
         (void)server.shutdown(ignored);
-        std::fprintf(stderr, "运行期失败：%s\n", message.c_str());
+        std::fprintf(stderr, "runtime failure: %s\n", message.c_str());
         return kExitRuntimeFailure;
     };
 
@@ -1324,9 +1364,10 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     if (!bench::cli::wait_for_server(stub, server, socket_path, error)) {
         int code = 0;
         if (!server.alive(code) &&
-            error.find("服务端子进程在就绪前退出") == std::string::npos) {
-            return fail("服务端子进程在就绪前退出（" +
-                        bench::cli::describe_exit(code) + "）：" + error);
+            error.find("server child process exited before becoming ready") ==
+                std::string::npos) {
+            return fail("server child process exited before becoming ready (" +
+                        bench::cli::describe_exit(code) + "): " + error);
         }
         return fail(error);
     }
@@ -1337,7 +1378,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     bench::cli::start_streams(stub, streams,
                               static_cast<std::uint32_t>(run.batch), role_ids);
     if (!bench::cli::wait_stream_tids(streams)) {
-        return fail("等待客户端流线程发布 tid 超时");
+        return fail("timed out waiting for client stream threads to publish tid");
     }
     bench::cli::PipelineStatsSnapshot ready_stats;
     if (!wait_for_active_streams(stub, run.streams, ready_stats, error)) {
@@ -1348,13 +1389,14 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     // 握手：服务端就绪且全部订阅流已登记后，子进程才取 T0 并启动回放
     errno                                        = 0;
     if (!write_go_file(go_path)) {
-        const std::string reason = errno != 0 ? std::strerror(errno) : "未知原因";
-        return fail("写 go 文件 " + go_path + " 失败：" + reason);
+        const std::string reason =
+            errno != 0 ? std::strerror(errno) : "unknown reason";
+        return fail("failed to write go file " + go_path + ": " + reason);
     }
 
     bench::Clock::time_point t0;
     if (!read_t0_file(t0_path, server, t0, error)) {
-        return fail("读取子进程 T0 失败：" + error);
+        return fail("failed to read child T0: " + error);
     }
 
     const std::chrono::seconds warmup(run.chain.warmup_seconds);
@@ -1368,8 +1410,9 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
             std::chrono::duration<double>(subscribed_at - measure_start).count();
         char detail[256] = {};
         std::snprintf(detail, sizeof(detail),
-                      "订阅完成时刻比窗口起点晚 %.3fs（warmup=%d 秒），窗口"
-                      "无法对齐；请增大 --warmup（建议 >= %d）",
+                      "subscription finished %.3fs after the window start "
+                      "(warmup=%d s), so the window "
+                      "cannot be aligned; increase --warmup (recommended >= %d)",
                       late, run.chain.warmup_seconds,
                       run.chain.warmup_seconds + static_cast<int>(late) + 1);
         return fail(detail);
@@ -1388,7 +1431,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         bench::cli::thread_cpu_by_comm(child, kCliTaskProcessor);
     bench::cli::PipelineStatsSnapshot stats_start;
     if (!bench::cli::fetch_pipeline_stats(stub, stats_start, error)) {
-        return fail("窗口起点 GetPipelineStats 失败：" + error);
+        return fail("GetPipelineStats at the window start failed: " + error);
     }
 
     std::this_thread::sleep_until(measure_end);
@@ -1404,13 +1447,13 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         bench::cli::thread_cpu_by_comm(child, kCliTaskProcessor);
     bench::cli::PipelineStatsSnapshot stats_end;
     if (!bench::cli::fetch_pipeline_stats(stub, stats_end, error)) {
-        return fail("窗口终点 GetPipelineStats 失败：" + error);
+        return fail("GetPipelineStats at the window end failed: " + error);
     }
     const std::uint64_t child_rss_kb = read_process_rss_kb(child);
 
     ChainSidecar sidecar;
     if (!wait_for_sidecar(sidecar_path, sidecar, error)) {
-        return fail("读取侧车失败：" + error);
+        return fail("failed to read sidecar: " + error);
     }
     const std::int64_t t0_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1421,7 +1464,8 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         sidecar.window_s != static_cast<double>(run.chain.seconds)) {
         char detail[256] = {};
         std::snprintf(detail, sizeof(detail),
-                      "侧车窗口与父进程不一致：t0_ns=%lld/%lld warmup=%.0f/%d "
+                      "sidecar window disagrees with the parent: t0_ns=%lld/%lld "
+                      "warmup=%.0f/%d "
                       "window=%.0f/%d",
                       static_cast<long long>(sidecar.t0_ns),
                       static_cast<long long>(t0_ns), sidecar.warmup_s,
@@ -1441,7 +1485,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
         if (code == grpc::StatusCode::OK || code == grpc::StatusCode::CANCELLED) {
             continue;
         }
-        stream_failures.push_back("流 " + std::to_string(index) + "：" +
+        stream_failures.push_back("stream " + std::to_string(index) + ": " +
                                   bench::cli::status_code_name(code) + "(" +
                                   std::to_string(static_cast<int>(code)) + ") " +
                                   streams[index]->message);
@@ -1496,58 +1540,62 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     };
 
     std::printf(
-        "stage   : chain（cli 后端：replay feeder → 语义 → 引擎 → CLI 服务端"
-        " → 客户端）\n");
+        "stage   : chain (cli backend: replay feeder → semantic → engine → CLI "
+        "server → client)\n");
     std::printf("config  : %s\n", config.c_str());
     std::printf("trace   : %s\n", options.trace_path.c_str());
     std::printf(
-        "window  : %.3fs warmup=%d rate=%g%s（子进程与父进程按同一 T0 "
-        "对齐）\n",
+        "window  : %.3fs warmup=%d rate=%g%s (child and parent align on the "
+        "same T0)\n",
         window, options.warmup_seconds, options.rate,
-        options.rate == 0.0 ? "（全速）" : "（collector 输入记录/s）");
-    std::printf("input   : %.1f 记录/s consumed=%" PRIu64 "\n", input_per_s,
+        options.rate == 0.0 ? " (full speed)" : " (collector input records/s)");
+    std::printf("input   : %.1f records/s consumed=%" PRIu64 "\n", input_per_s,
                 snapshot.consumed);
-    std::printf("dispatched: %.1f 事件/s dispatched=%" PRIu64 "\n",
+    std::printf("dispatched: %.1f events/s dispatched=%" PRIu64 "\n",
                 dispatched_per_s, snapshot.dispatched);
-    std::printf("delivered: %.1f 事件/s delivered=%" PRIu64
-                "（streams=%d，每输入事件扇出到全部流）\n",
+    std::printf("delivered: %.1f events/s delivered=%" PRIu64
+                " (streams=%d, each input event fans out to all streams)\n",
                 delivered_per_s, delivered, run.streams);
-    std::printf("fan-out : delivered/dispatched=%.3f 期望=%d 偏差=%+.2f%%\n",
-                fanout, run.streams, fanout_deviation * 100.0);
+    std::printf(
+        "fan-out : delivered/dispatched=%.3f expected=%d deviation=%+.2f%%\n",
+        fanout, run.streams, fanout_deviation * 100.0);
     if (std::fabs(fanout_deviation) > kFanoutTolerance) {
         std::printf(
-            "提示：delivered/dispatched 与 streams 偏差超过 %.0f%%，说明有过滤、"
-            "丢失，或窗口末仍有在途事件（服务端已分发、客户端未收到）\n",
+            "hint: delivered/dispatched deviates from streams by more than "
+            "%.0f%%, which means filtering, loss, or events still in flight "
+            "at the end of the window (dispatched by the server, not yet "
+            "received by the client)\n",
             kFanoutTolerance * 100.0);
     }
     std::printf("events by class: syscall=%" PRIu64 " lifecycle=%" PRIu64
-                "（feeder 侧窗口计数）\n",
+                " (feeder-side window counts)\n",
                 snapshot.consumed - snapshot.consumed_lifecycle,
                 snapshot.consumed_lifecycle);
-    std::printf("segments（us/事件, 核利用率）:\n");
+    std::printf("segments (us/event, core utilization):\n");
     std::printf("  collector  consumed=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " peak_queue=%" PRIu64 "\n",
                 snapshot.consumed,
                 us_per_event(snapshot.consumed, snapshot.feeder_cpu),
                 snapshot.feeder_cpu, loads[0].cores, snapshot.raw_peak);
     std::printf("  semantic   processed=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " drops=%" PRIu64 " peak_queue=%" PRIu64 "\n",
                 snapshot.processed,
                 us_per_event(snapshot.processed, snapshot.semantic_cpu),
                 snapshot.semantic_cpu, loads[1].cores, snapshot.raw_drops,
                 snapshot.sem_peak);
     std::printf("  engine     dispatched=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
                 " drops=%" PRIu64 " peak_queue=%" PRIu64 "\n",
                 snapshot.dispatched,
                 us_per_event(snapshot.dispatched, snapshot.engine_cpu),
                 snapshot.engine_cpu, loads[2].cores, snapshot.sem_drops,
                 snapshot.sem_peak);
     std::printf("  cli        delivered=%" PRIu64
-                " us/event=%.3f cpu=%.3fs util=%.2f 核"
-                " drops=%" PRIu64 " peak_queue=0（CLI 队列占用不可观测）\n",
+                " us/event=%.3f cpu=%.3fs util=%.2f cores"
+                " drops=%" PRIu64
+                " peak_queue=0 (CLI queue occupancy is not observable)\n",
                 delivered, us_per_event(delivered, cli_tp_cpu), cli_tp_cpu,
                 loads[3].cores, cli_drops);
     std::printf("queues  : raw peak=%" PRIu64 "/%zu sem peak=%" PRIu64
@@ -1566,36 +1614,37 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
                                     client_cpu / window, loads[3].cores)
                     .c_str());
     std::printf(
-        "collector=replay feeder（等价解析）；cli 段=服务端 cli-tp 线程，"
-        "交付数由父进程客户端统计\n");
+        "collector=replay feeder (equivalent parsing); cli stage=server cli-tp "
+        "thread; delivery is counted by the parent client\n");
     if (cli_drops > 0 && cli_tp_cpu > 0.0 && client_cpu >= cli_tp_cpu * 0.8) {
         std::printf(
-            "提示：客户端 CPU %.3fs 已接近服务端 cli-tp CPU %.3fs，"
-            "压测器可能成为瓶颈\n",
+            "hint: client CPU %.3fs is close to server cli-tp CPU %.3fs, so the "
+            "benchmarker may become the bottleneck\n",
             client_cpu, cli_tp_cpu);
     }
     if (stream_drops != cli_drops) {
-        std::printf("提示：streamstats 的丢弃 %" PRIu64
-                    " 与 GetPipelineStats 的 cli 增量 %" PRIu64
-                    " 不一致（流上的 stats 可能尚未送达）\n",
+        std::printf("hint: streamstats drops %" PRIu64
+                    " disagree with the GetPipelineStats cli delta %" PRIu64
+                    " (the per-stream stats may not have arrived yet)\n",
                     stream_drops, cli_drops);
     }
     if (stats_end.engine_valid &&
         engine_dropped != snapshot.engine_syscall_dropped) {
-        std::printf("提示：侧车 engine.syscall_dropped=%" PRIu64
-                    " 与 GetPipelineStats 的增量 %" PRIu64
-                    " 不一致（采样时刻略有先后）\n",
+        std::printf("hint: sidecar engine.syscall_dropped=%" PRIu64
+                    " disagrees with the GetPipelineStats delta %" PRIu64
+                    " (the sampling instants differ slightly)\n",
                     snapshot.engine_syscall_dropped, engine_dropped);
     }
     if (!clean_shutdown) {
-        std::printf("提示：%s\n", shutdown_error.c_str());
+        std::printf("hint: %s\n", shutdown_error.c_str());
     }
     if (child_code != 0) {
-        std::printf("警告：服务端子进程%s\n",
+        std::printf("warning: server child process %s\n",
                     bench::cli::describe_exit(child_code).c_str());
     }
     if (!stream_failures.empty()) {
-        std::fprintf(stderr, "运行期失败：%zu 条流未正常结束\n",
+        std::fprintf(stderr,
+                     "runtime failure: %zu streams did not end normally\n",
                      stream_failures.size());
         for (const std::string& failure : stream_failures) {
             std::fprintf(stderr, "  %s\n", failure.c_str());
@@ -1648,7 +1697,7 @@ int run_cli_backend(const bench::CommonOptions& options, const ChainRun& run)
     for (const bench::Result& result : results) {
         if (!bench::append_tsv(options.out_path, result)) {
             std::fprintf(
-                stderr, "写 TSV 失败：%s\n",
+                stderr, "failed to write TSV: %s\n",
                 options.out_path.empty() ? "stdout" : options.out_path.c_str());
             return kExitRuntimeFailure;
         }
@@ -1672,8 +1721,8 @@ int run_chain(const bench::CommonOptions& options,
 
     std::string error;
     if (!parse_rest(rest, run, error)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
-        std::fprintf(stderr, "chain 段选项：\n%s", kExtraHelp);
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
+        std::fprintf(stderr, "chain stage options:\n%s", kExtraHelp);
         return kExitUsage;
     }
 
@@ -1684,8 +1733,8 @@ int run_chain(const bench::CommonOptions& options,
     return run_cli_backend(options, run);
 #else
     std::fprintf(stderr,
-                 "参数错误：本构建未启用 CLI 服务端（userver），"
-                 "--backend cli 不可用\n");
+                 "parameter error: this build has no CLI server (userver), "
+                 "--backend cli is unavailable\n");
     return kExitUsage;
 #endif
 }

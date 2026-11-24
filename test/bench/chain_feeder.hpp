@@ -2,20 +2,13 @@
  * @file chain_feeder.hpp
  * @brief chain 段的回放生产者：语料 → 原始事件通道
  * @details
- * chain 段没有真实采集器，生产侧由本文件的回放生产者承担。记录解析与
- * agent/collector/src/syscall_event_collector.cc 等价：先 memcpy 事件头，再用
- * hng::detail::SyscallRecordSize(hdr.subtype) 校验定长，最后按
- * 「head memcpy + payload memcpy」重建 syscall_event。
- * 定长映射唯一归属于 agent/collector/src/collector.hpp 提供的
- * SyscallRecordSize；本文件只消费该表并统计长度不符的记录，不自行推导载荷
- * 长度，也不持有 BPF 资源。
+ * chain 段没有真实采集器，生产侧由本文件的回放生产者承担。
  */
 
 #ifndef HNG_TEST_BENCH_CHAIN_FEEDER_HPP_
 #define HNG_TEST_BENCH_CHAIN_FEEDER_HPP_
 
 #include "agent/collector/src/collector.hpp"
-#include "agent/event_data/include/syscall_event.hpp"
 #include "agent/util/include/event_channel.hpp"
 #include "kernel/include/syscall_event_type.h"
 #include "test/bench/bench_trace.hpp"
@@ -161,7 +154,7 @@ inline bool ChainFeeder::load(const std::string& path, EventClass events,
     bench::TraceReader reader;
     std::string reader_error;
     if (!reader.open(path, reader_error)) {
-        error = "打开语料 " + path + " 失败：" + reader_error;
+        error = "failed to open trace " + path + ": " + reader_error;
         return false;
     }
 
@@ -185,17 +178,17 @@ inline bool ChainFeeder::load(const std::string& path, EventClass events,
         playback_.push_back(records_.size() - 1);
     }
     if (!reader_error.empty()) {
-        error = "读取语料 " + path + " 失败：" + reader_error;
+        error = "failed to read trace " + path + ": " + reader_error;
         return false;
     }
     if (records_.empty()) {
-        error = "语料 " + path + " 没有可用记录（malformed " +
-                std::to_string(malformed_) + " 条）";
+        error = "trace " + path + " has no usable records (malformed " +
+                std::to_string(malformed_) + " records)";
         return false;
     }
     if (playback_.empty()) {
-        error = "语料在 --events " + std::string(event_class_name(events)) +
-                " 下没有可回放的记录";
+        error = "trace under --events " + std::string(event_class_name(events)) +
+                " has no replayable records";
         return false;
     }
     return true;

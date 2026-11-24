@@ -2,13 +2,7 @@
  * @file bench_cli.cc
  * @brief CLI 段压测：CLIRuntimeService::ReceiveEvent 的事件流
  * @details
- * 子进程运行 userver CLI 服务端，父进程用裸 grpc++ 客户端收流。--fidelity l1
- * 用按流生产的替身引擎，跳过 RuntimeInfoFilter::should_take；--fidelity l2 在
- * 子进程内装配真实 RuntimeEngineComponent 与真实 ContextMaintainer（控制面其余
- * 维度为 L1 替身），源线程按 --rate/流数 的聚合节拍推入语义通道，过滤在
- * 引擎线程上生效。
- * 父进程按线程 comm 前缀归属窗口 CPU，并同时读取 GetPipelineStats 的 engine
- * 与 cli 段。
+ * 子进程运行 userver CLI 服务端，父进程用裸 grpc++ 客户端收流
  */
 
 #include "test/bench/stages.hpp"
@@ -34,7 +28,6 @@
 #include <grpcpp/grpcpp.h>
 #include <proto/cli_service.grpc.pb.h>
 
-#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -52,7 +45,6 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -101,21 +93,28 @@ constexpr std::uint32_t kMissFilterLast  = 12;
 
 /// @brief CLI 段私有选项的多行用法
 constexpr const char* kExtraHelp =
-    "  --streams N       并发订阅流数，1..1024（服务端默认配额 64，超出会收到 "
-    "RESOURCE_EXHAUSTED）（默认 1）\n"
-    "  --batch N         每条响应最多携带的事件数，1..256（默认 64）\n"
-    "  --socket PATH     Unix socket 绝对路径；空则 "
+    "  --streams N       number of concurrent subscription streams, 1..1024 "
+    "(server default quota 64; beyond it "
+    "RESOURCE_EXHAUSTED is returned) (default 1)\n"
+    "  --batch N         max events per response, 1..256 (default 64)\n"
+    "  --socket PATH     absolute path of the Unix socket; empty uses "
     "/tmp/hng-bench-cli-<pid>.sock\n"
-    "  --server-config PATH  交给子进程的 CLI 配置文件；空则生成临时文件"
-    "（含 64 流上限与 --queue 容量）\n"
-    "  --queue N         每流队列容量，沿用公共选项 --queue（默认 8192）\n"
-    "  --engine-queue N  引擎语义通道容量，2..1048576（默认 8192；仅 L2）\n"
-    "  --filter MODE     订阅过滤器 none|role|miss：role 收 roleID 1..4，"
-    "miss 收 9..12；仅 L2 生效（默认 none）\n"
-    "  --trace PATH      L2 生产者改用 P0 语料回放（与 engine 段同法）；"
-    "可选\n"
-    "  本段忽略 --pin-consumer 与 --pin-producer；L1 下忽略 --trace 与 "
-    "--filter。\n";
+    "  --server-config PATH  CLI config file handed to the child process; empty "
+    "generates a temporary file"
+    " (with a 64-stream limit and the --queue capacity)\n"
+    "  --queue N         per-stream queue capacity, shares the common option "
+    "--queue (default 8192)\n"
+    "  --engine-queue N  capacity of the engine semantic channel, 2..1048576 "
+    "(default 8192; L2 only)\n"
+    "  --filter MODE     subscription filter none|role|miss: role takes roleID "
+    "1..4, "
+    "miss takes 9..12; effective under L2 only (default none)\n"
+    "  --trace PATH      L2 producer replays the P0 trace instead (same as the "
+    "engine stage);"
+    " optional\n"
+    "  this stage ignores --pin-consumer and --pin-producer; under L1 it ignores "
+    "--trace and "
+    "--filter.\n";
 
 /// @brief 订阅过滤器模式；只在 L2 下随订阅请求下发
 enum class CliFilter : std::uint8_t { NONE, ROLE, MISS };
@@ -199,7 +198,7 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
         std::string inline_value;
         bool has_inline = false;
         if (!split_option(rest[index], name, inline_value, has_inline)) {
-            error = "未知选项 " + rest[index];
+            error = "unknown option " + rest[index];
             return false;
         }
 
@@ -219,8 +218,8 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, kMaxStreams, options.streams)) {
-                error = "--streams 需为 1.." + std::to_string(kMaxStreams) +
-                        " 的整数";
+                error = "--streams must be an integer in 1.." +
+                        std::to_string(kMaxStreams) + ".";
                 return false;
             }
             continue;
@@ -229,8 +228,8 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, kMaxBatch, options.batch)) {
-                error =
-                    "--batch 需为 1.." + std::to_string(kMaxBatch) + " 的整数";
+                error = "--batch must be an integer in 1.." +
+                        std::to_string(kMaxBatch) + ".";
                 return false;
             }
             continue;
@@ -240,8 +239,9 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
             if (!take_value(text) ||
                 !parse_integer(text, kEngineQueueMin, kEngineQueueMax,
                                options.engine_queue)) {
-                error = "--engine-queue 需为 " + std::to_string(kEngineQueueMin) +
-                        ".." + std::to_string(kEngineQueueMax) + " 的整数";
+                error = "--engine-queue must be an integer in " +
+                        std::to_string(kEngineQueueMin) + ".." +
+                        std::to_string(kEngineQueueMax) + ".";
                 return false;
             }
             continue;
@@ -249,7 +249,7 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
         if (name == "--filter") {
             std::string text;
             if (!take_value(text)) {
-                error = "--filter 缺少取值";
+                error = "--filter is missing a value";
                 return false;
             }
             if (text == "none") {
@@ -262,7 +262,7 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
                 options.filter = CliFilter::MISS;
             }
             else {
-                error = "--filter 需为 none|role|miss";
+                error = "--filter must be none|role|miss";
                 return false;
             }
             continue;
@@ -270,7 +270,7 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
         if (name == "--socket") {
             if (!take_value(options.socket_path) || options.socket_path.empty() ||
                 options.socket_path.front() != '/') {
-                error = "--socket 需为绝对路径";
+                error = "--socket must be an absolute path";
                 return false;
             }
             continue;
@@ -278,12 +278,12 @@ bool parse_rest(const std::vector<std::string>& rest, CliOptions& options,
         if (name == "--server-config") {
             if (!take_value(options.server_config) ||
                 options.server_config.empty()) {
-                error = "--server-config 缺少路径";
+                error = "--server-config is missing a path";
                 return false;
             }
             continue;
         }
-        error = "未知选项 " + name;
+        error = "unknown option " + name;
         return false;
     }
     return true;
@@ -616,7 +616,7 @@ bool load_trace_corpus(const std::string& path, TraceCorpus& corpus,
     bench::TraceReader reader;
     std::string reader_error;
     if (!reader.open(path, reader_error)) {
-        error = "打开语料 " + path + " 失败：" + reader_error;
+        error = "failed to open trace " + path + ": " + reader_error;
         return false;
     }
 
@@ -635,12 +635,12 @@ bool load_trace_corpus(const std::string& path, TraceCorpus& corpus,
         corpus.events.push_back(std::move(event));
     }
     if (!reader_error.empty()) {
-        error = "读取语料 " + path + " 失败：" + reader_error;
+        error = "failed to read trace " + path + ": " + reader_error;
         return false;
     }
     if (corpus.events.empty()) {
-        error = "语料 " + path + " 没有可用记录（跳过 " +
-                std::to_string(corpus.skipped) + " 条）";
+        error = "trace " + path + " has no usable records (skipped " +
+                std::to_string(corpus.skipped) + " records)";
         return false;
     }
     return true;
@@ -818,11 +818,13 @@ class EngineProducer final {
                     engine_->run();
                 }
                 catch (const std::exception& failure) {
-                    std::fprintf(stderr, "引擎线程失败：%s\n", failure.what());
+                    std::fprintf(stderr, "engine thread failed: %s\n",
+                                 failure.what());
                     engine_failed_.store(true, std::memory_order_release);
                 }
                 catch (...) {
-                    std::fprintf(stderr, "引擎线程失败：未知异常\n");
+                    std::fprintf(stderr,
+                                 "engine thread failed: unknown exception\n");
                     engine_failed_.store(true, std::memory_order_release);
                 }
             });
@@ -966,7 +968,9 @@ class EngineProducer final {
                 RunCliServer(deps, prepared);
                 producer.stop();  // 注销命令已在 RunCliServer 内落地
                 if (producer.engine_failed()) {
-                    std::fprintf(stderr, "引擎线程失败，未正常收尾\n");
+                    std::fprintf(
+                        stderr,
+                        "engine thread failed, did not shut down cleanly\n");
                     ::_exit(kExitRuntimeFailure);
                 }
             }
@@ -1033,28 +1037,33 @@ int run_cli(const bench::CommonOptions& options,
     CliOptions cli_options;
     std::string error;
     if (!parse_rest(rest, cli_options, error)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
-        std::fprintf(stderr, "cli 段选项：\n%s", kExtraHelp);
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
+        std::fprintf(stderr, "cli stage options:\n%s", kExtraHelp);
         return kExitUsage;
     }
     const bool l2 = options.fidelity == bench::Fidelity::L2;
     if (cli_options.streams > kServerMaxStreams) {
-        std::fprintf(stderr,
-                     "提示：--streams %d 超过服务端并发配额 %ld，"
-                     "多出的流预期收到 RESOURCE_EXHAUSTED\n",
-                     cli_options.streams, kServerMaxStreams);
+        std::fprintf(
+            stderr,
+            "hint: --streams %d exceeds the server concurrency quota %ld, "
+            "the extra streams are expected to receive RESOURCE_EXHAUSTED\n",
+            cli_options.streams, kServerMaxStreams);
     }
     if (options.pin_consumer >= 0 || options.pin_producer >= 0) {
         std::printf(
-            "cli 段忽略 --pin-consumer/--pin-producer："
-            "工作线程在服务端子进程内\n");
+            "the cli stage ignores --pin-consumer/--pin-producer: "
+            "worker threads live in the server child process\n");
     }
     if (!l2) {
         if (!options.trace_path.empty()) {
-            std::printf("提示：L1 忽略 --trace，只有 L2 生产者回放语料\n");
+            std::printf(
+                "hint: L1 ignores --trace, only the L2 producer replays the "
+                "trace\n");
         }
         if (cli_options.filter != CliFilter::NONE) {
-            std::printf("提示：L1 的替身引擎跳过 should_take，--filter 不生效\n");
+            std::printf(
+                "hint: the L1 stub engine skips should_take, --filter has no "
+                "effect\n");
         }
     }
 
@@ -1092,7 +1101,7 @@ int run_cli(const bench::CommonOptions& options,
     hng::clisv::RuntimeService::Stub& stub = *client.stub;
 
     if (!bench::cli::wait_for_server(stub, server, socket_path, error)) {
-        std::fprintf(stderr, "运行期失败：%s\n", error.c_str());
+        std::fprintf(stderr, "runtime failure: %s\n", error.c_str());
         return kExitRuntimeFailure;
     }
 
@@ -1100,7 +1109,7 @@ int run_cli(const bench::CommonOptions& options,
     double probe_cpu = 0.0;
     if (!bench::read_tasks_cpu(server.pid(), kCliTaskProcessor, probe_cpu,
                                error)) {
-        std::fprintf(stderr, "运行期失败：%s\n", error.c_str());
+        std::fprintf(stderr, "runtime failure: %s\n", error.c_str());
         return kExitRuntimeFailure;
     }
 
@@ -1109,7 +1118,7 @@ int run_cli(const bench::CommonOptions& options,
 
     const auto fail = [&streams](const std::string& message) {
         bench::cli::stop_streams(streams);
-        std::fprintf(stderr, "运行期失败：%s\n", message.c_str());
+        std::fprintf(stderr, "runtime failure: %s\n", message.c_str());
         return kExitRuntimeFailure;
     };
 
@@ -1122,19 +1131,19 @@ int run_cli(const bench::CommonOptions& options,
     bench::cli::start_streams(stub, streams, batch, role_ids);
 
     if (!bench::cli::wait_stream_tids(streams)) {
-        return fail("等待客户端流线程发布 tid 超时");
+        return fail("timed out waiting for client stream threads to publish tid");
     }
 
     const auto sample_server_cpu = [&server](ServerCpuSnapshot& snapshot,
                                              std::string& sample_error) -> bool {
         if (!bench::read_process_cpu(server.pid(), snapshot.process,
                                      sample_error)) {
-            sample_error = "读取服务端进程 CPU 失败：" + sample_error;
+            sample_error = "failed to read server process CPU: " + sample_error;
             return false;
         }
         if (!bench::read_tasks_cpu(server.pid(), kCliTaskProcessor,
                                    snapshot.cli_tp, sample_error)) {
-            sample_error = "读取服务端 cli-tp CPU 失败：" + sample_error;
+            sample_error = "failed to read server cli-tp CPU: " + sample_error;
             return false;
         }
         snapshot.engine =
@@ -1158,7 +1167,7 @@ int run_cli(const bench::CommonOptions& options,
 
     bench::cli::PipelineStatsSnapshot stats_pre;
     if (!bench::cli::fetch_pipeline_stats(stub, stats_pre, error)) {
-        return fail("窗口起点 GetPipelineStats 失败：" + error);
+        return fail("GetPipelineStats at window start failed: " + error);
     }
 
     std::this_thread::sleep_until(measure_end);
@@ -1195,7 +1204,7 @@ int run_cli(const bench::CommonOptions& options,
         if (code == grpc::StatusCode::OK || code == grpc::StatusCode::CANCELLED) {
             continue;
         }
-        stream_failures.push_back("流 " + std::to_string(index) + "：" +
+        stream_failures.push_back("stream " + std::to_string(index) + ": " +
                                   bench::cli::status_code_name(code) + "(" +
                                   std::to_string(static_cast<int>(code)) + ") " +
                                   streams[index]->message);
@@ -1311,13 +1320,14 @@ int run_cli(const bench::CommonOptions& options,
     std::printf("config: %s\n", human_config.c_str());
     if (l2) {
         std::printf(
-            "source: 单源按 --rate/%.0f=%.1fHz 推入（每事件扇出到全部流，"
-            "--rate 为全部流合计交付率）\n",
+            "source: a single source pushes at --rate/%.0f=%.1fHz (each event "
+            "fans out to all streams, "
+            "--rate is the total delivery rate across all streams)\n",
             stream_count, per_stream_rate);
     }
     std::printf(
         "events/s=%.1f per-stream=%.1f messages/s=%.1f "
-        "events/message=%.2f bytes/s=%.1f (1/64 采样折算)\n",
+        "events/message=%.2f bytes/s=%.1f (scaled from 1/64 sampling)\n",
         events_per_s, events_per_s / stream_count, messages_per_s,
         events_per_message, bytes_per_s);
     if (options.rate > 0.0) {
@@ -1340,34 +1350,38 @@ int run_cli(const bench::CommonOptions& options,
         engine_cpu, source_cpu, server_total_cpu, total_us_per_event);
     std::printf("engine cpu=%.3fs(%.2fus/event) source cpu=%.3fs%s\n", engine_cpu,
                 engine_us_per_event, source_cpu,
-                l2 ? "" : "（L1 无引擎/源线程，按 0 计）");
+                l2 ? "" : " (L1 has no engine/source threads, counted as 0)");
     if (l2 && cli_options.filter == CliFilter::NONE) {
         // 无过滤时每个输入事件扇出到全部流，输入数 = 交付数 / 流数
         std::printf(
-            "engine us/input≈%.2f（输入 = 交付 / streams，扇出到全部流）\n",
+            "engine us/input≈%.2f (input = delivered / streams, fanned out to "
+            "all streams)\n",
             engine_us_per_event * stream_count);
     }
     else if (l2) {
         std::printf(
-            "提示：engine 的 us/event 分母是交付事件；过滤器改变了交付比例，"
-            "不能直接当引擎单事件成本\n");
+            "hint: the denominator of engine us/event is delivered events; the "
+            "filter changes the delivery "
+            "ratio, so it cannot be used directly as the engine per-event "
+            "cost\n");
     }
     if (l2) {
         std::printf(
-            "fidelity: L2（真实引擎线程消费语义通道；控制面 Role/Context/"
-            "Process 为 L1 替身，ContextMaintainer 为真实件）\n");
+            "fidelity: L2 (real engine thread consumes the semantic channel; the "
+            "control plane Role/Context/"
+            "Process are L1 stubs, ContextMaintainer is a real component)\n");
     }
     else {
         std::printf(
-            "fidelity: L1（替身引擎逐流生产，跳过 should_take；"
-            "engine/source 线程不存在）\n");
+            "fidelity: L1 (stub engine produces per stream, skips should_take; "
+            "engine/source threads do not exist)\n");
     }
     std::printf("rss: parent=%" PRIu64 "kB child=%" PRIu64 "kB\n", result.rss_kb,
                 child_rss_kb);
     if (stats_post_ok) {
         std::printf("drops: streamstats=+%" PRIu64
                     " GetPipelineStats cli=+%" PRIu64
-                    " (TSV 取服务端; cli active=%" PRIu64 "->%" PRIu64
+                    " (TSV uses the server; cli active=%" PRIu64 "->%" PRIu64
                     " peak=%" PRIu64 ")\n",
                     drops, stats_drops, stats_pre.active, stats_post.active,
                     stats_post.peak);
@@ -1384,63 +1398,71 @@ int run_cli(const bench::CommonOptions& options,
         }
         else {
             std::printf(
-                "engine stats: GetPipelineStats 无 engine 段"
-                "（L1 替身为空）\n");
+                "engine stats: GetPipelineStats has no engine section"
+                " (the L1 stub is empty)\n");
         }
         if (stats_drops != drops) {
             std::printf(
-                "提示：streamstats 与 GetPipelineStats 的 drops 口径不一致"
-                "（流上的 stats 可能尚未送达，或含已摘除流的计数）\n");
+                "hint: streamstats and GetPipelineStats disagree on drops"
+                " (per-stream stats may not have arrived yet, or may include "
+                "counts from removed streams)\n");
         }
     }
     else {
         std::printf("drops: streamstats=+%" PRIu64
-                    " GetPipelineStats 不可用（%s），TSV 退回流上计数\n",
+                    " GetPipelineStats is unavailable (%s), TSV falls back to "
+                    "per-stream counts\n",
                     drops, stats_post_error.c_str());
     }
     const char* zero_drop_server =
-        stats_post_ok ? (stats_drops == 0 ? "yes" : "no") : "未知";
+        stats_post_ok ? (stats_drops == 0 ? "yes" : "no") : "unknown";
     std::printf("per-stream drops: %" PRIu64
-                "/%d 条流有丢弃；零丢: 流上=%s 服务端=%s（容量只认服务端）\n",
+                "/%d streams have drops; zero drops: per-stream=%s server=%s "
+                "(capacity is judged by the server)\n",
                 streams_with_drops, cli_options.streams,
                 drops == 0 ? "yes" : "no", zero_drop_server);
     if (server_total_cpu > 0.0 && l2) {
         std::printf(
-            "cpu 归属: cli-tp=%.1f%% engine=%.1f%% source=%.1f%%"
-            "（占子进程总 CPU）\n",
+            "cpu attribution: cli-tp=%.1f%% engine=%.1f%% source=%.1f%%"
+            " (of the child process total CPU)\n",
             cli_tp_cpu / server_total_cpu * 100.0,
             engine_cpu / server_total_cpu * 100.0,
             source_cpu / server_total_cpu * 100.0);
     }
     else if (server_total_cpu > 0.0) {
-        std::printf("cpu 归属: cli-tp 占进程总 CPU 的 %.1f%%\n",
-                    cli_tp_cpu / server_total_cpu * 100.0);
+        std::printf(
+            "cpu attribution: cli-tp accounts for %.1f%% of the process total "
+            "CPU\n",
+            cli_tp_cpu / server_total_cpu * 100.0);
     }
     if (cli_tp_cpu > 0.0 && client_cpu >= cli_tp_cpu * 0.8) {
         std::printf(
-            "提示：客户端 CPU %.3fs 已接近服务端 cli-tp CPU %.3fs，"
-            "压测器可能成为瓶颈\n",
+            "hint: client CPU %.3fs is close to server cli-tp CPU %.3fs, "
+            "the benchmarker may become the bottleneck\n",
             client_cpu, cli_tp_cpu);
     }
     if (l2 && cli_options.filter != CliFilter::NONE && records == 0) {
         std::printf(
-            "提示：过滤器未放行任何事件；引擎侧仍按每事件计费，"
-            "us/event 只在有交付记录时有意义\n");
+            "hint: the filter let no events through; the engine side still "
+            "charges per event, "
+            "us/event is only meaningful when there are delivered records\n");
     }
     if (options.rate == 0.0) {
         std::printf(
-            "提示：rate=0 为饱和模式，生产者全速推事件，队列必然大量拒收；"
-            "容量取 0 丢的最高限速（用 --rate 扫描）\n");
+            "hint: rate=0 is saturated mode, producers push events at full speed "
+            "and the queue necessarily rejects a lot; "
+            "capacity is the highest rate with zero drops (scan with --rate)\n");
     }
     if (!clean_shutdown) {
-        std::printf("提示：%s\n", shutdown_error.c_str());
+        std::printf("hint: %s\n", shutdown_error.c_str());
     }
     if (child_code != 0) {
-        std::printf("警告：服务端子进程%s\n",
+        std::printf("warning: server child process %s\n",
                     bench::cli::describe_exit(child_code).c_str());
     }
     if (!stream_failures.empty()) {
-        std::fprintf(stderr, "运行期失败：%zu 条流未正常结束\n",
+        std::fprintf(stderr,
+                     "runtime failure: %zu streams did not end normally\n",
                      stream_failures.size());
         for (const std::string& failure : stream_failures) {
             std::fprintf(stderr, "  %s\n", failure.c_str());
@@ -1452,7 +1474,7 @@ int run_cli(const bench::CommonOptions& options,
     }
     if (!bench::append_tsv(options.out_path, result)) {
         std::fprintf(
-            stderr, "写 TSV 失败：%s\n",
+            stderr, "failed to write TSV: %s\n",
             options.out_path.empty() ? "stdout" : options.out_path.c_str());
         return kExitRuntimeFailure;
     }

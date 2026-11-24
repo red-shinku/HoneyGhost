@@ -3,12 +3,7 @@
  * @brief 引擎段压测：语义通道 → RuntimeEngineComponent → 订阅端
  * @details
  * 在测量开始前读取 raw 语料并离线语义化、常驻内存。
- * 生产者按 --rate 节拍或全速循环回放，直接以拷贝方式写入语义通道；
  * 真实引擎组件在独立线程上消费、组装运行时事件并分发给计数订阅端。
- * --fidelity l1（默认）的控制平面全部是临时替身；--fidelity l2 用真实的
- * Process/Context 组件（各自独立线程），角色维度仍为替身。种子按语料构造：
- * 进程身份取事件头的 (pid, pid_start_time)，只作为父出现的进程补成父条目。
- * --events 只挑参与回放的类别（syscall/lifecycle），seed 始终用全量语料。
  */
 
 #include "test/bench/stages.hpp"
@@ -76,17 +71,21 @@ constexpr std::chrono::milliseconds kTidWaitLimit(1000);
 
 /// @brief 引擎段私有选项的多行用法
 constexpr const char* kExtraHelp =
-    "  --streams N       CLI 订阅流数，0..1024（默认 1）\n"
-    "  --system-sinks K  计数系统订阅数，引擎模式 1..64；--no-engine 时忽略"
-    "（默认 1）\n"
-    "  --filter MODE     订阅过滤器：none|etype|role（默认 none）\n"
-    "  --events MODE     回放类别：all|syscall|lifecycle（默认 all）；seed 始终"
-    "用全量语料\n"
-    "  --settled R       种子落定比例，0..1（默认 1）；L2 下只作用于角色替身\n"
-    "  --pids N          把进程身份压成 N 个（pid/ppid/target_pid 重映射，"
-    "start_time 一并归一化），0 保留原值（默认 0）\n"
-    "  --no-engine       只跑生产者与语义通道取空线程，测生产者天花板；"
-    "与 --fidelity l2 互斥\n";
+    "  --streams N       CLI subscription streams, 0..1024 (default 1)\n"
+    "  --system-sinks K  number of counting system subscriptions, engine mode "
+    "1..64; ignored with --no-engine (default 1)\n"
+    "  --filter MODE     subscription filter: none|etype|role (default none)\n"
+    "  --events MODE     replay event class: all|syscall|lifecycle (default "
+    "all); "
+    "seed always uses the full trace\n"
+    "  --settled R       seed settle ratio, 0..1 (default 1); under L2 it only "
+    "applies to role stubs\n"
+    "  --pids N          compress process identity to N (remaps "
+    "pid/ppid/target_pid "
+    "and normalizes start_time), 0 keeps the original values (default 0)\n"
+    "  --no-engine       run only the producer and the semantic channel drain "
+    "thread "
+    "to measure the producer ceiling; mutually exclusive with --fidelity l2\n";
 
 /// @brief 订阅过滤器模式
 enum class FilterMode : std::uint8_t { NONE, ETYPE, ROLE };
@@ -224,7 +223,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
         std::string inline_value;
         bool has_inline = false;
         if (!split_option(rest[index], name, inline_value, has_inline)) {
-            error = "未知选项 " + rest[index];
+            error = "unknown option " + rest[index];
             return false;
         }
 
@@ -242,7 +241,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
 
         if (name == "--no-engine") {
             if (has_inline) {
-                error = "--no-engine 不接受取值";
+                error = "--no-engine does not take a value";
                 return false;
             }
             options.no_engine = true;
@@ -252,7 +251,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 0, 1024, options.streams)) {
-                error = "--streams 需为 0..1024 的整数";
+                error = "--streams must be an integer in 0..1024";
                 return false;
             }
             continue;
@@ -261,7 +260,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 0, 64, options.system_sinks)) {
-                error = "--system-sinks 需为 0..64 的整数";
+                error = "--system-sinks must be an integer in 0..64";
                 return false;
             }
             continue;
@@ -270,7 +269,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 0, 1048576, options.pids)) {
-                error = "--pids 需为 0..1048576 的整数";
+                error = "--pids must be an integer in 0..1048576";
                 return false;
             }
             continue;
@@ -278,7 +277,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
         if (name == "--settled") {
             std::string text;
             if (!take_value(text) || !parse_fraction(text, options.settled)) {
-                error = "--settled 需为 0..1 的浮点数";
+                error = "--settled must be a float in 0..1";
                 return false;
             }
             continue;
@@ -286,7 +285,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
         if (name == "--events") {
             std::string text;
             if (!take_value(text)) {
-                error = "--events 缺少取值";
+                error = "--events is missing a value";
                 return false;
             }
             if (text == "all") {
@@ -299,7 +298,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
                 options.events = EventClass::LIFECYCLE;
             }
             else {
-                error = "--events 需为 all|syscall|lifecycle";
+                error = "--events must be all|syscall|lifecycle";
                 return false;
             }
             continue;
@@ -307,7 +306,7 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
         if (name == "--filter") {
             std::string text;
             if (!take_value(text)) {
-                error = "--filter 缺少取值";
+                error = "--filter is missing a value";
                 return false;
             }
             if (text == "none") {
@@ -320,12 +319,12 @@ bool parse_rest(const std::vector<std::string>& rest, EngineOptions& options,
                 options.filter = FilterMode::ROLE;
             }
             else {
-                error = "--filter 需为 none|etype|role";
+                error = "--filter must be none|etype|role";
                 return false;
             }
             continue;
         }
-        error = "未知选项 " + name;
+        error = "unknown option " + name;
         return false;
     }
     return true;
@@ -403,7 +402,7 @@ bool load_trace(const std::string& path, std::uint32_t pid_mod, TraceData& data,
     bench::TraceReader reader;
     std::string reader_error;
     if (!reader.open(path, reader_error)) {
-        error = "打开语料 " + path + " 失败：" + reader_error;
+        error = "failed to open trace " + path + ": " + reader_error;
         return false;
     }
 
@@ -425,12 +424,12 @@ bool load_trace(const std::string& path, std::uint32_t pid_mod, TraceData& data,
         data.events.push_back(std::move(event));
     }
     if (!reader_error.empty()) {
-        error = "读取语料 " + path + " 失败：" + reader_error;
+        error = "failed to read trace " + path + ": " + reader_error;
         return false;
     }
     if (data.events.empty()) {
-        error = "语料 " + path + " 没有可用记录（跳过 " +
-                std::to_string(data.skipped) + " 条）";
+        error = "trace " + path + " has no usable records (skipped " +
+                std::to_string(data.skipped) + " records)";
         return false;
     }
     return true;
@@ -728,7 +727,7 @@ bool wait_for_tids(const std::atomic<pid_t>& producer_tid,
             return true;
         }
         if (bench::Clock::now() >= deadline) {
-            error = "等待线程 tid 发布超时（1s）：";
+            error = "timed out after 1s waiting for threads to publish tid: ";
             if (!producer_ready) {
                 error += " producer";
             }
@@ -774,23 +773,26 @@ int run_engine(const bench::CommonOptions& options,
     EngineOptions engine_options;
     std::string error;
     if (!parse_rest(rest, engine_options, error)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
-        std::fprintf(stderr, "engine 段选项：\n%s", kExtraHelp);
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
+        std::fprintf(stderr, "engine stage options:\n%s", kExtraHelp);
         return kExitUsage;
     }
     if (!engine_options.no_engine && engine_options.system_sinks == 0) {
-        std::fprintf(stderr,
-                     "参数错误：引擎模式至少需要 1 个系统订阅用于计数；"
-                     "测生产者天花板请用 --no-engine\n");
-        std::fprintf(stderr, "engine 段选项：\n%s", kExtraHelp);
+        std::fprintf(
+            stderr,
+            "parameter error: engine mode needs at least 1 system subscription "
+            "for"
+            " counting; use --no-engine to measure the producer ceiling\n");
+        std::fprintf(stderr, "engine stage options:\n%s", kExtraHelp);
         return kExitUsage;
     }
 
     const bool l2 = options.fidelity == bench::Fidelity::L2;
     if (l2 && engine_options.no_engine) {
-        std::fprintf(stderr,
-                     "参数错误：--no-engine 与 --fidelity l2 互斥；"
-                     "测生产者天花板请用 --fidelity l1\n");
+        std::fprintf(
+            stderr,
+            "parameter error: --no-engine and --fidelity l2 are mutually "
+            "exclusive; use --fidelity l1 to measure the producer ceiling\n");
         return kExitUsage;
     }
 
@@ -811,7 +813,7 @@ int run_engine(const bench::CommonOptions& options,
         }
     }
     if (playback.empty()) {
-        std::fprintf(stderr, "语料在 --events %s 下没有可回放的事件\n",
+        std::fprintf(stderr, "trace has no replayable events under --events %s\n",
                      event_class_name(engine_options.events));
         return kExitRuntimeFailure;
     }
@@ -849,7 +851,9 @@ int run_engine(const bench::CommonOptions& options,
             context_component = hng::ControlPlaneFactory::create_context();
         }
         catch (const std::exception& failure) {
-            std::fprintf(stderr, "控制面组件构造失败：%s\n", failure.what());
+            std::fprintf(stderr,
+                         "failed to construct the control plane component: %s\n",
+                         failure.what());
             return kExitRuntimeFailure;
         }
         // 与装配层一致：进程组件接角色替身与真实 context 的生命周期出口
@@ -868,8 +872,8 @@ int run_engine(const bench::CommonOptions& options,
         if (l2_seeds.process.rejected_state != 0 ||
             l2_seeds.context.rejected_state != 0) {
             std::fprintf(stderr,
-                         "L2 seed 被拒：组件不处于 CONSTRUCTED"
-                         "（process %" PRIu64 "，context %" PRIu64 "）\n",
+                         "L2 seed rejected: the component is not CONSTRUCTED"
+                         " (process %" PRIu64 ", context %" PRIu64 ")\n",
                          l2_seeds.process.rejected_state,
                          l2_seeds.context.rejected_state);
             return kExitRuntimeFailure;
@@ -912,7 +916,8 @@ int run_engine(const bench::CommonOptions& options,
             engine = hng::RuntimeEngineFactory::create(engine_settings);
         }
         catch (const std::exception& failure) {
-            std::fprintf(stderr, "引擎构造失败：%s\n", failure.what());
+            std::fprintf(stderr, "failed to construct the engine: %s\n",
+                         failure.what());
             return kExitRuntimeFailure;
         }
         for (const std::unique_ptr<CountSystemSink>& sink : system_sinks) {
@@ -921,7 +926,9 @@ int run_engine(const bench::CommonOptions& options,
         for (const std::unique_ptr<CountSink>& sink : cli_sinks) {
             if (!engine->subscriber_service().subscribe(sink.get(), sink->filter,
                                                         nullptr)) {
-                std::fprintf(stderr, "订阅登记失败：引擎已停机\n");
+                std::fprintf(stderr,
+                             "failed to register the subscription: engine "
+                             "already stopped\n");
                 return kExitRuntimeFailure;
             }
         }
@@ -937,11 +944,14 @@ int run_engine(const bench::CommonOptions& options,
                 process_component->run();
             }
             catch (const std::exception& failure) {
-                std::fprintf(stderr, "进程组件线程失败：%s\n", failure.what());
+                std::fprintf(stderr, "process component thread failed: %s\n",
+                             failure.what());
                 control_failed.store(true, std::memory_order_release);
             }
             catch (...) {
-                std::fprintf(stderr, "进程组件线程失败：未知异常\n");
+                std::fprintf(
+                    stderr,
+                    "process component thread failed: unknown exception\n");
                 control_failed.store(true, std::memory_order_release);
             }
         });
@@ -950,11 +960,14 @@ int run_engine(const bench::CommonOptions& options,
                 context_component->run();
             }
             catch (const std::exception& failure) {
-                std::fprintf(stderr, "上下文组件线程失败：%s\n", failure.what());
+                std::fprintf(stderr, "context component thread failed: %s\n",
+                             failure.what());
                 control_failed.store(true, std::memory_order_release);
             }
             catch (...) {
-                std::fprintf(stderr, "上下文组件线程失败：未知异常\n");
+                std::fprintf(
+                    stderr,
+                    "context component thread failed: unknown exception\n");
                 control_failed.store(true, std::memory_order_release);
             }
         });
@@ -986,7 +999,8 @@ int run_engine(const bench::CommonOptions& options,
         if (options.pin_producer >= 0) {
             std::string pin_error;
             if (!bench::pin_this_thread(options.pin_producer, pin_error)) {
-                std::fprintf(stderr, "生产者绑核失败：%s\n", pin_error.c_str());
+                std::fprintf(stderr, "producer CPU pinning failed: %s\n",
+                             pin_error.c_str());
             }
         }
         std::uint64_t index = 0;
@@ -1024,7 +1038,7 @@ int run_engine(const bench::CommonOptions& options,
             if (options.pin_consumer >= 0) {
                 std::string pin_error;
                 if (!bench::pin_this_thread(options.pin_consumer, pin_error)) {
-                    std::fprintf(stderr, "取空线程绑核失败：%s\n",
+                    std::fprintf(stderr, "drain thread CPU pinning failed: %s\n",
                                  pin_error.c_str());
                 }
             }
@@ -1037,7 +1051,7 @@ int run_engine(const bench::CommonOptions& options,
             if (options.pin_consumer >= 0) {
                 std::string pin_error;
                 if (!bench::pin_this_thread(options.pin_consumer, pin_error)) {
-                    std::fprintf(stderr, "引擎线程绑核失败：%s\n",
+                    std::fprintf(stderr, "engine thread CPU pinning failed: %s\n",
                                  pin_error.c_str());
                 }
             }
@@ -1045,11 +1059,12 @@ int run_engine(const bench::CommonOptions& options,
                 engine->run();
             }
             catch (const std::exception& failure) {
-                std::fprintf(stderr, "引擎线程失败：%s\n", failure.what());
+                std::fprintf(stderr, "engine thread failed: %s\n",
+                             failure.what());
                 engine_failed.store(true);
             }
             catch (...) {
-                std::fprintf(stderr, "引擎线程失败：未知异常\n");
+                std::fprintf(stderr, "engine thread failed: unknown exception\n");
                 engine_failed.store(true);
             }
             consumer_done.store(true, std::memory_order_release);
@@ -1072,10 +1087,13 @@ int run_engine(const bench::CommonOptions& options,
             if (consumer.joinable() &&
                 !wait_for_thread(consumer, consumer_done, kThreadJoinLimit)) {
                 std::fprintf(stderr,
-                             "告警：取空线程在 %lld 秒内未退出，再等一次\n",
+                             "warning: drain thread did not exit within %lld "
+                             "seconds, waiting once more\n",
                              static_cast<long long>(kThreadJoinLimit.count()));
                 if (!wait_for_thread(consumer, consumer_done, kThreadJoinLimit)) {
-                    std::fprintf(stderr, "取空线程仍未退出，退出进程\n");
+                    std::fprintf(
+                        stderr,
+                        "drain thread still did not exit, exiting the process\n");
                     std::_Exit(kExitRuntimeFailure);
                 }
             }
@@ -1085,10 +1103,13 @@ int run_engine(const bench::CommonOptions& options,
             if (consumer.joinable() &&
                 !wait_for_thread(consumer, consumer_done, kThreadJoinLimit)) {
                 std::fprintf(stderr,
-                             "告警：引擎线程在 %lld 秒内未退出，再等一次\n",
+                             "warning: engine thread did not exit within %lld "
+                             "seconds, waiting once more\n",
                              static_cast<long long>(kThreadJoinLimit.count()));
                 if (!wait_for_thread(consumer, consumer_done, kThreadJoinLimit)) {
-                    std::fprintf(stderr, "引擎线程仍未退出，退出进程\n");
+                    std::fprintf(stderr,
+                                 "engine thread still did not exit, exiting the "
+                                 "process\n");
                     std::_Exit(kExitRuntimeFailure);
                 }
             }
@@ -1120,7 +1141,7 @@ int run_engine(const bench::CommonOptions& options,
             producer_tid.load(std::memory_order_acquire));
         if (!bench::read_thread_cpu(producer_id, snapshot.producer,
                                     sample_error)) {
-            sample_error = "读取生产者线程 CPU 失败：" + sample_error;
+            sample_error = "failed to read producer thread CPU: " + sample_error;
             return false;
         }
         const std::uint64_t consumer_id = static_cast<std::uint64_t>(
@@ -1128,18 +1149,18 @@ int run_engine(const bench::CommonOptions& options,
         if (engine_options.no_engine) {
             if (!bench::read_thread_cpu(consumer_id, snapshot.drain,
                                         sample_error)) {
-                sample_error = "读取取空线程 CPU 失败：" + sample_error;
+                sample_error = "failed to read drain thread CPU: " + sample_error;
                 return false;
             }
         }
         else if (!bench::read_thread_cpu(consumer_id, snapshot.engine,
                                          sample_error)) {
-            sample_error = "读取引擎线程 CPU 失败：" + sample_error;
+            sample_error = "failed to read engine thread CPU: " + sample_error;
             return false;
         }
         if (!bench::read_process_cpu(::getpid(), snapshot.process,
                                      sample_error)) {
-            sample_error = "读取进程总 CPU 失败：" + sample_error;
+            sample_error = "failed to read process total CPU: " + sample_error;
             return false;
         }
         return true;
@@ -1227,11 +1248,13 @@ int run_engine(const bench::CommonOptions& options,
     stop_threads();
 
     if (engine_failed.load(std::memory_order_acquire)) {
-        std::fprintf(stderr, "引擎线程失败，未生成结果\n");
+        std::fprintf(stderr, "engine thread failed, no result produced\n");
         return kExitRuntimeFailure;
     }
     if (control_failed.load(std::memory_order_acquire)) {
-        std::fprintf(stderr, "控制面组件线程失败，未生成结果\n");
+        std::fprintf(
+            stderr,
+            "control plane component thread failed, no result produced\n");
         return kExitRuntimeFailure;
     }
 
@@ -1380,10 +1403,14 @@ int run_engine(const bench::CommonOptions& options,
     std::printf("events by class: syscall=%" PRIu64 " lifecycle=%" PRIu64 "\n",
                 syscall_events, lifecycle_events);
     if (l2) {
-        std::printf("fidelity: L2（Process/Context 真实组件，Role 为替身）\n");
+        std::printf(
+            "fidelity: L2 (Process/Context are real components, Role is a "
+            "stub)\n");
     }
     else if (!engine_options.no_engine) {
-        std::printf("fidelity: L1（控制面为内存替身，不含锁与入队成本）\n");
+        std::printf(
+            "fidelity: L1 (control plane is in-memory stubs, no lock or enqueue "
+            "cost)\n");
     }
     if (!engine_options.no_engine) {
         std::printf("engine stats: unsettled_events=+%" PRIu64
@@ -1398,14 +1425,15 @@ int run_engine(const bench::CommonOptions& options,
                 "rss_kb=%" PRIu64 "\n",
                 result.peak_queue, capacity, result.rss_kb);
     if (l2) {
-        std::printf("seeds: role 替身 settled=%s 播种=%" PRIu64
-                    "（L2 下 --settled 只作用于角色替身；context 为真实 seed，"
-                    "语料进程全部命中）\n",
-                    settled_text, l2_seeds.roles);
-        std::printf("process seed: batch=%zu（补父 %" PRIu64 "）inserted=%" PRIu64
-                    " duplicate=%" PRIu64 " pid_reused=%" PRIu64
-                    " parent_missing=%" PRIu64 " invalid=%" PRIu64
-                    " rejected_state=%" PRIu64 "\n",
+        std::printf(
+            "seeds: role stubs settled=%s seeded=%" PRIu64
+            " (under L2 --settled only applies to role stubs; context is a "
+            "real seed, all trace processes are hit)\n",
+            settled_text, l2_seeds.roles);
+        std::printf("process seed: batch=%zu (supplemented parents %" PRIu64
+                    "), inserted=%" PRIu64 " duplicate=%" PRIu64
+                    " pid_reused=%" PRIu64 " parent_missing=%" PRIu64
+                    " invalid=%" PRIu64 " rejected_state=%" PRIu64 "\n",
                     l2_seeds.batch.entries.size(), l2_seeds.supplemented,
                     l2_seeds.process.inserted, l2_seeds.process.duplicate,
                     l2_seeds.process.pid_reused, l2_seeds.process.parent_missing,
@@ -1451,10 +1479,10 @@ int run_engine(const bench::CommonOptions& options,
                     cm_ctxroot_parent_unsettled, cm_unknown_unregister);
         if (pm_stale_add > 0 || cm_late_register > 0) {
             std::printf(
-                "提示：语料循环回放复活了已退出的进程身份"
-                "（stale_add=+%" PRIu64 " late_register=+%" PRIu64
-                "），本段 lifecycle 成本含墓碑路径；"
-                "稳态容量请用 --events syscall\n",
+                "hint: replaying the trace in a loop resurrects exited process "
+                "identities (stale_add=+%" PRIu64 " late_register=+%" PRIu64
+                "), so this stage's lifecycle cost includes the tombstone path; "
+                "use --events syscall for steady-state capacity\n",
                 pm_stale_add, cm_late_register);
         }
         std::printf("pacer overruns=%" PRIu64 " push_calls=%" PRIu64
@@ -1474,22 +1502,28 @@ int run_engine(const bench::CommonOptions& options,
     std::printf("window cpu: producer=%.3fs engine=%.3fs drain=%.3fs\n",
                 producer_cpu, engine_cpu, drain_cpu);
     std::printf(
-        "cp cpu=%.3fs（控制面+其它线程） cp_us/event=%.3f total_cpu=%.3fs%s\n",
+        "cp cpu=%.3fs (control plane + other threads) cp_us/event=%.3f "
+        "total_cpu=%.3fs%s\n",
         control_cpu,
         events > 0 ? control_cpu * 1e6 / static_cast<double>(events) : 0.0,
         process_cpu,
-        l2 ? "（含无法按 tid 归属的线程）" : "（L1 控制面在引擎线程内）");
+        l2 ? " (includes threads that cannot be attributed by tid)"
+           : " (L1 control plane runs inside the engine thread)");
     if (engine_options.no_engine) {
-        std::printf("no-engine: 无语义引擎线程，events 取 push 成功数\n");
+        std::printf(
+            "no-engine: no semantic engine thread; events counts successful "
+            "pushes\n");
     }
     if (options.rate == 0.0 && drops > 0) {
         std::printf(
-            "提示：rate=0 时生产者以单核自旋重试，读数含缓存行争用；"
-            "容量请取 0 丢的最高限速（用 --rate 扫描）\n");
+            "hint: at rate=0 the producer spins and retries on a single core, so "
+            "readings "
+            "include cache-line contention; take the highest rate with 0 drops "
+            "as the capacity (scan with --rate)\n");
     }
     if (!bench::append_tsv(options.out_path, result)) {
         std::fprintf(
-            stderr, "写 TSV 失败：%s\n",
+            stderr, "failed to write TSV: %s\n",
             options.out_path.empty() ? "stdout" : options.out_path.c_str());
         return kExitRuntimeFailure;
     }

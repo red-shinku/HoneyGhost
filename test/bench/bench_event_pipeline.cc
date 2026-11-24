@@ -53,31 +53,31 @@ const bench::StageSpec* find_stage(const std::string& name)
 void print_usage(std::FILE* out)
 {
     std::fprintf(out,
-                 "用法: bench_event_pipeline --stage NAME [选项]\n"
+                 "usage: bench_event_pipeline --stage NAME [options]\n"
                  "\n"
-                 "公共选项：\n"
-                 "  --stage NAME       压测段（必填）\n"
-                 "  --fidelity l1|l2   控制面保真度，默认 l1；engine 与 cli "
-                 "支持 l2\n"
-                 "  --trace PATH       语料文件（semantic/engine/chain 必填）\n"
-                 "  --seconds N        统计窗口秒数，>0（默认 10）\n"
-                 "  --warmup N         预热秒数，>=0（默认 1）\n"
-                 "  --rate R           目标速率 Hz，浮点，0 表示饱和（默认 0）\n"
-                 "  --queue N          通道容量，>=2（默认 8192）\n"
-                 "  --pin-consumer N   消费侧绑核序号，-1 表示不绑（默认 -1）\n"
-                 "  --pin-producer N   生产侧绑核序号，-1 表示不绑（默认 -1）\n"
-                 "  --out PATH         追加 TSV 的文件；空则打到 stdout\n"
-                 "  --quiet            不打印机器指纹与启动参数\n"
-                 "  --help             显示本帮助\n"
+                 "common options:\n"
+                 "  --stage NAME       benchmark stage (required)\n"
+                 "  --fidelity l1|l2   control plane fidelity, default l1; engine and cli "
+                 "support l2\n"
+                 "  --trace PATH       trace file (required for semantic/engine/chain)\n"
+                 "  --seconds N        measurement window in seconds, >0 (default 10)\n"
+                 "  --warmup N         warmup seconds, >=0 (default 1)\n"
+                 "  --rate R           target rate in Hz, floating point, 0 means saturated (default 0)\n"
+                 "  --queue N          channel capacity, >=2 (default 8192)\n"
+                 "  --pin-consumer N   consumer side CPU index, -1 means no pinning (default -1)\n"
+                 "  --pin-producer N   producer side CPU index, -1 means no pinning (default -1)\n"
+                 "  --out PATH         file to append TSV to; empty writes to stdout\n"
+                 "  --quiet            do not print the machine fingerprint and startup parameters\n"
+                 "  --help             show this help\n"
                  "\n"
-                 "各 stage 私有选项：\n");
+                 "per-stage private options:\n");
     for (const bench::StageSpec* stage : available_stages()) {
         std::fprintf(out, "\n[%s]\n%s", stage->name, stage->extra_help);
     }
     std::fprintf(
         out,
-        "\n退出码：0 成功；1 运行期失败；3 参数错误。\n"
-        "TSV 列：stage config rate seconds events events_per_s us_per_event "
+        "\nexit codes: 0 success; 1 runtime failure; 3 parameter error.\n"
+        "TSV columns: stage config rate seconds events events_per_s us_per_event "
         "producer_us_per_event drops rss_kb peak_queue\n");
 }
 
@@ -172,7 +172,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
 
         if (name == "--help") {
             if (has_inline) {
-                error = "--help 不接受取值";
+                error = "--help does not take a value";
                 return false;
             }
             help = true;
@@ -180,7 +180,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
         }
         if (name == "--quiet") {
             if (has_inline) {
-                error = "--quiet 不接受取值";
+                error = "--quiet does not take a value";
                 return false;
             }
             options.quiet = true;
@@ -188,7 +188,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
         }
         if (name == "--stage") {
             if (!take_value(options.stage) || options.stage.empty()) {
-                error = "--stage 缺少名字";
+                error = "--stage is missing a name";
                 return false;
             }
             continue;
@@ -196,7 +196,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
         if (name == "--fidelity") {
             std::string text;
             if (!take_value(text)) {
-                error = "--fidelity 缺少取值";
+                error = "--fidelity is missing a value";
                 return false;
             }
             if (text == "l1") {
@@ -206,21 +206,21 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
                 options.fidelity = bench::Fidelity::L2;
             }
             else {
-                error = "--fidelity 需为 l1|l2";
+                error = "--fidelity must be l1|l2";
                 return false;
             }
             continue;
         }
         if (name == "--trace") {
             if (!take_value(options.trace_path) || options.trace_path.empty()) {
-                error = "--trace 缺少路径";
+                error = "--trace is missing a path";
                 return false;
             }
             continue;
         }
         if (name == "--out") {
             if (!take_value(options.out_path) || options.out_path.empty()) {
-                error = "--out 缺少路径";
+                error = "--out is missing a path";
                 return false;
             }
             continue;
@@ -229,7 +229,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 1, 86400, options.seconds)) {
-                error = "--seconds 需为 1..86400 的整数";
+                error = "--seconds must be an integer in 1..86400";
                 return false;
             }
             continue;
@@ -238,7 +238,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 0, 86400, options.warmup_seconds)) {
-                error = "--warmup 需为 0..86400 的整数";
+                error = "--warmup must be an integer in 0..86400";
                 return false;
             }
             continue;
@@ -247,7 +247,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
             std::string text;
             if (!take_value(text) ||
                 !parse_integer(text, 2, 1048576, options.queue)) {
-                error = "--queue 需为 2..1048576 的整数";
+                error = "--queue must be an integer in 2..1048576";
                 return false;
             }
             continue;
@@ -256,7 +256,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
             std::string text;
             int value = -1;
             if (!take_value(text) || !parse_integer(text, -1, 1048576, value)) {
-                error = std::string(name) + " 需为 -1 或非负整数";
+                error = std::string(name) + " must be -1 or a non-negative integer";
                 return false;
             }
             if (name == "--pin-consumer") {
@@ -270,7 +270,7 @@ bool parse_options(int argc, char** argv, bench::CommonOptions& options,
         if (name == "--rate") {
             std::string text;
             if (!take_value(text) || !parse_rate(text, options.rate)) {
-                error = "--rate 需为 >=0 的浮点数";
+                error = "--rate must be a floating point number >= 0";
                 return false;
             }
             continue;
@@ -291,13 +291,13 @@ bool validate_options(const bench::CommonOptions& options, std::string& error)
         return cpu == -1 || (cpu >= 0 && cpu < online);
     };
     if (!pin_ok(options.pin_consumer)) {
-        error =
-            "--pin-consumer 超出在线 CPU 范围 -1.." + std::to_string(online - 1);
+        error = "--pin-consumer is out of the online CPU range -1.." +
+                std::to_string(online - 1);
         return false;
     }
     if (!pin_ok(options.pin_producer)) {
-        error =
-            "--pin-producer 超出在线 CPU 范围 -1.." + std::to_string(online - 1);
+        error = "--pin-producer is out of the online CPU range -1.." +
+                std::to_string(online - 1);
         return false;
     }
     return true;
@@ -312,8 +312,8 @@ int main(int argc, char** argv)
     std::string error;
     bool help = false;
     if (!parse_options(argc, argv, options, rest, error, help)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
-        std::fprintf(stderr, "用 --help 查看用法\n");
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
+        std::fprintf(stderr, "use --help for usage\n");
         return kExitUsage;
     }
     if (help) {
@@ -322,8 +322,8 @@ int main(int argc, char** argv)
     }
 
     if (options.stage.empty()) {
-        std::fprintf(stderr, "参数错误：缺少 --stage NAME\n");
-        std::fprintf(stderr, "可用 stage：");
+        std::fprintf(stderr, "parameter error: missing --stage NAME\n");
+        std::fprintf(stderr, "available stages:");
         for (const bench::StageSpec* stage : available_stages()) {
             std::fprintf(stderr, " %s", stage->name);
         }
@@ -332,8 +332,9 @@ int main(int argc, char** argv)
     }
     const bench::StageSpec* stage = find_stage(options.stage);
     if (stage == nullptr) {
-        std::fprintf(stderr, "参数错误：未知 stage %s\n", options.stage.c_str());
-        std::fprintf(stderr, "可用 stage：");
+        std::fprintf(stderr, "parameter error: unknown stage %s\n",
+                     options.stage.c_str());
+        std::fprintf(stderr, "available stages:");
         for (const bench::StageSpec* item : available_stages()) {
             std::fprintf(stderr, " %s", item->name);
         }
@@ -341,16 +342,17 @@ int main(int argc, char** argv)
         return kExitUsage;
     }
     if (options.fidelity == bench::Fidelity::L2 && !stage->supports_l2) {
-        std::fprintf(stderr, "参数错误：stage %s 只支持 --fidelity l1\n",
-                     stage->name);
+        std::fprintf(
+            stderr, "parameter error: stage %s supports only --fidelity l1\n",
+            stage->name);
         return kExitUsage;
     }
     if (stage->requires_trace && options.trace_path.empty()) {
-        std::fprintf(stderr, "参数错误：缺少 --trace PATH\n");
+        std::fprintf(stderr, "parameter error: missing --trace PATH\n");
         return kExitUsage;
     }
     if (!validate_options(options, error)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
         return kExitUsage;
     }
 
@@ -364,7 +366,7 @@ int main(int argc, char** argv)
         std::printf("seconds  : %d  warmup: %d\n", options.seconds,
                     options.warmup_seconds);
         std::printf("rate     : %g%s\n", options.rate,
-                    options.rate == 0.0 ? " (饱和)" : "");
+                    options.rate == 0.0 ? " (saturated)" : "");
         std::printf("queue    : %d\n", options.queue);
         std::printf("pin      : consumer=%d producer=%d\n", options.pin_consumer,
                     options.pin_producer);
@@ -380,7 +382,7 @@ int main(int argc, char** argv)
         return stage->run(options, rest);
     }
     catch (const std::exception& failure) {
-        std::fprintf(stderr, "运行期失败：%s\n", failure.what());
+        std::fprintf(stderr, "runtime failure: %s\n", failure.what());
         return kExitRuntimeFailure;
     }
 }

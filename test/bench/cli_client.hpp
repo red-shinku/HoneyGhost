@@ -217,8 +217,9 @@ inline void start_streams(hng::clisv::RuntimeService::Stub& stub,
     }
     catch (const std::exception& failure) {
         stop_streams(streams);
-        throw std::runtime_error(std::string("创建客户端流线程失败：") +
-                                 failure.what());
+        throw std::runtime_error(
+            std::string("failed to create client stream thread: ") +
+            failure.what());
     }
 }
 
@@ -262,8 +263,8 @@ inline bool sample_client_cpu(const StreamList& streams, double& total,
         const std::uint64_t tid = static_cast<std::uint64_t>(
             streams[index]->tid.load(std::memory_order_acquire));
         if (!bench::read_thread_cpu(tid, seconds, error)) {
-            error = "读取客户端流 " + std::to_string(index) + " 线程 CPU 失败：" +
-                    error;
+            error = "failed to read client stream " + std::to_string(index) +
+                    " thread CPU: " + error;
             return false;
         }
         total += seconds;
@@ -356,9 +357,9 @@ constexpr int kChildFailureExitCode = 1;
 inline std::string describe_exit(int code)
 {
     if (code >= 0) {
-        return "退出码 " + std::to_string(code);
+        return "exit code " + std::to_string(code);
     }
-    return "信号 " + std::to_string(-code);
+    return "signal " + std::to_string(-code);
 }
 
 /**
@@ -423,8 +424,8 @@ class ServerProcess final {
             return true;
         }
         if (::kill(pid_, SIGTERM) != 0 && errno != ESRCH) {
-            error =
-                "向子进程发 SIGTERM 失败：" + std::string(std::strerror(errno));
+            error = "failed to send SIGTERM to the child process: " +
+                    std::string(std::strerror(errno));
         }
 
         const bench::Clock::time_point deadline =
@@ -441,8 +442,8 @@ class ServerProcess final {
                 reaped_ = true;
                 code_   = -1;
                 if (error.empty()) {
-                    error =
-                        "等待子进程失败：" + std::string(std::strerror(errno));
+                    error = "failed to wait for the child process: " +
+                            std::string(std::strerror(errno));
                 }
                 return false;
             }
@@ -451,7 +452,7 @@ class ServerProcess final {
                 (void)::waitpid(pid_, &status, 0);
                 reaped_ = true;
                 code_   = exit_code_of(status);
-                error   = "子进程未在 20s 内退出，已 SIGKILL";
+                error   = "child process did not exit within 20s; sent SIGKILL";
                 return false;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -556,7 +557,7 @@ inline PreparedCliServerConfig prepare_child_config(const ServerConfigSpec& spec
         temporary_config = temporary_path(spec.temp_prefix, ".conf");
         std::ofstream file(temporary_config);
         if (!file.is_open()) {
-            std::fprintf(stderr, "写临时配置 %s 失败：%s\n",
+            std::fprintf(stderr, "failed to write temporary config %s: %s\n",
                          temporary_config.c_str(), std::strerror(errno));
             ::_exit(kChildFailureExitCode);
         }
@@ -567,7 +568,7 @@ inline PreparedCliServerConfig prepare_child_config(const ServerConfigSpec& spec
              << "socket_path = " << spec.socket_path << "\n";
         file.close();
         if (!file.good()) {
-            std::fprintf(stderr, "写临时配置 %s 失败\n",
+            std::fprintf(stderr, "failed to write temporary config %s\n",
                          temporary_config.c_str());
             ::_exit(kChildFailureExitCode);
         }
@@ -600,7 +601,7 @@ inline PreparedCliServerConfig prepare_child_config(const ServerConfigSpec& spec
 inline void arm_parent_death_signal()
 {
     if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
-        std::fprintf(stderr, "设置 PR_SET_PDEATHSIG 失败：%s\n",
+        std::fprintf(stderr, "failed to set PR_SET_PDEATHSIG: %s\n",
                      std::strerror(errno));
     }
 }
@@ -617,7 +618,7 @@ inline pid_t fork_server_process()
     std::fflush(stderr);
     const pid_t child = ::fork();
     if (child < 0) {
-        std::fprintf(stderr, "fork 失败：%s\n", std::strerror(errno));
+        std::fprintf(stderr, "failed to fork: %s\n", std::strerror(errno));
     }
     return child;
 }
@@ -641,7 +642,8 @@ template <class RunService>
         run_service(prepared);
     }
     catch (const std::exception& failure) {
-        std::fprintf(stderr, "cli 服务端子进程失败：%s\n", failure.what());
+        std::fprintf(stderr, "CLI server child process failed: %s\n",
+                     failure.what());
         ::_exit(kChildFailureExitCode);
     }
     ::_exit(0);
@@ -695,11 +697,11 @@ inline bool fetch_pipeline_stats(hng::clisv::RuntimeService::Stub& stub,
         return false;
     }
     if (!response.has_stats()) {
-        error = "响应缺少 stats";
+        error = "response is missing stats";
         return false;
     }
     if (!response.stats().has_cli()) {
-        error = "响应缺少 cli 段";
+        error = "response is missing the cli section";
         return false;
     }
     snapshot.dropped = response.stats().cli().dropped();
@@ -734,11 +736,12 @@ inline bool wait_for_server(hng::clisv::RuntimeService::Stub& stub,
                             std::string& error)
 {
     const bench::Clock::time_point deadline = bench::Clock::now() + kReadyLimit;
-    std::string last_error                  = "尚未应答";
+    std::string last_error                  = "no response yet";
     while (bench::Clock::now() < deadline) {
         int code = 0;
         if (!server.alive(code)) {
-            error = "服务端子进程在就绪前退出（" + describe_exit(code) + "）";
+            error = "server child process exited before becoming ready (" +
+                    describe_exit(code) + ")";
             return false;
         }
         grpc::ClientContext context;
@@ -752,10 +755,12 @@ inline bool wait_for_server(hng::clisv::RuntimeService::Stub& stub,
             error.clear();
             return true;
         }
-        last_error = status.ok() ? "响应缺少 stats" : status.error_message();
+        last_error =
+            status.ok() ? "response is missing stats" : status.error_message();
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    error = "服务端未在 20s 内就绪（socket=" + socket_path + "）：" + last_error;
+    error = "server was not ready within 20s (socket=" + socket_path +
+            "): " + last_error;
     return false;
 }
 

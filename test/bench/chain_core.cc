@@ -127,7 +127,10 @@ bool wait_for_tid(const std::atomic<pid_t>& tid, const char* name,
     const bench::Clock::time_point deadline = bench::Clock::now() + kTidWaitLimit;
     while (tid.load(std::memory_order_acquire) == 0) {
         if (bench::Clock::now() >= deadline) {
-            error = std::string("等待线程 tid 发布超时（1s）：") + name;
+            error =
+                std::string(
+                    "timed out after 1s waiting for threads to publish tid: ") +
+                name;
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -211,7 +214,7 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
                                bool defer_feeder)
 {
     if (started) {
-        error = "ChainRuntime 已启动";
+        error = "ChainRuntime already started";
         return false;
     }
     options = settings;
@@ -260,7 +263,9 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
         semantic_settings.out_syscall = &sem_channel->writer();
         semantic = hng::SemanticFactory::create(semantic_settings);
         if (!semantic) {
-            error = "语义组件构造失败：工厂未返回实例";
+            error =
+                "failed to construct the semantic component: factory returned no "
+                "instance";
             return false;
         }
 
@@ -274,7 +279,8 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
         engine_settings.role_lookup    = &role_lookup;
         engine = hng::RuntimeEngineFactory::create(engine_settings);
         if (!engine) {
-            error = "引擎构造失败：工厂未返回实例";
+            error =
+                "failed to construct the engine: factory returned no instance";
             return false;
         }
         for (const std::unique_ptr<CountSystemSink>& sink : system_sinks) {
@@ -282,7 +288,8 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
         }
     }
     catch (const std::exception& failure) {
-        error = std::string("流水线组件构造失败：") + failure.what();
+        error = std::string("failed to construct the pipeline component: ") +
+                failure.what();
         return false;
     }
 
@@ -295,11 +302,13 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
                 semantic->run();
             }
             catch (const std::exception& failure) {
-                std::fprintf(stderr, "语义线程失败：%s\n", failure.what());
+                std::fprintf(stderr, "semantic thread failed: %s\n",
+                             failure.what());
                 semantic_failed.store(true, std::memory_order_release);
             }
             catch (...) {
-                std::fprintf(stderr, "语义线程失败：未知异常\n");
+                std::fprintf(stderr,
+                             "semantic thread failed: unknown exception\n");
                 semantic_failed.store(true, std::memory_order_release);
             }
             semantic_done.store(true, std::memory_order_release);
@@ -312,18 +321,20 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
                 engine->run();
             }
             catch (const std::exception& failure) {
-                std::fprintf(stderr, "引擎线程失败：%s\n", failure.what());
+                std::fprintf(stderr, "engine thread failed: %s\n",
+                               failure.what());
                 engine_failed.store(true, std::memory_order_release);
             }
             catch (...) {
-                std::fprintf(stderr, "引擎线程失败：未知异常\n");
+                std::fprintf(stderr, "engine thread failed: unknown exception\n");
                 engine_failed.store(true, std::memory_order_release);
             }
             engine_done.store(true, std::memory_order_release);
         });
     }
     catch (const std::exception& failure) {
-        error = std::string("启动消费线程失败：") + failure.what();
+        error = std::string("failed to start the consumer threads: ") +
+                failure.what();
         stop();
         return false;
     }
@@ -346,11 +357,11 @@ bool ChainRuntime::Impl::start(const ChainOptions& settings, std::string& error,
 bool ChainRuntime::Impl::start_feeder(std::string& error)
 {
     if (!started) {
-        error = "ChainRuntime 未启动";
+        error = "ChainRuntime not started";
         return false;
     }
     if (feeder_started) {
-        error = "回放线程已启动";
+        error = "replay thread already started";
         return false;
     }
     try {
@@ -362,7 +373,8 @@ bool ChainRuntime::Impl::start_feeder(std::string& error)
         });
     }
     catch (const std::exception& failure) {
-        error = std::string("启动回放线程失败：") + failure.what();
+        error =
+            std::string("failed to start the replay thread: ") + failure.what();
         return false;
     }
     if (!wait_for_tid(feeder_tid, "feeder", error)) {
@@ -376,7 +388,7 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
 {
     sample = ChainSnapshot{};
     if (!started) {
-        error = "ChainRuntime 未启动";
+        error = "ChainRuntime not started";
         return false;
     }
     stop_sampler();
@@ -385,20 +397,20 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         const std::uint64_t feeder_id = static_cast<std::uint64_t>(
             feeder_tid.load(std::memory_order_acquire));
         if (!bench::read_thread_cpu(feeder_id, sample.feeder_cpu, error)) {
-            error = "读取回放线程 CPU 失败：" + error;
+            error = "failed to read replay thread CPU: " + error;
             return false;
         }
     }
     const std::uint64_t semantic_id =
         static_cast<std::uint64_t>(semantic_tid.load(std::memory_order_acquire));
     if (!bench::read_thread_cpu(semantic_id, sample.semantic_cpu, error)) {
-        error = "读取语义线程 CPU 失败：" + error;
+        error = "failed to read semantic thread CPU: " + error;
         return false;
     }
     const std::uint64_t engine_id =
         static_cast<std::uint64_t>(engine_tid.load(std::memory_order_acquire));
     if (!bench::read_thread_cpu(engine_id, sample.engine_cpu, error)) {
-        error = "读取引擎线程 CPU 失败：" + error;
+        error = "failed to read engine thread CPU: " + error;
         return false;
     }
 
@@ -441,7 +453,8 @@ bool ChainRuntime::Impl::snapshot(ChainSnapshot& sample, std::string& error)
         start_sampler();
     }
     catch (const std::exception& failure) {
-        error = std::string("重启占用采样线程失败：") + failure.what();
+        error = std::string("failed to restart the occupancy sampling thread: ") +
+                failure.what();
         return false;
     }
 
@@ -500,11 +513,15 @@ void ChainRuntime::Impl::stop()
     if (semantic && semantic_thread.joinable()) {
         semantic->stop();
         if (!wait_for_thread(semantic_thread, semantic_done, kThreadJoinLimit)) {
-            std::fprintf(stderr, "告警：语义线程在 %lld 秒内未退出，再等一次\n",
+            std::fprintf(stderr,
+                         "warning: semantic thread did not exit within %lld "
+                         "seconds; waiting once more\n",
                          static_cast<long long>(kThreadJoinLimit.count()));
             if (!wait_for_thread(semantic_thread, semantic_done,
                                  kThreadJoinLimit)) {
-                std::fprintf(stderr, "语义线程仍未退出，退出进程\n");
+                std::fprintf(stderr,
+                             "semantic thread still has not exited; exiting the "
+                             "process\n");
                 std::_Exit(kExitRuntimeFailure);
             }
         }
@@ -512,10 +529,14 @@ void ChainRuntime::Impl::stop()
     if (engine && engine_thread.joinable()) {
         engine->stop();
         if (!wait_for_thread(engine_thread, engine_done, kThreadJoinLimit)) {
-            std::fprintf(stderr, "告警：引擎线程在 %lld 秒内未退出，再等一次\n",
+            std::fprintf(stderr,
+                         "warning: engine thread did not exit within %lld "
+                         "seconds; waiting once more\n",
                          static_cast<long long>(kThreadJoinLimit.count()));
             if (!wait_for_thread(engine_thread, engine_done, kThreadJoinLimit)) {
-                std::fprintf(stderr, "引擎线程仍未退出，退出进程\n");
+                std::fprintf(
+                    stderr,
+                    "engine thread still has not exited; exiting the process\n");
                 std::_Exit(kExitRuntimeFailure);
             }
         }
@@ -667,7 +688,7 @@ bool run_chain_sink(const ChainOptions& options, ChainSnapshot& snapshot,
     runtime.stop();
 
     if (runtime.failed()) {
-        error = "语义或引擎线程失败，未生成结果";
+        error = "semantic or engine thread failed; no result generated";
         return false;
     }
 

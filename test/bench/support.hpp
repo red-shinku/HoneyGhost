@@ -54,17 +54,17 @@ inline bool read_thread_cpu(std::uint64_t tid, double& seconds,
     const std::string path = "/proc/self/task/" + std::to_string(tid) + "/stat";
     std::ifstream stat(path);
     if (!stat.is_open()) {
-        error = "无法打开 " + path;
+        error = "cannot open " + path;
         return false;
     }
     std::string content;
     if (!std::getline(stat, content)) {
-        error = "读取 " + path + " 失败";
+        error = "reading " + path + " failed";
         return false;
     }
     const std::size_t comm_end = content.rfind(')');
     if (comm_end == std::string::npos) {
-        error = path + " 缺少 comm 结束符";
+        error = path + ": missing comm terminator";
         return false;
     }
 
@@ -73,7 +73,7 @@ inline bool read_thread_cpu(std::uint64_t tid, double& seconds,
         ++cursor;
     }
     if (*cursor == '\0') {
-        error = path + " 缺少 state 字段";
+        error = path + ": missing state field";
         return false;
     }
     ++cursor;  // 跳过 state 单字符
@@ -93,7 +93,8 @@ inline bool read_thread_cpu(std::uint64_t tid, double& seconds,
         char* end                      = nullptr;
         const unsigned long long value = std::strtoull(cursor, &end, 10);
         if (end == cursor || errno != 0) {
-            error = path + " 的第 " + std::to_string(field) + " 个数值字段非法";
+            error = path + ": field " + std::to_string(field) +
+                    " is not a valid numeric field";
             return false;
         }
         if (field == 11) {
@@ -107,13 +108,13 @@ inline bool read_thread_cpu(std::uint64_t tid, double& seconds,
         cursor = end;
     }
     if (!got_utime || !got_stime) {
-        error = path + " 字段不足，无法取 utime/stime";
+        error = path + ": too few fields, cannot read utime/stime";
         return false;
     }
 
     const long ticks = ::sysconf(_SC_CLK_TCK);
     if (ticks <= 0) {
-        error = "无法获取 _SC_CLK_TCK";
+        error = "cannot get _SC_CLK_TCK";
         return false;
     }
     seconds = static_cast<double>(utime + stime) / static_cast<double>(ticks);
@@ -183,8 +184,8 @@ inline bool pin_this_thread(int cpu, std::string& error)
     CPU_ZERO(&set);
     CPU_SET(cpu, &set);
     if (::sched_setaffinity(0, sizeof(set), &set) != 0) {
-        error = "sched_setaffinity(cpu=" + std::to_string(cpu) + ") 失败：" +
-                std::strerror(errno);
+        error = "sched_setaffinity(cpu=" + std::to_string(cpu) +
+                ") failed: " + std::strerror(errno);
         return false;
     }
     error.clear();
@@ -280,14 +281,15 @@ inline std::string machine_fingerprint()
         text += std::string("kernel   : ") + info.release + "\n";
     }
     else {
-        text += "kernel   : 未知\n";
+        text += "kernel   : unknown\n";
     }
 
     const long cpus  = ::sysconf(_SC_NPROCESSORS_ONLN);
     text            += "cpus     : " + std::to_string(cpus > 0 ? cpus : 0) + "\n";
 
     const std::string model = detail::cpu_model_name();
-    text += std::string("cpu model: ") + (model.empty() ? "未知" : model) + "\n";
+    text +=
+        std::string("cpu model: ") + (model.empty() ? "unknown" : model) + "\n";
 
     char memory[64] = {};
     std::snprintf(memory, sizeof(memory), "%.1f GiB",
@@ -446,8 +448,8 @@ inline void print_human(const Result& result, const CommonOptions& options)
                 result.peak_queue, result.out_peak_queue);
     if (result.drops > 0 && options.queue <= 8192) {
         std::printf(
-            "提示：本轮有丢弃且队列为默认大小；0 丢上限可能受队列吸收量与宿主"
-            "抖动限制，容量结论请用较大 --queue 复核\n");
+            "hint: drops with the default queue size; the zero-drop limit may be "
+            "capped by queue absorption and host jitter; use a larger --queue\n");
     }
 }
 
@@ -478,7 +480,7 @@ inline bool append_tsv(const std::string& path, const Result& result)
     const std::string line = result_tsv_line(result);
     if (path.empty()) {
         if (std::fputs(line.c_str(), stdout) < 0 || std::fflush(stdout) != 0) {
-            std::fprintf(stderr, "写入 TSV 到 stdout 失败\n");
+            std::fprintf(stderr, "failed to write TSV to stdout\n");
             return false;
         }
         return true;
@@ -495,7 +497,7 @@ inline bool append_tsv(const std::string& path, const Result& result)
 
     std::ofstream out(path, std::ios::binary | std::ios::app);
     if (!out.is_open()) {
-        std::fprintf(stderr, "无法写入 TSV 文件 %s\n", path.c_str());
+        std::fprintf(stderr, "cannot write TSV file %s\n", path.c_str());
         return false;
     }
     if (need_header) {
@@ -506,7 +508,7 @@ inline bool append_tsv(const std::string& path, const Result& result)
     out << line;
     out.flush();
     if (!out.good()) {
-        std::fprintf(stderr, "写入 TSV 文件 %s 失败\n", path.c_str());
+        std::fprintf(stderr, "failed to write TSV file %s\n", path.c_str());
         return false;
     }
     return true;
@@ -533,7 +535,7 @@ inline bool parse_stat_cpu(const std::string& content, std::string& comm,
     const std::size_t close = content.rfind(')');
     if (open == std::string::npos || close == std::string::npos ||
         close <= open) {
-        error = "stat 缺少 comm";
+        error = "stat is missing comm";
         return false;
     }
     comm               = content.substr(open + 1, close - open - 1);
@@ -543,7 +545,7 @@ inline bool parse_stat_cpu(const std::string& content, std::string& comm,
         ++cursor;
     }
     if (*cursor == '\0') {
-        error = "stat 缺少 state 字段";
+        error = "stat is missing the state field";
         return false;
     }
     ++cursor;  // 跳过 state 单字符
@@ -563,7 +565,8 @@ inline bool parse_stat_cpu(const std::string& content, std::string& comm,
         char* end                      = nullptr;
         const unsigned long long value = std::strtoull(cursor, &end, 10);
         if (end == cursor || errno != 0) {
-            error = "stat 的第 " + std::to_string(field) + " 个数值字段非法";
+            error = "stat field " + std::to_string(field) +
+                    " is not a valid numeric field";
             return false;
         }
         if (field == 11) {
@@ -577,13 +580,13 @@ inline bool parse_stat_cpu(const std::string& content, std::string& comm,
         cursor = end;
     }
     if (!got_utime || !got_stime) {
-        error = "stat 字段不足，无法取 utime/stime";
+        error = "stat has too few fields, cannot read utime/stime";
         return false;
     }
 
     const long ticks = ::sysconf(_SC_CLK_TCK);
     if (ticks <= 0) {
-        error = "无法获取 _SC_CLK_TCK";
+        error = "cannot get _SC_CLK_TCK";
         return false;
     }
     seconds = static_cast<double>(utime + stime) / static_cast<double>(ticks);
@@ -607,18 +610,18 @@ inline bool read_process_cpu(pid_t pid, double& seconds, std::string& error)
     const std::string path = "/proc/" + std::to_string(pid) + "/stat";
     std::ifstream stat(path);
     if (!stat.is_open()) {
-        error = "无法打开 " + path;
+        error = "cannot open " + path;
         return false;
     }
     std::string content;
     if (!std::getline(stat, content)) {
-        error = "读取 " + path + " 失败";
+        error = "reading " + path + " failed";
         return false;
     }
     std::string comm;
     std::string parse_error;
     if (!detail::parse_stat_cpu(content, comm, seconds, parse_error)) {
-        error = path + "：" + parse_error;
+        error = path + ": " + parse_error;
         return false;
     }
     error.clear();
@@ -641,7 +644,7 @@ inline bool read_tasks_cpu(pid_t pid, const std::string& comm_prefix,
     const std::string dir_path = "/proc/" + std::to_string(pid) + "/task";
     DIR* dir                   = ::opendir(dir_path.c_str());
     if (dir == nullptr) {
-        error = "无法打开 " + dir_path + "：" + std::strerror(errno);
+        error = "cannot open " + dir_path + ": " + std::strerror(errno);
         return false;
     }
 
@@ -668,7 +671,7 @@ inline bool read_tasks_cpu(pid_t pid, const std::string& comm_prefix,
         std::string parse_error;
         if (!detail::parse_stat_cpu(content, comm, value, parse_error)) {
             failed  = true;
-            failure = stat_path + "：" + parse_error;
+            failure = stat_path + ": " + parse_error;
             break;
         }
         if (comm.compare(0, comm_prefix.size(), comm_prefix) != 0) {
@@ -685,8 +688,8 @@ inline bool read_tasks_cpu(pid_t pid, const std::string& comm_prefix,
         return false;
     }
     if (matched == 0) {
-        error = "在 " + dir_path + " 下未找到 comm 前缀为 \"" + comm_prefix +
-                "\" 的线程";
+        error = "no thread found under " + dir_path + " whose comm prefix is \"" +
+                comm_prefix + "\"";
         return false;
     }
     error.clear();

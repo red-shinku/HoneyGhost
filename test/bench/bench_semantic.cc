@@ -2,15 +2,9 @@
  * @file bench_semantic.cc
  * @brief 语义段压测：原始通道 → 语义聚合 → 语义通道
  * @details
- * 语料全部读入内存后循环回放。生产者按「head memcpy + payload memcpy」重建
- * 栈上的 syscall_event 再推入原始通道；语义线程用 SemanticFactory 构造的组件
- * 消费原始通道；语义通道由一条只取空、不做事、不构造语义数据的线程排空。
- *
- * 三条工作线程启动后发布各自的 tid，主线程在预热结束与窗口结束两个时刻读
- * /proc/self/task/<tid>/stat，得到只覆盖统计窗口的 CPU 时间。
- *
- * --no-semantic 跳过语义组件，只保留生产者与原始通道取空线程，用于测生产者
- * 天花板。语料格式见 test/bench/bench_trace.hpp。
+ * 语料全部读入内存后循环回放。
+ * 输出由一条只取空、无业务的线程排空。因此单语义段的压测结果
+ * 可能多出高频执行唤醒的成本。
  */
 
 #include "test/bench/stages.hpp"
@@ -55,9 +49,11 @@ constexpr std::chrono::milliseconds kTidWaitLimit(1000);
 
 /// @brief 语义段私有选项的多行用法
 constexpr const char* kExtraHelp =
-    "  --events MODE     回放类别：all|syscall|lifecycle（默认 all）；PROCESS 与 "
-    "EXEC 归为 lifecycle，在转换前按原始记录过滤\n"
-    "  --no-semantic     只跑生产者与原始通道取空线程，测生产者天花板\n";
+    "  --events MODE     replay class: all|syscall|lifecycle (default all); "
+    "PROCESS and "
+    "EXEC are grouped as lifecycle and filtered by raw record before conversion\n"
+    "  --no-semantic     run only the producer and the raw channel drain thread, "
+    "to measure the producer ceiling\n";
 
 /// @brief 回放的事件类别
 enum class EventClass : std::uint8_t { ALL, SYSCALL, LIFECYCLE };
@@ -124,7 +120,7 @@ bool load_trace(const std::string& path, EventClass events, TraceData& data,
     bench::TraceReader reader;
     std::string reader_error;
     if (!reader.open(path, reader_error)) {
-        error = "打开语料 " + path + " 失败：" + reader_error;
+        error = "failed to open trace " + path + ": " + reader_error;
         return false;
     }
 
@@ -143,13 +139,13 @@ bool load_trace(const std::string& path, EventClass events, TraceData& data,
         data.records.push_back(record);
     }
     if (!reader_error.empty()) {
-        error = "读取语料 " + path + " 失败：" + reader_error;
+        error = "failed to read trace " + path + ": " + reader_error;
         return false;
     }
     if (data.records.empty()) {
-        error = "语料 " + path + " 在 --events " + event_class_name(events) +
-                " 下没有可回放的事件（尺寸非法 " + std::to_string(data.skipped) +
-                " 条）";
+        error = "trace " + path + " has no replayable events with --events " +
+                event_class_name(events) +
+                " (invalid size records: " + std::to_string(data.skipped) + ")";
         return false;
     }
     return true;
@@ -243,7 +239,7 @@ bool wait_for_tids(const std::atomic<pid_t>& producer_tid,
             return true;
         }
         if (bench::Clock::now() >= deadline) {
-            error = "等待线程 tid 发布超时（1s）：";
+            error = "timed out after 1s waiting for threads to publish tid: ";
             if (!producer_ready) {
                 error += " producer";
             }
@@ -313,7 +309,7 @@ bool parse_rest(const std::vector<std::string>& rest,
         std::string inline_value;
         bool has_inline = false;
         if (!split_option(rest[index], name, inline_value, has_inline)) {
-            error = "未知选项 " + rest[index];
+            error = "unknown option " + rest[index];
             return false;
         }
 
@@ -331,7 +327,7 @@ bool parse_rest(const std::vector<std::string>& rest,
 
         if (name == "--no-semantic") {
             if (has_inline) {
-                error = "--no-semantic 不接受取值";
+                error = "--no-semantic does not take a value";
                 return false;
             }
             options.no_semantic = true;
@@ -340,7 +336,7 @@ bool parse_rest(const std::vector<std::string>& rest,
         if (name == "--events") {
             std::string text;
             if (!take_value(text)) {
-                error = "--events 缺少取值";
+                error = "--events is missing a value";
                 return false;
             }
             if (text == "all") {
@@ -353,12 +349,12 @@ bool parse_rest(const std::vector<std::string>& rest,
                 options.events = EventClass::LIFECYCLE;
             }
             else {
-                error = "--events 需为 all|syscall|lifecycle";
+                error = "--events must be all|syscall|lifecycle";
                 return false;
             }
             continue;
         }
-        error = "未知选项 " + name;
+        error = "unknown option " + name;
         return false;
     }
     return true;
@@ -371,8 +367,8 @@ int run_semantic(const bench::CommonOptions& options,
     SemanticStageOptions stage_options;
     std::string error;
     if (!parse_rest(rest, stage_options, error)) {
-        std::fprintf(stderr, "参数错误：%s\n", error.c_str());
-        std::fprintf(stderr, "semantic 段选项：\n%s", kExtraHelp);
+        std::fprintf(stderr, "parameter error: %s\n", error.c_str());
+        std::fprintf(stderr, "semantic stage options:\n%s", kExtraHelp);
         return kExitUsage;
     }
     const bool no_semantic = stage_options.no_semantic;
@@ -397,7 +393,9 @@ int run_semantic(const bench::CommonOptions& options,
         semantic_options.out_syscall = &out.writer();
         semantic = hng::SemanticFactory::create(semantic_options);
         if (!semantic) {
-            std::fprintf(stderr, "语义组件构造失败：工厂未返回实例\n");
+            std::fprintf(stderr,
+                         "failed to construct the semantic component: factory "
+                         "returned no instance\n");
             return kExitRuntimeFailure;
         }
     }
@@ -429,7 +427,8 @@ int run_semantic(const bench::CommonOptions& options,
         if (options.pin_producer >= 0) {
             std::string pin_error;
             if (!bench::pin_this_thread(options.pin_producer, pin_error)) {
-                std::fprintf(stderr, "生产者绑核失败：%s\n", pin_error.c_str());
+                std::fprintf(stderr, "producer CPU pinning failed: %s\n",
+                             pin_error.c_str());
             }
         }
         std::uint64_t index = 0;
@@ -470,7 +469,8 @@ int run_semantic(const bench::CommonOptions& options,
             if (options.pin_consumer >= 0) {
                 std::string pin_error;
                 if (!bench::pin_this_thread(options.pin_consumer, pin_error)) {
-                    std::fprintf(stderr, "语义线程绑核失败：%s\n",
+                    std::fprintf(stderr,
+                                 "semantic thread CPU pinning failed: %s\n",
                                  pin_error.c_str());
                 }
             }
@@ -483,7 +483,8 @@ int run_semantic(const bench::CommonOptions& options,
         if (no_semantic && options.pin_consumer >= 0) {
             std::string pin_error;
             if (!bench::pin_this_thread(options.pin_consumer, pin_error)) {
-                std::fprintf(stderr, "取空线程绑核失败：%s\n", pin_error.c_str());
+                std::fprintf(stderr, "drain thread CPU pinning failed: %s\n",
+                             pin_error.c_str());
             }
         }
         if (no_semantic) {
@@ -520,10 +521,13 @@ int run_semantic(const bench::CommonOptions& options,
         if (drain_thread.joinable()) {
             if (!wait_for_drain(drain_thread, drain_done, kDrainJoinLimit)) {
                 std::fprintf(stderr,
-                             "告警：取空线程在 %lld 秒内未退出，再等一次\n",
+                             "warning: drain thread did not exit within %lld "
+                             "seconds, waiting once more\n",
                              static_cast<long long>(kDrainJoinLimit.count()));
                 if (!wait_for_drain(drain_thread, drain_done, kDrainJoinLimit)) {
-                    std::fprintf(stderr, "取空线程仍未退出，退出进程\n");
+                    std::fprintf(
+                        stderr,
+                        "drain thread still did not exit, exiting the process\n");
                     std::_Exit(kExitRuntimeFailure);
                 }
             }
@@ -543,7 +547,7 @@ int run_semantic(const bench::CommonOptions& options,
             producer_tid.load(std::memory_order_acquire));
         if (!bench::read_thread_cpu(producer_id, snapshot.producer,
                                     sample_error)) {
-            sample_error = "读取生产者线程 CPU 失败：" + sample_error;
+            sample_error = "failed to read producer thread CPU: " + sample_error;
             return false;
         }
         if (!no_semantic) {
@@ -551,14 +555,15 @@ int run_semantic(const bench::CommonOptions& options,
                 semantic_tid.load(std::memory_order_acquire));
             if (!bench::read_thread_cpu(semantic_id, snapshot.semantic,
                                         sample_error)) {
-                sample_error = "读取语义线程 CPU 失败：" + sample_error;
+                sample_error =
+                    "failed to read semantic thread CPU: " + sample_error;
                 return false;
             }
         }
         const std::uint64_t drain_id =
             static_cast<std::uint64_t>(drain_tid.load(std::memory_order_acquire));
         if (!bench::read_thread_cpu(drain_id, snapshot.drain, sample_error)) {
-            sample_error = "读取取空线程 CPU 失败：" + sample_error;
+            sample_error = "failed to read drain thread CPU: " + sample_error;
             return false;
         }
         return true;
@@ -682,38 +687,43 @@ int run_semantic(const bench::CommonOptions& options,
 
     bench::print_human(result, options);
     std::printf("events by class: syscall=%" PRIu64 " lifecycle=%" PRIu64
-                "（按成功入队记录统计）\n",
+                " (counted by successfully enqueued records)\n",
                 syscall_events, lifecycle_events);
     if (out_drops > 0) {
-        std::fprintf(stderr,
-                     "提示：out 通道丢弃 %" PRIu64
-                     " 次，语义 push 被下游取空丢弃；"
-                     "下游取空可能不是瓶颈\n",
-                     out_drops);
+        std::fprintf(
+            stderr,
+            "hint: out channel dropped %" PRIu64
+            " times, semantic pushes were dropped by the downstream drain; "
+            "the downstream drain may not be the bottleneck\n",
+            out_drops);
     }
-    std::printf("pacer overruns=%" PRIu64
-                " (落后节拍次数，不代表丢事件) push_calls=%" PRIu64
-                " push_failed=%" PRIu64 " skipped=%" PRIu64 "\n",
-                pacer ? pacer->overruns() : 0, calls, pushes_failed,
-                trace.skipped);
+    std::printf(
+        "pacer overruns=%" PRIu64
+        " (number of missed ticks, not dropped events) push_calls=%" PRIu64
+        " push_failed=%" PRIu64 " skipped=%" PRIu64 "\n",
+        pacer ? pacer->overruns() : 0, calls, pushes_failed, trace.skipped);
     if (options.rate == 0.0 && raw_drops > 0) {
         std::printf(
-            "提示：rate=0 时生产者以单核自旋重试，读数含缓存行争用；"
-            "容量请取 0 丢的最高限速（用 --rate 扫描）\n");
+            "hint: with rate=0 the producer retries by spinning on a single "
+            "core, so the numbers include cache line contention; "
+            "take as capacity the highest rate that still gives 0 drops (scan "
+            "with --rate)\n");
     }
     std::printf("window cpu: producer=%.3fs semantic=%.3fs drain=%.3fs\n",
                 producer_cpu, semantic_cpu, drain_cpu);
     if (!no_semantic) {
         std::printf(
-            "注意：本段取空线程会立即取空输出通道，唤醒按事件计；"
-            "该数字是下游零积压下的下界，生产下游（引擎）通常存在积压\n");
+            "note: in this stage the drain thread drains the output channel "
+            "immediately and wakes once per event; "
+            "this number is the lower bound with zero downstream backlog; a "
+            "production downstream (engine) usually has a backlog\n");
     }
     if (no_semantic) {
-        std::printf("no-semantic: 无语义线程\n");
+        std::printf("no-semantic: no semantic thread\n");
     }
     if (!bench::append_tsv(options.out_path, result)) {
         std::fprintf(
-            stderr, "写 TSV 失败：%s\n",
+            stderr, "failed to write TSV: %s\n",
             options.out_path.empty() ? "stdout" : options.out_path.c_str());
         return kExitRuntimeFailure;
     }

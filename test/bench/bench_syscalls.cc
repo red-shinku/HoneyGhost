@@ -119,7 +119,7 @@ constexpr std::size_t kSubtypeSlotCount = SIGNAL_EVENT + 1;
 
 // 事件头尺寸决定 subtype 的偏移；内核与用户态共用该布局
 static_assert(sizeof(struct syscall_event_head) == 80,
-              "syscall_event_head 尺寸变化会破坏按 subtype 分桶");
+              "changing the size of syscall_event_head breaks subtype bucketing");
 
 /// @brief 命令行选项
 struct Options {
@@ -148,20 +148,23 @@ void print_usage(std::FILE* out)
 {
     std::fprintf(
         out,
-        "用法: bench_syscalls [选项]\n"
-        "  --obj PATH        syscalls.bpf.o 路径（默认 %s）\n"
+        "Usage: bench_syscalls [options]\n"
+        "  --obj PATH        syscalls.bpf.o path (default %s)\n"
         "  --profile NAME    file/process/exec/memory/network/mixed"
-        "（默认 mixed）\n"
-        "  --seconds N       压测时长，秒（默认 10）\n"
-        "  --warmup N        预热秒数，不计入统计（默认 1）\n"
-        "  --workers N       工作子进程数（默认 CPU 数的一半，至少 1）\n"
-        "  --dump PATH       把统计窗口内的记录导出为语料文件\n"
-        "  --quiet           只输出结果行\n"
-        "  --help            显示本帮助\n"
+        " (default mixed)\n"
+        "  --seconds N       benchmark duration in seconds (default 10)\n"
+        "  --warmup N        warmup seconds, not counted (default 1)\n"
+        "  --workers N       worker child processes (default half the CPU count, "
+        "at least 1)\n"
+        "  --dump PATH       export records in the measurement window to a trace "
+        "file\n"
+        "  --quiet           print only the result lines\n"
+        "  --help            show this help\n"
         "\n"
-        "需要 root 与 BPF 权限。退出码：0 成功；1 运行期失败；\n"
-        "2 加载或挂载失败；3 参数错误。\n"
-        "TSV 列：profile workers seconds records bytes rec_per_s mib_per_s\n"
+        "Requires root and BPF privileges. Exit codes: 0 success; 1 runtime "
+        "failure;\n"
+        "2 failed to load or attach; 3 parameter error.\n"
+        "TSV columns: profile workers seconds records bytes rec_per_s mib_per_s\n"
         "        us_per_event reserve_failures pending_lost\n",
         kDefaultObjectPath);
 }
@@ -247,18 +250,21 @@ bool parse_options(int argc, char** argv, Options& options, bool& help)
         const char* value = nullptr;
         if (name == "--obj") {
             if (!take_value(value)) {
-                std::fprintf(stderr, "参数错误：--obj 缺少路径\n");
+                std::fprintf(stderr,
+                             "parameter error: --obj is missing a path\n");
                 return false;
             }
             options.object_path = value;
         }
         else if (name == "--profile") {
             if (!take_value(value)) {
-                std::fprintf(stderr, "参数错误：--profile 缺少名字\n");
+                std::fprintf(stderr,
+                             "parameter error: --profile is missing a name\n");
                 return false;
             }
             if (!find_profile(value, options.profile)) {
-                std::fprintf(stderr, "参数错误：未知 profile：%s\n", value);
+                std::fprintf(stderr, "parameter error: unknown profile: %s\n",
+                             value);
                 print_usage(stderr);
                 return false;
             }
@@ -267,40 +273,48 @@ bool parse_options(int argc, char** argv, Options& options, bool& help)
             if (!take_value(value) ||
                 !parse_integer(value, 1, 86400, options.seconds)) {
                 std::fprintf(stderr,
-                             "参数错误：--seconds 需为 1..86400 的整数\n");
+                             "parameter error: --seconds must be an integer in "
+                             "1..86400\n");
                 return false;
             }
         }
         else if (name == "--warmup") {
             if (!take_value(value) ||
                 !parse_integer(value, 0, 86400, options.warmup_seconds)) {
-                std::fprintf(stderr, "参数错误：--warmup 需为 0..86400 的整数\n");
+                std::fprintf(
+                    stderr,
+                    "parameter error: --warmup must be an integer in 0..86400\n");
                 return false;
             }
         }
         else if (name == "--workers") {
             if (!take_value(value) ||
                 !parse_integer(value, 1, 4096, options.workers)) {
-                std::fprintf(stderr, "参数错误：--workers 需为 1..4096 的整数\n");
+                std::fprintf(
+                    stderr,
+                    "parameter error: --workers must be an integer in 1..4096\n");
                 return false;
             }
         }
         else if (name == "--dump") {
             if (!take_value(value) || *value == '\0') {
-                std::fprintf(stderr, "参数错误：--dump 缺少路径\n");
+                std::fprintf(stderr,
+                             "parameter error: --dump is missing a path\n");
                 return false;
             }
             options.dump_path = value;
         }
         else if (name == "--quiet") {
             if (inline_value != nullptr) {
-                std::fprintf(stderr, "参数错误：--quiet 不接受取值\n");
+                std::fprintf(stderr,
+                             "parameter error: --quiet does not take a value\n");
                 return false;
             }
             options.quiet = true;
         }
         else {
-            std::fprintf(stderr, "参数错误：未知选项 %s\n", argv[index]);
+            std::fprintf(stderr, "parameter error: unknown option %s\n",
+                         argv[index]);
             print_usage(stderr);
             return false;
         }
@@ -391,8 +405,9 @@ int skip_missing_tracepoints(bpf_object* object,
 {
     if (tracefs_root.empty()) {
         if (!quiet) {
-            std::fprintf(stderr,
-                         "提示：未找到 tracefs，无法跳过缺失的 tracepoint\n");
+            std::fprintf(
+                stderr,
+                "hint: tracefs not found, cannot skip missing tracepoints\n");
         }
         return 0;
     }
@@ -414,14 +429,15 @@ int skip_missing_tracepoints(bpf_object* object,
             continue;
         }
         if (::bpf_program__set_autoload(program, false) != 0) {
-            std::fprintf(stderr, "关闭探针 %s 的 autoload 失败：%s\n", section,
-                         std::strerror(errno));
+            std::fprintf(stderr, "failed to disable autoload for probe %s: %s\n",
+                         section, std::strerror(errno));
             continue;
         }
         ++skipped;
     }
     if (skipped > 0 && !quiet) {
-        std::fprintf(stderr, "跳过 %d 个 tracefs 中不存在的 tracepoint 探针\n",
+        std::fprintf(stderr,
+                     "skipped %d tracepoint probes not present in tracefs\n",
                      skipped);
     }
     return skipped;
@@ -447,7 +463,7 @@ int attach_programs(bpf_object* object, std::vector<LinkPtr>& links)
         bpf_link* link      = ::bpf_program__attach(program);
         if (!link) {
             ++failures;
-            std::fprintf(stderr, "挂载探针 %s 失败：%s\n",
+            std::fprintf(stderr, "failed to attach probe %s: %s\n",
                          section ? section : "<unknown>", std::strerror(errno));
             continue;
         }
@@ -468,21 +484,21 @@ int attach_programs(bpf_object* object, std::vector<LinkPtr>& links)
 bool read_percpu_counter(bpf_map* map, std::uint64_t& sum, std::string& error)
 {
     if (!map) {
-        error = "对象内缺少计数器 map";
+        error = "the object is missing the counter map";
         return false;
     }
     if (::bpf_map__type(map) != BPF_MAP_TYPE_PERCPU_ARRAY) {
-        error = "计数器 map 不是 PERCPU_ARRAY";
+        error = "the counter map is not PERCPU_ARRAY";
         return false;
     }
     const __u32 value_size = ::bpf_map__value_size(map);
     if (value_size != sizeof(std::uint64_t)) {
-        error = "计数器 map 的值不是 u64";
+        error = "the counter map value is not u64";
         return false;
     }
     const int cpu_count = ::libbpf_num_possible_cpus();
     if (cpu_count < 1) {
-        error = "读取 possible CPU 数失败";
+        error = "failed to read the possible CPU count";
         return false;
     }
 
@@ -495,7 +511,8 @@ bool read_percpu_counter(bpf_map* map, std::uint64_t& sum, std::string& error)
     for (__u32 key = 0; key < key_count; ++key) {
         std::memset(values.data(), 0, values.size());
         if (::bpf_map_lookup_elem(fd, &key, values.data()) != 0) {
-            error = std::string("读取计数器失败：") + std::strerror(errno);
+            error =
+                std::string("failed to read counter: ") + std::strerror(errno);
             return false;
         }
         for (int cpu = 0; cpu < cpu_count; ++cpu) {
@@ -957,13 +974,14 @@ bool allow_worker(int filter_fd, __u32 tgid, std::uint64_t start_time,
     key.start_time      = start_time;
     const __u32 allowed = 1;
     if (::bpf_map_update_elem(filter_fd, &key, &allowed, BPF_ANY) != 0) {
-        error = std::string("写入角色过滤 map 失败：") + std::strerror(errno);
+        error = std::string("failed to write the role filter map: ") +
+                std::strerror(errno);
         return false;
     }
     __u32 readback = 0;
     const int rc   = ::bpf_map_lookup_elem(filter_fd, &key, &readback);
     if (readback != 1 || rc != 0) {
-        error = "角色过滤 map 回读失败";
+        error = "failed to read back the role filter map";
         return false;
     }
     return true;
@@ -1056,7 +1074,8 @@ int run(const Options& options)
 {
     if (::geteuid() != 0 && !options.quiet) {
         std::fprintf(stderr,
-                     "提示：当前不是 root，加载 BPF 对象通常需要 CAP_BPF 或 "
+                     "hint: not running as root; loading the BPF object usually "
+                     "needs CAP_BPF or "
                      "CAP_SYS_ADMIN\n");
     }
     // 放行管道在 worker 全部提前退出时会触发 SIGPIPE，这里按可处理错误对待。
@@ -1066,7 +1085,7 @@ int run(const Options& options)
         ::bpf_object__open_file(options.object_path.c_str(), nullptr);
     if (!opened) {
         const int error = errno == 0 ? EINVAL : errno;
-        std::fprintf(stderr, "打开 BPF 对象失败：%s：%s\n",
+        std::fprintf(stderr, "failed to open BPF object: %s: %s\n",
                      options.object_path.c_str(),
                      libbpf_error_text(error).c_str());
         return kExitBpfFailure;
@@ -1079,11 +1098,12 @@ int run(const Options& options)
 
     const int load_error = ::bpf_object__load(object.get());
     if (load_error != 0) {
-        std::fprintf(stderr, "加载 BPF 对象失败：%s\n",
+        std::fprintf(stderr, "failed to load BPF object: %s\n",
                      libbpf_error_text(load_error).c_str());
-        std::fprintf(stderr,
-                     "提示：加载通常需要 root 与 CAP_BPF/CAP_SYS_ADMIN，"
-                     "可用 sudo 运行\n");
+        std::fprintf(
+            stderr,
+            "hint: loading usually needs root and CAP_BPF/CAP_SYS_ADMIN, "
+            "run it with sudo\n");
         return kExitBpfFailure;
     }
 
@@ -1096,13 +1116,14 @@ int run(const Options& options)
     bpf_map* filter_map =
         ::bpf_object__find_map_by_name(object.get(), HNG_ROLE_FILTER_MAP_NAME);
     if (!ring_map || !reserve_map || !pending_map || !filter_map) {
-        std::fprintf(stderr,
-                     "对象内缺少 ringbuf、计数器或角色过滤 map，"
-                     "可能不是 syscalls.bpf.o\n");
+        std::fprintf(
+            stderr,
+            "the object is missing the ringbuf, counter, or role filter map; "
+            "it may not be syscalls.bpf.o\n");
         return kExitBpfFailure;
     }
     if (::bpf_map__type(ring_map) != BPF_MAP_TYPE_RINGBUF) {
-        std::fprintf(stderr, "syscall_events map 不是 RINGBUF\n");
+        std::fprintf(stderr, "syscall_events map is not RINGBUF\n");
         return kExitBpfFailure;
     }
 
@@ -1111,7 +1132,8 @@ int run(const Options& options)
     std::string counter_error;
     if (!read_percpu_counter(reserve_map, reserve_before, counter_error) ||
         !read_percpu_counter(pending_map, pending_before, counter_error)) {
-        std::fprintf(stderr, "读取内核计数器失败：%s\n", counter_error.c_str());
+        std::fprintf(stderr, "failed to read kernel counters: %s\n",
+                     counter_error.c_str());
         return kExitBpfFailure;
     }
 
@@ -1120,12 +1142,14 @@ int run(const Options& options)
     //!       不可挂载（例如被内核配置或权限策略挡住），其余探针的数据仍然有效。
     const int attach_failures = attach_programs(object.get(), links);
     if (links.empty()) {
-        std::fprintf(stderr, "没有探针成功挂载，无法压测\n");
+        std::fprintf(
+            stderr, "no probe attached successfully, cannot run the benchmark\n");
         return kExitBpfFailure;
     }
     if (attach_failures != 0) {
         std::fprintf(stderr,
-                     "挂载探针部分失败：%d 个不可用，%zu 个已挂载（继续压测）\n",
+                     "partially failed to attach probes: %d unavailable, %zu "
+                     "attached (continuing the benchmark)\n",
                      attach_failures, links.size());
     }
 
@@ -1134,7 +1158,7 @@ int run(const Options& options)
     ring_buffer* raw_buffer =
         ::ring_buffer__new(::bpf_map__fd(ring_map), on_record, &stats, nullptr);
     if (!raw_buffer) {
-        std::fprintf(stderr, "创建 ringbuf 读取器失败：%s\n",
+        std::fprintf(stderr, "failed to create the ringbuf reader: %s\n",
                      std::strerror(errno));
         return kExitBpfFailure;
     }
@@ -1145,7 +1169,7 @@ int run(const Options& options)
     if (trace_enabled) {
         std::string trace_open_error;
         if (!trace_writer.open(options.dump_path, trace_open_error)) {
-            std::fprintf(stderr, "打开语料文件 %s 失败：%s\n",
+            std::fprintf(stderr, "failed to open trace file %s: %s\n",
                          options.dump_path.c_str(), trace_open_error.c_str());
             return kExitRuntimeFailure;
         }
@@ -1154,7 +1178,8 @@ int run(const Options& options)
 
     int gate[2] = {-1, -1};
     if (::pipe2(gate, O_CLOEXEC) != 0) {
-        std::fprintf(stderr, "创建放行管道失败：%s\n", std::strerror(errno));
+        std::fprintf(stderr, "failed to create the release pipe: %s\n",
+                     std::strerror(errno));
         return kExitRuntimeFailure;
     }
     int gate_read  = gate[0];
@@ -1171,7 +1196,8 @@ int run(const Options& options)
             worker_main(index, options.profile, gate_read, parent_pid);
         }
         if (child < 0) {
-            std::fprintf(stderr, "创建 worker 失败：%s\n", std::strerror(errno));
+            std::fprintf(stderr, "failed to create worker: %s\n",
+                         std::strerror(errno));
             spawn_ok = false;
             break;
         }
@@ -1189,7 +1215,7 @@ int run(const Options& options)
     std::vector<std::uint64_t> starts(workers.size(), 0);
     for (std::size_t i = 0; i < workers.size(); ++i) {
         if (!read_process_start_time(workers[i], starts[i])) {
-            std::fprintf(stderr, "读取 worker %d 启动时间失败\n",
+            std::fprintf(stderr, "failed to read the start time of worker %d\n",
                          static_cast<int>(workers[i]));
             abort_workers(gate_write, workers);
             return kExitRuntimeFailure;
@@ -1214,7 +1240,8 @@ int run(const Options& options)
             globals[i] != 0 ? globals[i] : static_cast<__u32>(workers[i]);
         std::string error;
         if (!allow_worker(filter_fd, tgid, starts[i], error)) {
-            std::fprintf(stderr, "登记 worker %d（全局 TGID %u）失败：%s\n",
+            std::fprintf(stderr,
+                         "failed to register worker %d (global TGID %u): %s\n",
                          static_cast<int>(workers[i]), tgid, error.c_str());
             abort_workers(gate_write, workers);
             return kExitRuntimeFailure;
@@ -1241,7 +1268,8 @@ int run(const Options& options)
         if (written < 0 && errno == EINTR) {
             continue;
         }
-        std::fprintf(stderr, "放行 worker 失败：%s\n", std::strerror(errno));
+        std::fprintf(stderr, "failed to release workers: %s\n",
+                     std::strerror(errno));
         ignore_result(::close(gate_write));
         gate_write = -1;
         for (const pid_t pid : workers) {
@@ -1303,7 +1331,8 @@ int run(const Options& options)
     std::uint64_t pending_after = 0;
     if (!read_percpu_counter(reserve_map, reserve_after, counter_error) ||
         !read_percpu_counter(pending_map, pending_after, counter_error)) {
-        std::fprintf(stderr, "读取内核计数器失败：%s\n", counter_error.c_str());
+        std::fprintf(stderr, "failed to read kernel counters: %s\n",
+                     counter_error.c_str());
         return kExitRuntimeFailure;
     }
     const std::uint64_t reserve_failures =
@@ -1320,23 +1349,25 @@ int run(const Options& options)
             stats.trace_error.empty() ? trace_writer.error() : stats.trace_error;
         if (!trace_error.empty()) {
             trace_failed = true;
-            std::fprintf(stderr, "写语料文件 %s 失败：%s\n",
+            std::fprintf(stderr, "failed to write trace file %s: %s\n",
                          options.dump_path.c_str(), trace_error.c_str());
         }
     }
 
     if (drain.poll_error != 0) {
-        std::fprintf(stderr, "消费 ringbuf 失败：%s\n",
+        std::fprintf(stderr, "failed to consume ringbuf: %s\n",
                      std::strerror(drain.poll_error));
     }
     if (failed_workers > 0) {
-        std::fprintf(stderr, "%d 个 worker 异常退出（常见原因：fork 失败）\n",
-                     failed_workers);
+        std::fprintf(
+            stderr, "%d workers exited abnormally (common cause: fork failure)\n",
+            failed_workers);
     }
     if (stats.records == 0 && !options.quiet) {
         std::fprintf(stderr,
-                     "提示：未采集到事件，检查 tracefs 挂载、tracepoint 与"
-                     "角色过滤 map\n");
+                     "hint: no events collected; check the tracefs mount, "
+                     "tracepoints, and "
+                     "the role filter map\n");
     }
     if (drain.poll_error != 0 || failed_workers > 0 || trace_failed) {
         return kExitRuntimeFailure;
