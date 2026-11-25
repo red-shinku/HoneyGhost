@@ -207,6 +207,59 @@ func TestRoleListAllJSON(t *testing.T) {
 	}
 }
 
+func TestRoleListIgnored(t *testing.T) {
+	var gotScope model.RoleScope
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(_ context.Context, scope model.RoleScope) ([]model.Role, error) {
+			gotScope = scope
+			return []model.Role{{ID: 9, Label: "cron.service"}}, nil
+		},
+	}}
+	out, errOut, err := executeWithServices(t, svcs, "role", "list", "--ignored")
+	if err != nil {
+		t.Fatalf("role list: %v", err)
+	}
+	if gotScope != model.RoleScopeIgnored {
+		t.Errorf("scope = %v, want ignored", gotScope)
+	}
+	want := "ID  LABEL\n9   cron.service\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want empty", errOut)
+	}
+
+	if _, _, err := executeWithServices(t, svcs, "role", "list", "-i"); err != nil {
+		t.Fatalf("role list -i: %v", err)
+	}
+	if gotScope != model.RoleScopeIgnored {
+		t.Errorf("-i: scope = %v, want ignored", gotScope)
+	}
+}
+
+func TestRoleListAllIgnoredConflict(t *testing.T) {
+	svcs := api.Services{Roles: fakeRoleService{
+		list: func(context.Context, model.RoleScope) ([]model.Role, error) {
+			t.Fatalf("list must not be called when --all and --ignored are combined")
+			return nil, nil
+		},
+	}}
+	out, _, err := executeWithServices(t, svcs, "role", "list", "--all", "--ignored")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+	if code := ExitCode(err, false); code != 2 {
+		t.Errorf("ExitCode = %d, want 2", code)
+	}
+	if !strings.Contains(err.Error(), "none of the others can be") {
+		t.Errorf("error = %q, want mutually exclusive flag error", err.Error())
+	}
+}
+
 func TestRoleListEmpty(t *testing.T) {
 	svcs := api.Services{Roles: fakeRoleService{
 		list: func(context.Context, model.RoleScope) ([]model.Role, error) {

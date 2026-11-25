@@ -56,14 +56,17 @@ hghost completion bash    # also supports zsh / fish / powershell
 ### role
 
 ```sh
-hghost role list                 # roles supervised by the system
+hghost role list                 # captured roles
 hghost role list -a              # all roles discovered on the node
+hghost role list -i              # ignored roles
 hghost role show 7               # query by roleID
 hghost role show nginx:1.25      # query by label
 hghost role show --label 12345   # arguments are always treated as labels
 hghost role stats                # role manager counts
 hghost role which 1234           # role a process belongs to
 ```
+
+`-a` and `-i` are mutually exclusive.
 
 `role show` treats all-numeric arguments as `roleID` by default (must not be 0), and treats everything else as an exact label match; purely numeric labels must use `--label`. Exits `1` if the target does not exist or the label matches multiple roles. The process and context parts of role details are independent: parts that fail to query are not output (JSON is `null`), the remaining parts are output as usual, and the whole command exits `1`.
 

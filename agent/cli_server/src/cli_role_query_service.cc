@@ -51,6 +51,9 @@ CLIRoleQueryService::GetRolesResult CLIRoleQueryService::GetRoles(
                 case hng::clisv::RM_SHOW_SUPERVISION:
                     roles = deps_.role->supervised_roles();
                     break;
+                case hng::clisv::RM_SHOW_IGNORED:
+                    roles = deps_.role->ignore_roles();
+                    break;
                 default:
                     throw userver::ugrpc::server::ErrorWithStatus(
                         grpc::StatusCode::INVALID_ARGUMENT,

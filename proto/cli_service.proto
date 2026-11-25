@@ -22,8 +22,10 @@ message pidList
 enum RM_ShowOption {
     // 获取节点上出现的全部角色
     RM_SHOW_ALL         = 0;
-    // 只获取系统监管的角色
+    // 只获取被采集的角色（全部角色减去忽略名单）
     RM_SHOW_SUPERVISION = 1;
+    // 只获取被忽略的角色
+    RM_SHOW_IGNORED     = 2;
 }
 
 message RM_GetRolesRequest

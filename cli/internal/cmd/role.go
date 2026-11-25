@@ -33,7 +33,8 @@ func newRoleCommand(app *App) *cobra.Command {
 }
 
 type roleListOptions struct {
-	All bool
+	All     bool
+	Ignored bool
 }
 
 func newRoleListCommand(app *App) *cobra.Command {
@@ -54,15 +55,21 @@ func newRoleListCommand(app *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&opts.All, "all", "a", false,
-		"list all roles instead of supervised roles only")
+		"list all roles instead of captured roles only")
+	cmd.Flags().BoolVarP(&opts.Ignored, "ignored", "i", false,
+		"list ignored roles only")
+	cmd.MarkFlagsMutuallyExclusive("all", "ignored")
 	return cmd
 }
 
 func runRoleList(ctx context.Context, out, errOut io.Writer, r render.Renderer,
 	format render.Format, svc api.RoleService, opts roleListOptions) error {
 	scope := model.RoleScopeSupervision
-	if opts.All {
+	switch {
+	case opts.All:
 		scope = model.RoleScopeAll
+	case opts.Ignored:
+		scope = model.RoleScopeIgnored
 	}
 	roles, err := svc.List(ctx, scope)
 	if err != nil {
