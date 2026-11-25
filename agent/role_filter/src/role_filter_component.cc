@@ -28,7 +28,7 @@ struct RoleFilterComponent::Impl {
           filter(*options.lookup, std::move(options.policy),
                  std::move(options.map), std::move(options.filter_options))
     {
-        filter.set_supervision_service(options.supervision);
+        filter.set_ignore_service(options.ignore);
     }
 
     hng::detail::SingleInstanceGuard guard;

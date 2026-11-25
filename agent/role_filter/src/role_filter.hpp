@@ -1,6 +1,6 @@
 /**
  * @file
- * @brief 接收角色生命周期通知并维护进程采集白名单。
+ * @brief 接收角色生命周期通知并维护进程忽略名单。
  * @author inless427
  */
 #ifndef HNG_ROLE_FILTER_HPP_
@@ -20,10 +20,10 @@ class RoleFilterState;
 
 /**
  * @brief 由角色通知和周期刷新驱动的进程名单维护器。
- * @details 回调只入队；成员枚举、正则匹配、map 写入与监管登记由单消费线程执行。
+ * @details 回调只入队；成员枚举、正则匹配、map 写入与忽略登记由单消费线程执行。
  * 成员新增通知在消费线程上直接并入成员缓存并重算名单差异，不重查权威源。
  * 实现最新版全局 RoleLifecycleSink，借用全局 RoleLookupService；可通过
- * set_supervision_service 注入监管登记写入侧。
+ * set_ignore_service 注入忽略登记写入侧。
  * @pre 在 RoleManager::run() 前注册，lookup 必须活到本对象析构后。
  * @note 不负责反向创建或删除 RoleManager 记录；消费线程由装配方创建。
  *       生命周期只沿 CONSTRUCTED → READY → RUNNING → STOPPED 前进。
@@ -50,11 +50,11 @@ class RoleFilter final : public ::RoleLifecycleSink, public hng::Component {
     RoleFilter(const RoleFilter&)            = delete;
     RoleFilter& operator=(const RoleFilter&) = delete;
     /**
-     * @brief 注入监管登记写入侧。
-     * @param[in] service 可为空；为空时只维护采集名单，不向 RoleManager 登记。
+     * @brief 注入忽略登记写入侧。
+     * @param[in] service 可为空；为空时只维护忽略名单，不向 RoleManager 登记。
      * @pre 须在 run() / drain() 之前调用；service 须活到本对象析构后。
      */
-    void set_supervision_service(::RoleSupervisionService* service);
+    void set_ignore_service(::RoleIgnoreService* service);
     /**
      * @brief 用 RoleManager 当前角色全集播种第一份名单，并置 READY。
      * @pre 尚未 run()；RoleManager 已完成初始角色 drain

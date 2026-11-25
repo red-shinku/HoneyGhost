@@ -18,7 +18,7 @@
 
 class RoleLifecycleSink;
 class RoleLookupService;
-class RoleSupervisionService;
+class RoleIgnoreService;
 
 namespace hng {
 
@@ -35,11 +35,11 @@ struct RoleFilterOptions {
 
 /** @brief 各字段独立读取的统计结果，不保证来自同一刷新时刻。 */
 struct RoleFilterStats {
-    uint64_t roles = 0;  ///< 上次刷新结束时记录的角色数，包含不关注的角色。
-    uint64_t applied_processes = 0;  ///< 已确认成功同步到所有 map 的进程数。
+    uint64_t roles = 0;  ///< 上次刷新结束时记录的角色数，包含未被忽略的角色。
+    uint64_t applied_processes = 0;  ///< 已确认成功写入忽略名单的进程数。
     uint64_t map_errors        = 0;  ///< 累计 map 操作错误次数。
     uint64_t lookup_errors     = 0;  ///< 累计查询或存活检查异常次数。
-    uint64_t empty_members     = 0;  ///< 累计关注角色返回空成员集合的次数。
+    uint64_t empty_members     = 0;  ///< 累计被忽略角色返回空成员集合的次数。
     uint64_t queue_rejected    = 0;  ///< 停止后拒绝的入队请求数。
     int last_map_error         = 0;  ///< 最近一次 map 错误值，初始为零。
 };
@@ -50,9 +50,9 @@ struct RoleFilterStats {
  */
 struct RoleFilterComponentOptions {
     /// 借用的角色查询服务，必需
-    const ::RoleLookupService* lookup     = nullptr;
-    /// 借用的监管登记写入侧；为空时只维护采集名单
-    ::RoleSupervisionService* supervision = nullptr;
+    const ::RoleLookupService* lookup = nullptr;
+    /// 借用的忽略登记写入侧；为空时只维护忽略名单
+    ::RoleIgnoreService* ignore       = nullptr;
     /// 初始标签策略
     RoleFilterPolicy policy;
     /// 非空的独占 map 后端

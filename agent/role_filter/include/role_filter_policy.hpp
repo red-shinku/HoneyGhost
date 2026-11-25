@@ -11,8 +11,11 @@
 
 namespace hng {
 namespace detail {
+
 class RoleFilterPolicyData;
+
 }
+
 /**
  * @brief 构造时编译、查询时只读的角色名单策略。
  * @details 精确规则使用哈希集合，正则规则依次执行区分大小写的整串匹配。
@@ -20,15 +23,16 @@ class RoleFilterPolicyData;
 class RoleFilterPolicy {
    public:
     /**
-     * @brief 校验并构建策略；默认空名单拒绝普通事件。
+     * @brief 校验并构建策略；空名单采集全部普通事件。
      * @param[in] config 白名单与黑名单规则。
      * @throws std::runtime_error 规则类型、表达式或正则语法非法。
      */
     explicit RoleFilterPolicy(const RoleFilterConfig& config = {});
     /**
-     * @brief 判断完整角色标签是否允许采集普通事件。
+     * @brief 判断完整角色标签的普通事件是否采集。
      * @param[in] role_label systemd unit name 或完整容器镜像引用。
-     * @return 标签非空、未命中黑名单且命中白名单时为 true。
+     * @return 标签为空或未命中黑名单时为 true；命中黑名单时仅在命中白名单时为
+     * true。
      * @note 生命周期事件由 eBPF 探针绕过过滤，不受本策略限制。
      */
     bool should_collect(const std::string& role_label) const;

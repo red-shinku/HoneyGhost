@@ -40,22 +40,22 @@ class RoleFilterState {
     void land(const FilterTask& task);
     void refresh();
     RoleFilterStats stats() const;
-    void set_supervision_service(::RoleSupervisionService* service);
+    void set_ignore_service(::RoleIgnoreService* service);
     /// @brief 借用的角色查询服务；供组件层播种时枚举角色全集
     const ::RoleLookupService& lookup() const;
 
    private:
-    /** @brief 按状态变化登记或移除监管；未注入服务时为空操作。 */
-    void sync_supervision(uint32_t role_id, bool supervised);
-    /** @brief 按成员缓存与策略重算名单差异并同步 map。 */
+    /** @brief 按状态变化登记或移除忽略；未注入服务时为空操作。 */
+    void sync_ignored(uint32_t role_id, bool ignored);
+    /** @brief 按成员缓存与策略重算忽略名单差异并同步 map。 */
     void apply();
     const ::RoleLookupService& lookup_;
     RoleFilterPolicy policy_;
     std::unique_ptr<ProcessFilterMap> map_;
     RoleFilterOptions options_;
-    ::RoleSupervisionService* supervision_ = nullptr;
-    /** @brief 已登记为监管的 roleID；只在状态变化时写 RoleManager。 */
-    std::unordered_set<uint32_t> supervised_;
+    ::RoleIgnoreService* ignore_service_ = nullptr;
+    /** @brief 已登记为忽略的 roleID；只在状态变化时写 RoleManager。 */
+    std::unordered_set<uint32_t> ignored_;
     std::unordered_map<uint32_t, Role> roles_;
     std::unordered_map<uint32_t, ProcessSet> members_;
     ProcessSet applied_;

@@ -61,7 +61,7 @@ class BpfProcessFilterMap final : public ProcessFilterMap {
         }
     }
     ~BpfProcessFilterMap() override { close_all(); }
-    std::error_code allow(Process process) noexcept override
+    std::error_code ignore(Process process) noexcept override
     {
         return update(process, true);
     }
@@ -81,7 +81,7 @@ class BpfProcessFilterMap final : public ProcessFilterMap {
         fds_.clear();
     }
     /** @brief 尝试所有 map，忽略删除不存在条目的错误，并返回首个真实错误。 */
-    std::error_code update(Process process, bool allow) noexcept
+    std::error_code update(Process process, bool ignore) noexcept
     {
         if (!process.pid || !process.pid_start_time)
             return {EINVAL, std::generic_category()};
@@ -92,12 +92,12 @@ class BpfProcessFilterMap final : public ProcessFilterMap {
             union bpf_attr attr{};
             attr.map_fd = fd;
             attr.key    = reinterpret_cast<__u64>(&key);
-            attr.value  = allow ? reinterpret_cast<__u64>(&value) : 0;
+            attr.value  = ignore ? reinterpret_cast<__u64>(&value) : 0;
             attr.flags  = BPF_ANY;
             if (syscall(SYS_bpf,
-                        allow ? BPF_MAP_UPDATE_ELEM : BPF_MAP_DELETE_ELEM, &attr,
+                        ignore ? BPF_MAP_UPDATE_ELEM : BPF_MAP_DELETE_ELEM, &attr,
                         sizeof(attr)) < 0 &&
-                (allow || errno != ENOENT))
+                (ignore || errno != ENOENT))
                 if (!first) first = {errno, std::generic_category()};
         }
         return first;

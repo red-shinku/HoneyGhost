@@ -48,23 +48,23 @@ void RoleFilterState::stop()
     cv_.notify_all();
 }
 
-void RoleFilterState::set_supervision_service(::RoleSupervisionService* service)
+void RoleFilterState::set_ignore_service(::RoleIgnoreService* service)
 {
-    supervision_ = service;
+    ignore_service_ = service;
 }
 
 const ::RoleLookupService& RoleFilterState::lookup() const { return lookup_; }
 
-void RoleFilterState::sync_supervision(uint32_t role_id, bool supervised)
+void RoleFilterState::sync_ignored(uint32_t role_id, bool ignored)
 {
-    if (supervision_ == nullptr) return;
-    const bool registered = supervised_.count(role_id) != 0;
-    if (registered == supervised) return;
-    supervision_->set_supervised(role_id, supervised);
-    if (supervised)
-        supervised_.insert(role_id);
+    if (ignore_service_ == nullptr) return;
+    const bool registered = ignored_.count(role_id) != 0;
+    if (registered == ignored) return;
+    ignore_service_->set_ignored(role_id, ignored);
+    if (ignored)
+        ignored_.insert(role_id);
     else
-        supervised_.erase(role_id);
+        ignored_.erase(role_id);
 }
 
 void RoleFilterState::run()
@@ -120,7 +120,7 @@ void RoleFilterState::land(const FilterTask& task)
         case FilterTask::Kind::LEAVE:
             roles_.erase(task.role.roleID);
             members_.erase(task.role.roleID);
-            sync_supervision(task.role.roleID, false);
+            sync_ignored(task.role.roleID, false);
             break;
         case FilterTask::Kind::POLICY:
             policy_ = *task.policy;
@@ -130,7 +130,7 @@ void RoleFilterState::land(const FilterTask& task)
         case FilterTask::Kind::MEMBERS: {
             auto tracked = roles_.find(task.role.roleID);
             if (tracked == roles_.end() ||
-                !policy_.should_collect(tracked->second.roleLabel))
+                policy_.should_collect(tracked->second.roleLabel))
                 break;
             /** @note 只并入不替换：枚举为空或偏少都不能当作成员离开。 */
             auto& known = members_[task.role.roleID];
@@ -150,14 +150,14 @@ void RoleFilterState::refresh()
             auto current = lookup_.role(id);
             if (!current) {
                 members_.erase(id);
-                sync_supervision(id, false);
+                sync_ignored(id, false);
                 it = roles_.erase(it);
                 continue;
             }
             it->second         = *current;
-            const bool collect = policy_.should_collect(current->roleLabel);
-            sync_supervision(id, collect);
-            if (!collect) {
+            const bool ignored = !policy_.should_collect(current->roleLabel);
+            sync_ignored(id, ignored);
+            if (!ignored) {
                 members_.erase(id);
             }
             else {
@@ -191,7 +191,7 @@ void RoleFilterState::apply()
     for (const auto& [id, known] : members_) {
         auto entry = roles_.find(id);
         if (entry == roles_.end() ||
-            !policy_.should_collect(entry->second.roleLabel))
+            policy_.should_collect(entry->second.roleLabel))
             continue;
         for (Process process : known) {
             try {
@@ -199,7 +199,7 @@ void RoleFilterState::apply()
                 if (owner) {
                     auto owner_role = lookup_.role(*owner);
                     if (!owner_role ||
-                        !policy_.should_collect(owner_role->roleLabel))
+                        policy_.should_collect(owner_role->roleLabel))
                         continue;
                     if (*owner != id) continue;
                 }
@@ -210,7 +210,8 @@ void RoleFilterState::apply()
             }
         }
     }
-    /** @note 先撤销再允许；uncertain_ 也必须参与删除，避免部分写入后漏删。 */
+    /** @note 先撤销再写入忽略项；uncertain_ 也必须参与删除，避免部分写入后漏删。
+     */
     ProcessSet removable = applied_;
     removable.insert(uncertain_.begin(), uncertain_.end());
     for (Process process : removable) {
@@ -227,7 +228,7 @@ void RoleFilterState::apply()
     }
     for (Process process : desired) {
         if (applied_.count(process) && !uncertain_.count(process)) continue;
-        auto error = map_->allow(process);
+        auto error = map_->ignore(process);
         if (error) {
             ++map_errors_;
             last_map_error_ = error.value();
@@ -296,9 +297,9 @@ void RoleFilter::replace_policy(RoleFilterPolicy policy)
                      {}});
 }
 
-void RoleFilter::set_supervision_service(::RoleSupervisionService* service)
+void RoleFilter::set_ignore_service(::RoleIgnoreService* service)
 {
-    state_->set_supervision_service(service);
+    state_->set_ignore_service(service);
 }
 
 void RoleFilter::seed_initial_roles()
