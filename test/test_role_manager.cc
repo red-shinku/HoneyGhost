@@ -276,7 +276,7 @@ void run_roles()
     CHECK(all.size() == 1 && all[0].roleID == 2, "退出后不应含该角色");
 }
 
-void run_supervision()
+void run_ignore()
 {
     RecordingSink sink;
     RoleManager manager;
@@ -993,7 +993,7 @@ int main()
 {
     run_join();
     run_roles();
-    run_supervision();
+    run_ignore();
     run_main_process();
     run_leave();
     run_join_reread();

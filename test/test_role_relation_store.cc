@@ -154,7 +154,7 @@ void run_roles_snapshot()
           "退出后快照不应含该角色");
 }
 
-void run_supervision()
+void run_ignore()
 {
     RoleRelationStore store;
     const uint32_t role_a             = join_new(store, "a", 100, 1000, {});
@@ -707,7 +707,7 @@ int main()
     run_join();
     run_members();
     run_roles_snapshot();
-    run_supervision();
+    run_ignore();
     run_idempotent();
     run_join_normalize();
     run_main_process_change();
