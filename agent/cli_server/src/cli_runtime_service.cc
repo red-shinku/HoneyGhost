@@ -497,7 +497,6 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
                 if (!WriteBatch(writer, std::move(batch))) {
                     break;  // 客户端已断开
                 }
-                continue;
             }
             const uint64_t dropped = stream.dropped();
             if (dropped != reported) {
@@ -505,7 +504,9 @@ CLIRuntimeService::ReceiveEventResult CLIRuntimeService::ReceiveEvent(
                 if (!WriteStats(writer, dropped)) {
                     break;
                 }
-                continue;
+            }
+            if (taken == batch_size) {
+                continue;  // 队列里还有事件：立即续取，不判 finished 也不挂起
             }
             if (stream.finished()) {
                 break;

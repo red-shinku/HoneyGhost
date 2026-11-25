@@ -18,6 +18,10 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
   The former top-level type values `file`, `network`, and `ipc` have been consolidated under SUBTYPE.
 - `hghost events -t/--type` now filters by subtype.
 
+### Fixed
+
+- When the subscribed event stream remains overloaded, the CLI client cannot receive the dropped event count.
+
 ## [v0.1.2] - 2026-11-16
 
 ### Added

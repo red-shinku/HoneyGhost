@@ -19,6 +19,10 @@
   原顶层 type 的 file、network、ipc 被收敛到 SUBTYPE 下。
 - `hghost events -t/--type` 改为按子类型过滤。
 
+### Fixed
+
+- 订阅事件流在持续过载时，CLI客户端无法收到丢事件计数。
+
 ## [v0.1.2] - 2026-11-16
 
 ### Added

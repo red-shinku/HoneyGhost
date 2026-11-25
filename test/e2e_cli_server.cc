@@ -33,6 +33,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include <signal.h>
+#include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -116,6 +117,11 @@ components_manager:
         cli-process-service: {}
         cli-runtime-service: {}
 )";
+
+/// 与 kConfig 的 cli-server queue-capacity 一致：突发的积压上限即此值
+constexpr std::size_t kQueueCap    = 4096;
+/// 突发注入量：远大于队列容量，使队列立即溢出并累计丢弃
+constexpr std::size_t kBurstEvents = 20000;
 
 /// 替身角色查询：只认识 kRoleID，其成员固定为两个进程
 class RoleStub final : public RoleLookupService {
@@ -352,20 +358,37 @@ hng::RuntimeEvent MakeEvent(uint32_t seq)
     return event;
 }
 
+/// @brief 突发注入量，取自环境变量 HNG_CLI_E2E_BURST；未设置或非法时为 0
+/// @note 只在子进程启动时读一次；0 表示注入关闭，行为与无此能力时一致
+std::size_t BurstFromEnv()
+{
+    const char* raw = std::getenv("HNG_CLI_E2E_BURST");
+    if (raw == nullptr || raw[0] == '\0') {
+        return 0;
+    }
+    return static_cast<std::size_t>(std::strtoul(raw, nullptr, 10));
+}
+
 /// @brief 替身引擎：登记表加一条只读，另起线程按固定节奏合成事件
 /// @note 与真实引擎的差别只在「命令线程」：这里注销与停机回执在调用方线程上
 /// 同步完成，契约本身（摘表后回执、此后不再 on_event）不变
+/// @note 打开 HNG_CLI_E2E_BURST 时，每次 subscribe() 在登记之后同步注入该条数的
+/// 事件：消费方此时尚未开始取，队列立即溢出，供过载用例使用
 class FakeEngine final : public SubscriberRegService {
    public:
-    FakeEngine() : producer_([this] { Produce(); }) {}
+    FakeEngine() : burst_(BurstFromEnv()), producer_([this] { Produce(); }) {}
 
     ~FakeEngine() override { stop(); }
 
     bool subscribe(RuntimeEventSink* sink, RuntimeInfoFilter filter,
                    UnsubscribeAck* ack) override
     {
-        const std::lock_guard lock(mu_);
-        entries_.push_back(Entry{sink, std::move(filter), ack});
+        const RuntimeInfoFilter burst_filter = filter;
+        {
+            const std::lock_guard lock(mu_);
+            entries_.push_back(Entry{sink, std::move(filter), ack});
+        }
+        InjectBurst(sink, burst_filter);
         return true;
     }
 
@@ -416,6 +439,22 @@ class FakeEngine final : public SubscriberRegService {
         UnsubscribeAck* ack;
     };
 
+    /// @brief 向刚登记的 sink 同步注入 burst_ 条事件
+    /// @note 消费方此时尚未开始取，注入量超过队列容量的部分计入丢弃
+    void InjectBurst(RuntimeEventSink* sink, const RuntimeInfoFilter& filter)
+    {
+        if (burst_ == 0) {
+            return;
+        }
+        const std::lock_guard lock(mu_);
+        for (std::size_t i = 0; i < burst_; ++i) {
+            const hng::RuntimeEvent event = MakeEvent(static_cast<uint32_t>(i));
+            if (filter.should_take(event.runtimeInfo)) {
+                sink->on_event(event);
+            }
+        }
+    }
+
     void Produce()
     {
         // 每 16 ms 发一小批：平均速率不变，但批量协议能观察到多条记录的批
@@ -440,6 +479,8 @@ class FakeEngine final : public SubscriberRegService {
     std::mutex mu_;
     std::vector<Entry> entries_;
     std::atomic<bool> stopping_{false};
+    /// 一次订阅的突发注入量，0 表示关闭
+    const std::size_t burst_;
     std::thread producer_;
 };
 
@@ -1192,6 +1233,145 @@ bool WaitForExit(pid_t child, std::chrono::milliseconds timeout, int* code)
     }
 }
 
+// ============================================================
+// 父进程：突发过载用例（单独的子进程，经 HNG_CLI_E2E_BURST 打开）
+// ============================================================
+
+/// 突发用例的 gRPC deadline。须大于修好后的实测耗时，且小于每满批挂起
+/// 一个 50 ms 切片的版本读完 4096 条所需的 4096/16*50 ms ≈ 12.8 s
+constexpr std::chrono::seconds kBurstDeadline{6};
+/// 读完整个积压的时间上限：容器内实测约 0.1 s，取 2 s 留约 20 倍余量，
+/// 仍远小于上式的 12.8 s
+constexpr std::chrono::milliseconds kFullBacklogLimit{2000};
+
+/// @brief 积压未读完时就应上报丢弃计数
+/// @note 只在队列取空后读 dropped 的实现，前 4096/16 条消息之内不会出现 stats
+void run_burst_stats_early(hng::clisv::RuntimeService::Stub& runtime)
+{
+    grpc::ClientContext context;
+    SetDeadline(context, kBurstDeadline);
+    hng::clisv::ReceiveEventRequest request;
+    request.set_batch_size(16);
+    auto reader                  = runtime.ReceiveEvent(&context, request);
+
+    constexpr int kEarlyMessages = 10;
+    bool saw_stats               = false;
+    uint64_t dropped             = 0;
+    hng::clisv::ReceiveEventResponse message;
+    for (int i = 0; i < kEarlyMessages && reader->Read(&message); ++i) {
+        if (message.has_stats()) {
+            saw_stats = true;
+            dropped   = message.stats().dropped_events();
+        }
+    }
+    context.TryCancel();
+    (void)reader->Finish();
+
+    CHECK(saw_stats, "积压未读完时也应收到 stats");
+    CHECK(dropped + kQueueCap >= kBurstEvents,
+          "stats 应在事件流仍在继续时报告突发的丢弃量");
+}
+
+/// @brief 满批后立即续取：读完一整个队列的积压不应有空转
+/// @note 每满批挂起一个唤醒切片时需 4096/16*50 ms ≈ 12.8 s，会先撞上 deadline；
+/// 读数不足即判失败
+void run_burst_backlog_latency(hng::clisv::RuntimeService::Stub& runtime)
+{
+    const auto started = Clock::now();
+    grpc::ClientContext context;
+    SetDeadline(context, kBurstDeadline);
+    hng::clisv::ReceiveEventRequest request;
+    request.set_batch_size(16);
+    auto reader         = runtime.ReceiveEvent(&context, request);
+
+    std::size_t records = 0;
+    hng::clisv::ReceiveEventResponse message;
+    while (records < kQueueCap && reader->Read(&message)) {
+        if (message.has_batch()) {
+            records += message.batch().records_size();
+        }
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        Clock::now() - started);
+    context.TryCancel();
+    (void)reader->Finish();
+
+    std::printf("[info] batch_size=16 读完 %zu 条积压耗时 %lld ms\n", records,
+                static_cast<long long>(elapsed.count()));
+    CHECK(records >= kQueueCap, "应在 deadline 内读完整个积压");
+    CHECK(elapsed < kFullBacklogLimit, "满批后应立即续取，不应空转");
+}
+
+/// @brief 以 HNG_CLI_E2E_SERVE 模式重新拉起本程序，作为突发用例的服务端
+/// @note 父进程此时已持有 gRPC 线程，fork 出的子进程不 exec 会带着半份线程状态
+/// 启动失败，故走 posix_spawn 的 fork + exec
+/// @return 子进程 pid；拉起失败为 -1
+pid_t SpawnBurstServer()
+{
+    char self[1024];
+    const ssize_t length = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (length <= 0) {
+        return -1;
+    }
+    self[length] = '\0';
+
+    const std::string burst =
+        std::string{"HNG_CLI_E2E_BURST="} + std::to_string(kBurstEvents);
+    std::vector<char*> env;
+    for (char** item = environ; *item != nullptr; ++item) {
+        env.push_back(*item);
+    }
+    env.push_back(const_cast<char*>("HNG_CLI_E2E_SERVE=1"));
+    env.push_back(const_cast<char*>(burst.c_str()));
+    env.push_back(nullptr);
+
+    char* argv[] = {self, nullptr};
+    pid_t child  = -1;
+    if (::posix_spawn(&child, self, nullptr, nullptr, argv, env.data()) != 0) {
+        return -1;
+    }
+    return child;
+}
+
+/// @brief 突发用例：拉起一个置了 HNG_CLI_E2E_BURST 的专门服务端进程
+/// @note 突发只在这个进程内打开，常规用例的子进程行为不变
+void run_burst_phase()
+{
+    ::unlink(kSocketPath);
+
+    const pid_t child = SpawnBurstServer();
+    if (child < 0) {
+        CHECK(false, "突发用例的服务端拉起失败");
+        return;
+    }
+
+    const auto channel = MakeChannel();
+    auto role          = hng::clisv::RoleManagerService::NewStub(channel);
+    auto runtime       = hng::clisv::RuntimeService::NewStub(channel);
+
+    if (WaitForServer(*role)) {
+        run_burst_stats_early(*runtime);
+        run_burst_backlog_latency(*runtime);
+    }
+    else {
+        CHECK(false, "突发用例的服务端未在期限内就绪");
+    }
+
+    ::kill(child, SIGTERM);
+
+    int child_code = -1;
+    if (WaitForExit(child, std::chrono::seconds(20), &child_code)) {
+        CHECK(child_code == 0, "突发用例的子进程应正常退出");
+    }
+    else {
+        ::kill(child, SIGKILL);
+        (void)::waitpid(child, nullptr, 0);
+        CHECK(false, "突发用例的子进程应在停机后退出");
+    }
+
+    ::unlink(kSocketPath);
+}
+
 }  // namespace
 
 int main()
@@ -1268,6 +1448,8 @@ int main()
     }
 
     ::unlink(kSocketPath);
+
+    run_burst_phase();
 
     if (g_fail) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", g_fail);
