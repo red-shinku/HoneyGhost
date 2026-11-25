@@ -73,7 +73,7 @@ static __always_inline struct syscall_event *init_exec_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_credential_event(
     enum syscall_event_name name)
@@ -93,7 +93,7 @@ static __always_inline struct syscall_event *init_credential_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_namespace_event(
     enum syscall_event_name name)
@@ -114,7 +114,7 @@ static __always_inline struct syscall_event *init_namespace_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_file_event(
     enum syscall_event_name name)
@@ -137,7 +137,7 @@ static __always_inline struct syscall_event *init_file_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_memory_event(
     enum syscall_event_name name)
@@ -166,7 +166,7 @@ static __always_inline struct syscall_event *init_memory_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_network_event(
     enum syscall_event_name name)
@@ -187,7 +187,7 @@ static __always_inline struct syscall_event *init_network_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_kernel_event(
     enum syscall_event_name name)
@@ -206,7 +206,7 @@ static __always_inline struct syscall_event *init_kernel_event(
  * @param[in] name 系统调用事件名。
  * @return 角色被过滤或槽不可用时返回 NULL，否则返回暂存槽内的事件指针。
  * @note 事件在本 CPU 槽内组装，enter 探针末尾写入暂存表，由对应 exit 探针提交。
- * @note 先检查角色白名单，通过后才占用事件槽。
+ * @note 先检查是否在忽略名单，未被忽略才占用事件槽。
  */
 static __always_inline struct syscall_event *init_signal_event(
     enum syscall_event_name name)

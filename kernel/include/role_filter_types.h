@@ -19,6 +19,7 @@
  * @details 用户态与 eBPF 必须采用相同布局，并将显式填充字段置零。
  * 启动时间取线程组组长的 start_boottime，转换为 USER_HZ 时钟滴答，
  * 与 /proc/<tgid>/stat 的第 22 字段采用相同单位。
+ * 键存在即表示该进程的普通事件被忽略；值仅作占位，恒为 1，判定不读取。
  */
 struct hng_role_filter_key {
     __u32 tgid;        ///< 线程组 ID。
