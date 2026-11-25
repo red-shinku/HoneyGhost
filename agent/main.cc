@@ -329,8 +329,8 @@ int main(int argc, char** argv)
 
     if (config.role_filter_config_path.empty()) {
         HNG_LOG_WARN(
-            "no role_filter.path configured; the empty policy rejects "
-            "ordinary event collection");
+            "no role_filter.path configured; the empty policy collects all "
+            "ordinary events");
     }
     else {
         try {
