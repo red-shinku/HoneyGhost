@@ -214,9 +214,9 @@ void Assembly::Impl::build_filter()
     // S2 用过滤 map fd 构造名单组件，并注册为 RM 的生命周期出口
     if (collector != nullptr) {
         RoleFilterComponentOptions ropt;
-        ropt.lookup      = &control_plane->role().lookup_service();
-        ropt.supervision = &control_plane->role().supervision_service();
-        ropt.policy      = RoleFilterPolicy(options.role_filter_config);
+        ropt.lookup = &control_plane->role().lookup_service();
+        ropt.ignore = &control_plane->role().ignore_service();
+        ropt.policy = RoleFilterPolicy(options.role_filter_config);
         ropt.map = make_bpf_process_filter_map(collector->role_filter_map_fds());
         ropt.filter_options = options.role_filter_options;
         role_filter         = RoleFilterFactory::create(std::move(ropt));

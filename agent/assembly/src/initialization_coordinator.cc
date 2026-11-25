@@ -321,7 +321,8 @@ InitReport InitializationCoordinator::run(const InitializationIO& io)
             elapsed_ms(filter_drain_start, std::chrono::steady_clock::now()));
         const RoleFilterStats filter_stats = role_filter_->stats();
         HNG_LOG_INFO(
-            "role filter: roles {}, processes applied {}, empty members {}",
+            "role filter: roles {}, processes in ignore list {}, empty members "
+            "{}",
             filter_stats.roles, filter_stats.applied_processes,
             filter_stats.empty_members);
     }

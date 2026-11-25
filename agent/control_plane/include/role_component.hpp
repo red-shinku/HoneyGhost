@@ -41,7 +41,7 @@ struct RoleComponentOptions {
 
 /**
  * @brief 角色管理组件
- * @details 提供角色查询、归属继承、监管名单与初始化对账服务，并转发组件的
+ * @details 提供角色查询、归属继承、忽略名单与初始化对账服务，并转发组件的
  *          生命周期。组件自身不持线程。
  * @see hng::Component
  */
@@ -60,9 +60,9 @@ class RoleComponent final : public hng::Component {
     /// @see RoleJoinService
     RoleJoinService& join_service() noexcept;
 
-    /// @brief 监管名单写入服务
-    /// @see RoleSupervisionService
-    RoleSupervisionService& supervision_service() noexcept;
+    /// @brief 忽略名单写入服务
+    /// @see RoleIgnoreService
+    RoleIgnoreService& ignore_service() noexcept;
 
     /// @brief 角色初始落地后的对账服务
     /// @see RoleSeedService
