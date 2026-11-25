@@ -401,9 +401,14 @@ std::vector<hng::Role> RoleManager::supervised_roles() const
     return store_.supervised_roles();
 }
 
-void RoleManager::set_supervised(uint32_t role_id, bool supervised)
+std::vector<hng::Role> RoleManager::ignore_roles() const
 {
-    store_.set_supervised(role_id, supervised);
+    return store_.ignore_roles();
+}
+
+void RoleManager::set_ignored(uint32_t role_id, bool ignored)
+{
+    store_.set_ignored(role_id, ignored);
 }
 
 std::optional<hng::role::RoleIdentity> RoleManager::identity(

@@ -329,8 +329,8 @@ int main(int argc, char** argv)
 
     if (config.role_filter_config_path.empty()) {
         HNG_LOG_WARN(
-            "no role_filter.path configured; the empty policy rejects "
-            "ordinary event collection");
+            "no role_filter.path configured; the empty policy collects all "
+            "ordinary events");
     }
     else {
         try {
@@ -369,7 +369,7 @@ int main(int argc, char** argv)
         }
         HNG_LOG_INFO(
             "agent started: state {}, process inserted {}, context inserted "
-            "{}, role filter applied processes {}, role source timeout {}",
+            "{}, role filter ignored processes {}, role source timeout {}",
             hng::to_string(report.state), report.process.inserted,
             report.context.inserted, report.role_filter.applied_processes,
             report.role_source_timeout);

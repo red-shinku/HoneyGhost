@@ -71,7 +71,7 @@ docker compose -f deploy/docker/docker-compose.yaml \
 `deploy/docker/config/` 三个文件挂到容器内 `/etc/honeyghost`：
 
 - `agent.conf`：采集开关、发现源开关、桥接 socket 路径、角色过滤与 CLI 配置的引用；
-- `role_filter.conf`：白/黑名单，默认拒绝普通事件；
+- `role_filter.conf`：黑名单（忽略角色）与白名单（例外捕获），默认采集全部普通事件；
 - `cli_server.conf`：并发流、队列容量、drain 超时、CLI socket 路径。
 
 相对路径以 `agent.conf` 所在目录为基准，因此容器内引用写成同目录文件名即可。

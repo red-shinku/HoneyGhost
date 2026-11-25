@@ -41,9 +41,9 @@ RoleJoinService& RoleComponent::join_service() noexcept
     return static_cast<RoleJoinService&>(impl_->manager);
 }
 
-RoleSupervisionService& RoleComponent::supervision_service() noexcept
+RoleIgnoreService& RoleComponent::ignore_service() noexcept
 {
-    return static_cast<RoleSupervisionService&>(impl_->manager);
+    return static_cast<RoleIgnoreService&>(impl_->manager);
 }
 
 RoleSeedService& RoleComponent::seed_service() noexcept

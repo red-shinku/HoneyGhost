@@ -39,8 +39,11 @@ class RoleLookupService {
     /// @brief 全部角色的快照，按 roleID 升序
     virtual std::vector<hng::Role> roles() const = 0;
 
-    /// @brief 当前被系统监管的角色快照，按 roleID 升序
+    /// @brief 当前被采集的角色快照，按 roleID 升序
     virtual std::vector<hng::Role> supervised_roles() const = 0;
+
+    /// @brief 当前被忽略的角色快照，按 roleID 升序
+    virtual std::vector<hng::Role> ignore_roles() const = 0;
 
     /// @brief 角色的身份：实例键、类型键、属性字典与来源
     /// @note 供角色标签维护与日志打印 TODO: 也许不该做这个接口
@@ -58,18 +61,18 @@ class RoleLookupService {
     virtual RoleManagerStats stats() const = 0;
 };
 
-/// @brief 监管名单的写入侧
+/// @brief 忽略名单的写入侧
 /// @details 由用户态角色过滤模块在策略判定后调用；RoleManager 实现。
 ///          角色退出时 RoleManager 自动移除登记，调用方无需处理退出。
-class RoleSupervisionService {
+class RoleIgnoreService {
    protected:
-    virtual ~RoleSupervisionService() = default;
+    virtual ~RoleIgnoreService() = default;
 
    public:
-    /// @brief 登记或移除一个系统监管角色
+    /// @brief 登记或移除一个被忽略的角色
     /// @param roleID 目标角色；不存在时忽略
-    /// @param supervised true 登记，false 移除
-    virtual void set_supervised(uint32_t roleID, bool supervised) = 0;
+    /// @param ignored true 登记，false 移除
+    virtual void set_ignored(uint32_t roleID, bool ignored) = 0;
 };
 
 /// @brief 进程结构事实 → 角色归属

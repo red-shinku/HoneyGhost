@@ -32,10 +32,12 @@ type RoleDetail struct {
 type RoleScope int
 
 const (
-	// RoleScopeSupervision 只返回系统监管的角色。
+	// RoleScopeSupervision 只返回被采集的角色（全部角色减去忽略名单）。
 	RoleScopeSupervision RoleScope = iota
 	// RoleScopeAll 返回节点上发现的全部角色。
 	RoleScopeAll
+	// RoleScopeIgnored 只返回系统忽略的角色。
+	RoleScopeIgnored
 )
 
 // RoleStats 是角色管理器的计数快照。

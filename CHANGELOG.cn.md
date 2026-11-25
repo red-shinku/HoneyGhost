@@ -7,16 +7,17 @@
 
 ### Added
 
-- 内核事件（现表示为 type = syscall）子类型 SIGNAL。
 - 47 个 tracepoint 探针；完善事件信息。  
 
 ### Changed
 
-- 原顶层 type 的 file、network、ipc 收敛到 syscall 的九个子类型下。
-- `hghost events -t/--type` 改为按子类型过滤（`process`、`exec`、
-  `credential`、`namespace`、`file`、`memory`、`network`、`kernel`），
-  子类型即输出表格视图在 `TYPE` 后新增的 `SUBTYPE` 列。  
-  
+- 默认采集全部事件，写在 `role_filter.conf` 黑名单中的角色事件不采集，白名单只在
+  黑名单命中时作为例外生效。使用 `hghost role list -i/--ignored` 查看被忽略的角色。
+- 事件由 TYPE、SUBTYPE 标识。现状 TYPE 只有内核事件（现标为type=syscall）一种，分九个 SUBTYPE：
+  `process`、`exec`、`credential`、`namespace`、
+  `file`、`memory`、`network`、`kernel`、`signal`。
+  原顶层 type 的 file、network、ipc 被收敛到 SUBTYPE 下。
+- `hghost events -t/--type` 改为按子类型过滤。
 
 ## [v0.1.2] - 2026-11-16
 

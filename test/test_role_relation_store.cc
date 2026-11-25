@@ -154,33 +154,45 @@ void run_roles_snapshot()
           "退出后快照不应含该角色");
 }
 
-void run_supervision()
+void run_ignore()
 {
     RoleRelationStore store;
-    const uint32_t role_a = join_new(store, "a", 100, 1000, {});
-    const uint32_t role_b = join_new(store, "b", 200, 2000, {});
+    const uint32_t role_a             = join_new(store, "a", 100, 1000, {});
+    const uint32_t role_b             = join_new(store, "b", 200, 2000, {});
 
-    CHECK(store.supervised_roles().empty(), "未登记时应为空");
-
-    store.set_supervised(role_a + 100, true);
-    CHECK(store.supervised_roles().empty(), "未知 roleID 应忽略");
-
-    store.set_supervised(role_a, true);
     std::vector<hng::Role> supervised = store.supervised_roles();
-    CHECK(supervised.size() == 1 && supervised[0].roleID == role_a &&
-              supervised[0].roleLabel == "a",
-          "应返回已登记角色及其标签");
-
-    store.set_supervised(role_b, true);
-    supervised = store.supervised_roles();
     CHECK(supervised.size() == 2 && supervised[0].roleID == role_a &&
               supervised[1].roleID == role_b,
-          "多个角色应按 roleID 升序");
+          "未登记忽略时全部角色都属采集快照");
+    CHECK(store.ignore_roles().empty(), "未登记时忽略名单为空");
 
-    store.set_supervised(role_a, false);
+    store.set_ignored(role_a + 100, true);
+    CHECK(store.ignore_roles().empty(), "未知 roleID 应忽略");
+    CHECK(store.supervised_roles().size() == 2, "未知 roleID 不应改变采集快照");
+
+    store.set_ignored(role_a, true);
+    std::vector<hng::Role> ignored = store.ignore_roles();
+    CHECK(ignored.size() == 1 && ignored[0].roleID == role_a &&
+              ignored[0].roleLabel == "a",
+          "应返回已忽略角色及其标签");
     supervised = store.supervised_roles();
     CHECK(supervised.size() == 1 && supervised[0].roleID == role_b,
+          "采集快照应排除已忽略角色");
+
+    store.set_ignored(role_b, true);
+    ignored = store.ignore_roles();
+    CHECK(ignored.size() == 2 && ignored[0].roleID == role_a &&
+              ignored[1].roleID == role_b,
+          "多个角色应按 roleID 升序");
+    CHECK(store.supervised_roles().empty(), "全部角色被忽略时采集快照为空");
+
+    store.set_ignored(role_a, false);
+    ignored = store.ignore_roles();
+    CHECK(ignored.size() == 1 && ignored[0].roleID == role_b,
           "移除后不应含该角色");
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_a,
+          "移除后采集快照应恢复该角色");
 
     // 快照读取当前角色记录：锚点更换重算后的标签应反映出来
     RolePayload changed                  = mk_payload("b", 201, 2001);
@@ -189,12 +201,15 @@ void run_supervision()
     CHECK(store.main_process_change(changed, {proc(201, 2001)}).kind ==
               Kind::MAIN_PROCESS_CHANGED,
           "锚点更换应成功");
-    supervised = store.supervised_roles();
-    CHECK(supervised.size() == 1 && supervised[0].roleLabel == "hng/nginx:v2",
-          "监管快照应读取当前角色记录");
+    ignored = store.ignore_roles();
+    CHECK(ignored.size() == 1 && ignored[0].roleLabel == "hng/nginx:v2",
+          "忽略快照应读取当前角色记录");
 
     CHECK(store.leave("b").kind == Kind::LEFT, "存活角色应能退出");
-    CHECK(store.supervised_roles().empty(), "角色退出后应自动移除登记");
+    CHECK(store.ignore_roles().empty(), "角色退出后应自动移除登记");
+    supervised = store.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_a,
+          "角色退出后采集快照应只剩存活角色");
 }
 
 void run_idempotent()
@@ -692,7 +707,7 @@ int main()
     run_join();
     run_members();
     run_roles_snapshot();
-    run_supervision();
+    run_ignore();
     run_idempotent();
     run_join_normalize();
     run_main_process_change();

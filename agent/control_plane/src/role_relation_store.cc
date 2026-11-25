@@ -145,7 +145,7 @@ RoleTransition RoleRelationStore::leave(const std::string& instance_key)
         return RoleTransition{};
     }
     uint32_t role_id = instance->second;
-    supervised_.erase(role_id);
+    ignored_.erase(role_id);
 
     auto record = role_table_.find(role_id);
     if (record == role_table_.end()) {
@@ -407,16 +407,16 @@ std::vector<hng::Role> RoleRelationStore::roles() const
     return result;
 }
 
-void RoleRelationStore::set_supervised(uint32_t role_id, bool supervised)
+void RoleRelationStore::set_ignored(uint32_t role_id, bool ignored)
 {
     std::unique_lock lock(mutex_);
 
-    if (!supervised) {
-        supervised_.erase(role_id);
+    if (!ignored) {
+        ignored_.erase(role_id);
         return;
     }
     if (role_table_.find(role_id) != role_table_.end()) {
-        supervised_.insert(role_id);
+        ignored_.insert(role_id);
     }
 }
 
@@ -425,8 +425,27 @@ std::vector<hng::Role> RoleRelationStore::supervised_roles() const
     std::shared_lock lock(mutex_);
 
     std::vector<hng::Role> result;
-    result.reserve(supervised_.size());
-    for (uint32_t role_id : supervised_) {
+    result.reserve(role_table_.size());
+    for (const auto& entry : role_table_) {
+        if (ignored_.count(entry.first) != 0) {
+            continue;
+        }
+        result.push_back(entry.second.role);
+    }
+    std::sort(result.begin(), result.end(),
+              [](const hng::Role& lhs, const hng::Role& rhs) {
+                  return lhs.roleID < rhs.roleID;
+              });
+    return result;
+}
+
+std::vector<hng::Role> RoleRelationStore::ignore_roles() const
+{
+    std::shared_lock lock(mutex_);
+
+    std::vector<hng::Role> result;
+    result.reserve(ignored_.size());
+    for (uint32_t role_id : ignored_) {
         auto record = role_table_.find(role_id);
         if (record != role_table_.end()) {
             result.push_back(record->second.role);

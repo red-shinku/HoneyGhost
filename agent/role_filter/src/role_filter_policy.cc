@@ -1,6 +1,6 @@
 /**
  * @file
- * @brief 预编译规则集合与黑名单优先的标签匹配。
+ * @brief 预编译规则集合与默认采集、黑名单忽略、白名单例外的标签匹配。
  * @author inless427
  */
 #include "agent/role_filter/include/role_filter_policy.hpp"
@@ -46,6 +46,7 @@ struct Rules {
         return false;
     }
 };
+
 /** @brief 可共享的只读白名单与黑名单数据。 */
 class RoleFilterPolicyData {
    public:
@@ -57,6 +58,7 @@ class RoleFilterPolicyData {
     Rules black;
 };
 }  // namespace hng::detail
+
 namespace hng {
 RoleFilterPolicy::RoleFilterPolicy(const RoleFilterConfig& config)
     : data_(std::make_shared<const detail::RoleFilterPolicyData>(config))
@@ -64,7 +66,8 @@ RoleFilterPolicy::RoleFilterPolicy(const RoleFilterConfig& config)
 }
 bool RoleFilterPolicy::should_collect(const std::string& label) const
 {
-    return !label.empty() && !data_->black.matches(label) &&
-           data_->white.matches(label);
+    if (label.empty()) return true;
+    if (!data_->black.matches(label)) return true;
+    return data_->white.matches(label);
 }
 }  // namespace hng

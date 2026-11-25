@@ -6,9 +6,8 @@
  * 若干子进程按 profile 循环制造系统调用，统计消费到的记录数与字节数。
  *
  * 记录长度取自 ringbuf 回调的 size（头 + 该 subtype 的定长载荷），不按
- * sizeof(syscall_event) 判断。普通事件受内核侧角色过滤约束，故压测前把每个
- * 工作子进程的 (tgid, 启动时间) 写入 hng_role_filter；进程生命周期事件与
- * exec 事件不受该过滤限制。
+ * sizeof(syscall_event) 判断。普通事件默认全部采集，统计口径为全量事件；
+ * 进程生命周期事件与 exec 事件绕过名单判定。
  *
  * 需 root 与 BPF 权限，故不注册为 ctest 用例。从仓库根手动执行：
  *   sudo build-agent/test/bench_syscalls --profile mixed --seconds 10
@@ -51,7 +50,6 @@
 #include <vector>
 
 #include "agent/util/include/tracefs.hpp"
-#include "kernel/include/role_filter_types.h"
 #include "kernel/include/syscall_event_head.h"
 #include "test/bench/bench_trace.hpp"
 
@@ -538,48 +536,16 @@ struct Stats {
     std::string trace_error;              ///< 语料写入的首个错误
 };
 
-/// @brief 校准 PID 命名空间偏移时使用的探查状态
-struct PidProbe {
-    const std::vector<std::uint64_t>* starts = nullptr;  ///< 待匹配的启动时间
-    std::vector<__u32>* globals              = nullptr;  ///< 命中的全局 TGID
-    std::size_t matched                      = 0;        ///< 已匹配个数
-};
-
-/// @brief 非空时 ringbuf 回调走 PID 探查，而不是吞吐统计
-PidProbe* g_pid_probe = nullptr;
-
 /**
  * @brief ringbuf 回调：只做计数，不解析载荷
  * @param[in,out] context Stats
  * @param[in] data 记录起始地址
  * @param[in] size 记录长度，由 ringbuf 给出
  * @return 0
- * @note 校准阶段（g_pid_probe 非空）改按进程诞生事件把启动时间映射到全局 TGID：
- *       嵌套 PID 命名空间里用户态 pid 与内核全局 TGID 不同，而角色过滤键用的是
- *       后者；启动时间与命名空间无关，可作匹配键。
  * @note 统计窗口内的记录同时写入 --dump 语料；写入失败只停止导出，不影响计数。
  */
 int on_record(void* context, void* data, std::size_t size)
 {
-    if (g_pid_probe != nullptr) {
-        if (size < sizeof(struct syscall_event_head)) {
-            return 0;
-        }
-        const auto* head = static_cast<const struct syscall_event_head*>(data);
-        if (head->name != SYSCALL_EVENT_FORK || g_pid_probe->starts == nullptr ||
-            g_pid_probe->globals == nullptr) {
-            return 0;
-        }
-        const std::vector<std::uint64_t>& starts = *g_pid_probe->starts;
-        std::vector<__u32>& globals              = *g_pid_probe->globals;
-        for (std::size_t i = 0; i < starts.size() && i < globals.size(); ++i) {
-            if (globals[i] == 0 && starts[i] == head->head.pid_start_time) {
-                globals[i] = head->head.pid;
-                ++g_pid_probe->matched;
-            }
-        }
-        return 0;
-    }
     Stats* stats = static_cast<Stats*>(context);
     if (!stats->counting) {
         return 0;
@@ -896,97 +862,6 @@ void run_cycle(Profile profile, const WorkloadContext& context,
     ::_exit(0);
 }
 
-/**
- * @brief 读取 /proc/<pid>/stat 字段 22（USER_HZ 对齐的启动时间）
- * @param[in] pid 目标进程
- * @param[out] start_time 启动时间
- * @return 读取并解析成功时为 true
- * @note 该值与内核 start_boottime / NSEC_PER_USER_HZ 相同，是角色过滤键的
- *       第二分量。
- */
-bool read_process_start_time(pid_t pid, std::uint64_t& start_time)
-{
-    char path[64]         = {};
-    const int path_length = std::snprintf(path, sizeof(path), "/proc/%ld/stat",
-                                          static_cast<long>(pid));
-    if (path_length <= 0 ||
-        static_cast<std::size_t>(path_length) >= sizeof(path)) {
-        return false;
-    }
-    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return false;
-    }
-    char buffer[512]     = {};
-    const ssize_t length = ::read(fd, buffer, sizeof(buffer) - 1);
-    ignore_result(::close(fd));
-    if (length <= 0) {
-        return false;
-    }
-    buffer[length] = '\0';
-
-    char* cursor   = std::strrchr(buffer, ')');
-    if (!cursor) {
-        return false;
-    }
-    ++cursor;
-    for (int field = 3; field <= 22; ++field) {
-        while (*cursor == ' ') {
-            ++cursor;
-        }
-        if (*cursor == '\0') {
-            return false;
-        }
-        if (field == 3) {
-            ++cursor;
-            continue;
-        }
-        char* end                       = nullptr;
-        const unsigned long long parsed = std::strtoull(cursor, &end, 10);
-        if (end == cursor) {
-            return false;
-        }
-        if (field == 22) {
-            start_time = static_cast<std::uint64_t>(parsed);
-            return true;
-        }
-        cursor = end;
-    }
-    return false;
-}
-
-/**
- * @brief 把 worker 加入角色过滤白名单
- * @param[in] filter_fd hng_role_filter map fd
- * @param[in] tgid worker 的内核全局 TGID
- * @param[in] start_time worker 的启动时间（USER_HZ 滴答，取自 /proc）
- * @param[out] error 失败原因
- * @return 成功时为 true
- * @note 过滤键必须用内核全局 TGID：嵌套 PID 命名空间里它与用户态 pid 不同，
- *       由进程诞生事件的 pid_start_time 反查得到（见 PidProbe）。
- */
-bool allow_worker(int filter_fd, __u32 tgid, std::uint64_t start_time,
-                  std::string& error)
-{
-    hng_role_filter_key key{};
-    key.tgid            = tgid;
-    key.reserved        = 0;
-    key.start_time      = start_time;
-    const __u32 allowed = 1;
-    if (::bpf_map_update_elem(filter_fd, &key, &allowed, BPF_ANY) != 0) {
-        error = std::string("failed to write the role filter map: ") +
-                std::strerror(errno);
-        return false;
-    }
-    __u32 readback = 0;
-    const int rc   = ::bpf_map_lookup_elem(filter_fd, &key, &readback);
-    if (readback != 1 || rc != 0) {
-        error = "failed to read back the role filter map";
-        return false;
-    }
-    return true;
-}
-
 /// @brief 启动失败时终止尚未放行的 worker
 void abort_workers(int& gate_write, std::vector<pid_t>& workers)
 {
@@ -1113,13 +988,10 @@ int run(const Options& options)
         ::bpf_object__find_map_by_name(object.get(), "reserve_failures");
     bpf_map* pending_map =
         ::bpf_object__find_map_by_name(object.get(), "pending_lost");
-    bpf_map* filter_map =
-        ::bpf_object__find_map_by_name(object.get(), HNG_ROLE_FILTER_MAP_NAME);
-    if (!ring_map || !reserve_map || !pending_map || !filter_map) {
-        std::fprintf(
-            stderr,
-            "the object is missing the ringbuf, counter, or role filter map; "
-            "it may not be syscalls.bpf.o\n");
+    if (!ring_map || !reserve_map || !pending_map) {
+        std::fprintf(stderr,
+                     "the object is missing the ringbuf or counter map; "
+                     "it may not be syscalls.bpf.o\n");
         return kExitBpfFailure;
     }
     if (::bpf_map__type(ring_map) != BPF_MAP_TYPE_RINGBUF) {
@@ -1208,44 +1080,6 @@ int run(const Options& options)
     if (!spawn_ok) {
         abort_workers(gate_write, workers);
         return kExitRuntimeFailure;
-    }
-
-    //! @note 角色过滤键用的是内核全局 TGID。嵌套 PID 命名空间里它与 getpid()
-    //!       不同，只能用进程诞生事件反查：pid_start_time 与命名空间无关。
-    std::vector<std::uint64_t> starts(workers.size(), 0);
-    for (std::size_t i = 0; i < workers.size(); ++i) {
-        if (!read_process_start_time(workers[i], starts[i])) {
-            std::fprintf(stderr, "failed to read the start time of worker %d\n",
-                         static_cast<int>(workers[i]));
-            abort_workers(gate_write, workers);
-            return kExitRuntimeFailure;
-        }
-    }
-    std::vector<__u32> globals(workers.size(), 0);
-    PidProbe probe;
-    probe.starts  = &starts;
-    probe.globals = &globals;
-    g_pid_probe   = &probe;
-    for (int waited  = 0; probe.matched < workers.size() && waited < 2000;
-         waited     += 10) {
-        if (::ring_buffer__poll(raw_buffer, 10) < 0) {
-            break;
-        }
-    }
-    g_pid_probe         = nullptr;
-
-    const int filter_fd = ::bpf_map__fd(filter_map);
-    for (std::size_t i = 0; i < workers.size(); ++i) {
-        const __u32 tgid =
-            globals[i] != 0 ? globals[i] : static_cast<__u32>(workers[i]);
-        std::string error;
-        if (!allow_worker(filter_fd, tgid, starts[i], error)) {
-            std::fprintf(stderr,
-                         "failed to register worker %d (global TGID %u): %s\n",
-                         static_cast<int>(workers[i]), tgid, error.c_str());
-            abort_workers(gate_write, workers);
-            return kExitRuntimeFailure;
-        }
     }
 
     const Clock::time_point run_start = Clock::now();

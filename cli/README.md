@@ -57,14 +57,17 @@ hghost completion bash    # 也支持 zsh / fish / powershell
 ### role（角色）
 
 ```sh
-hghost role list                 # 系统监管的角色
+hghost role list                 # 被采集的角色
 hghost role list -a              # 节点上发现的全部角色
+hghost role list -i              # 被忽略的角色
 hghost role show 7               # 按 roleID 查询
 hghost role show nginx:1.25      # 按标签查询
 hghost role show --label 12345   # 参数一律按标签处理
 hghost role stats                # 角色管理器计数
 hghost role which 1234           # 进程所属角色
 ```
+
+`-a` 与 `-i` 互斥。
 
 `role show` 默认把全数字参数当作 `roleID`（不得为 0），其余按标签精确匹配；
 纯数字标签必须用 `--label`。目标不存在或标签匹配到多个角色时退出 `1`。

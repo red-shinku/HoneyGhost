@@ -65,6 +65,8 @@ int g_fail = 0;
 
 constexpr uint32_t kRoleID         = 7;
 constexpr char kRoleLabel[]        = "e2e";
+constexpr uint32_t kIgnoredRoleID  = kRoleID + 1;
+constexpr char kIgnoredRoleLabel[] = "ignored.service";
 constexpr uint32_t kPidSyscall     = 1001;
 constexpr uint32_t kPidFile        = 2002;
 constexpr uint32_t kContextID      = 3;
@@ -147,6 +149,11 @@ class RoleStub final : public RoleLookupService {
     std::vector<hng::Role> supervised_roles() const override
     {
         return {hng::Role{kRoleID, kRoleLabel}};
+    }
+
+    std::vector<hng::Role> ignore_roles() const override
+    {
+        return {hng::Role{kIgnoredRoleID, kIgnoredRoleLabel}};
     }
 
     RoleManagerStats stats() const override
@@ -557,6 +564,22 @@ void run_query_face(hng::clisv::RoleManagerService::Stub& role,
                   response.r(0).rolelabel() == kRoleLabel,
               "GetRoles 应返回替身角色");
     }
+
+    // RM_GetRoles：忽略角色
+    {
+        grpc::ClientContext context;
+        SetDeadline(context, std::chrono::seconds(5));
+        hng::clisv::RM_GetRolesRequest request;
+        request.set_showoption(hng::clisv::RM_SHOW_IGNORED);
+        hng::clisv::RM_GetRolesResponse response;
+        const grpc::Status status = role.GetRoles(&context, request, &response);
+        CHECK(status.ok(), "GetRoles 应成功");
+        CHECK(response.r_size() == 1 &&
+                  response.r(0).roleid() == kIgnoredRoleID &&
+                  response.r(0).rolelabel() == kIgnoredRoleLabel,
+              "GetRoles 应返回被忽略角色");
+    }
+
     {
         grpc::ClientContext context;
         SetDeadline(context, std::chrono::seconds(5));

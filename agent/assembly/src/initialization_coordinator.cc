@@ -220,7 +220,7 @@ InitReport InitializationCoordinator::run(const InitializationIO& io)
         const RoleFilterStats& filter_report = filter_initializer.report();
         HNG_LOG_DEBUG("phase role filter seed: {} ms",
                       elapsed_ms(seed_start, std::chrono::steady_clock::now()));
-        HNG_LOG_DEBUG("role filter seed delta: processes {}",
+        HNG_LOG_DEBUG("role filter seed delta: ignored processes {}",
                       static_cast<int64_t>(filter_report.applied_processes) -
                           static_cast<int64_t>(applied_before));
     }
@@ -321,7 +321,8 @@ InitReport InitializationCoordinator::run(const InitializationIO& io)
             elapsed_ms(filter_drain_start, std::chrono::steady_clock::now()));
         const RoleFilterStats filter_stats = role_filter_->stats();
         HNG_LOG_INFO(
-            "role filter: roles {}, processes applied {}, empty members {}",
+            "role filter: roles {}, processes in ignore list {}, empty members "
+            "{}",
             filter_stats.roles, filter_stats.applied_processes,
             filter_stats.empty_members);
     }

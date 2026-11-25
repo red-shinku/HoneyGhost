@@ -116,16 +116,16 @@ void run_role_component()
               "角色组件初始状态应为 CONSTRUCTED");
         CHECK(!component->ready(), "未初始化的角色组件不应就绪");
 
-        RoleLookupService* lookup           = &component->lookup_service();
-        RoleJoinService* join               = &component->join_service();
-        RoleSupervisionService* supervision = &component->supervision_service();
-        RoleSeedService* seed               = &component->seed_service();
+        RoleLookupService* lookup = &component->lookup_service();
+        RoleJoinService* join     = &component->join_service();
+        RoleIgnoreService* ignore = &component->ignore_service();
+        RoleSeedService* seed     = &component->seed_service();
         CHECK(lookup == &component->lookup_service(),
               "角色查询服务访问器应稳定返回同一地址");
         CHECK(join == &component->join_service(),
               "角色继承服务访问器应稳定返回同一地址");
-        CHECK(supervision == &component->supervision_service(),
-              "角色监管服务访问器应稳定返回同一地址");
+        CHECK(ignore == &component->ignore_service(),
+              "角色忽略服务访问器应稳定返回同一地址");
         CHECK(seed == &component->seed_service(),
               "角色对账服务访问器应稳定返回同一地址");
 

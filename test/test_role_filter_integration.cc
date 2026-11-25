@@ -24,7 +24,7 @@ void require(bool value, const char* message = "RoleManager 过滤集成检查�
 }
 struct Map final : ProcessFilterMap {
     std::unordered_set<Process> values;
-    std::error_code allow(Process process) noexcept override
+    std::error_code ignore(Process process) noexcept override
     {
         values.insert(process);
         return {};
@@ -66,6 +66,11 @@ class Barrier final : public RoleLifecycleSink {
     std::condition_variable cv_;
     int count_ = 0;
 };
+RoleFilterPolicy policy(const std::string& input)
+{
+    std::istringstream stream(input);
+    return RoleFilterPolicy(parse_role_filter_config(stream, "test.conf"));
+}
 }  // namespace
 int main()
 {
@@ -81,14 +86,11 @@ int main()
         RoleManager manager(probe);
         auto map   = std::make_unique<Map>();
         auto* view = map.get();
-        std::istringstream input(
-            "[whitelist]\nexact: nginx.service\nexact: registry/app:v1\n");
         RoleFilterOptions options;
         options.liveness = [](Process) { return ProcessLiveness::ALIVE; };
-        RoleFilter filter(manager,
-                          RoleFilterPolicy(parse_role_filter_config(input)),
+        RoleFilter filter(manager, policy("[blacklist]\nexact: nginx.service\n"),
                           std::move(map), options);
-        filter.set_supervision_service(&manager);
+        filter.set_ignore_service(&manager);
         Barrier barrier;
         manager.add_lifecycle_sink(&filter);
         manager.add_lifecycle_sink(&barrier);
@@ -126,9 +128,10 @@ int main()
         require(view->values.count(first));
         auto first_id = manager.lookup(first);
         require(first_id.has_value());
-        auto supervised = manager.supervised_roles();
-        require(supervised.size() == 1 && supervised[0].roleID == *first_id,
-                "关注角色应登记监管");
+        auto ignored = manager.ignore_roles();
+        require(ignored.size() == 1 && ignored[0].roleID == *first_id,
+                "被忽略角色应登记忽略");
+        require(manager.supervised_roles().empty(), "被忽略角色不属于采集快照");
 
         // 周期 JOIN 携带 cgroup 重读看不到的成员：只有成员通知能把它带进名单
         const Process notified{504, 704};
@@ -157,26 +160,39 @@ int main()
         manager.on_role_event(event);
         barrier.wait(5);  // 锚点更换 + 新锚点的成员通知
         filter.drain();
-        require(view->values.count(second));
+        require(!view->values.count(second), "标签换出黑名单后撤销忽略");
         auto id = manager.lookup(second);
         require(id.has_value() &&
                 manager.role(*id)->roleLabel == "registry/app:v1");
-        supervised = manager.supervised_roles();
+        require(manager.ignore_roles().empty(), "默认采集角色不登记忽略");
+        auto supervised = manager.supervised_roles();
         require(supervised.size() == 1 && supervised[0].roleID == *id &&
                     supervised[0].roleLabel == "registry/app:v1",
-                "监管快照应跟随角色标签");
+                "采集快照应跟随角色标签");
+        filter.replace_policy(policy("[blacklist]\nexact: registry/app:v1\n"));
+        filter.drain();
+        require(view->values.count(second), "显式忽略后重新写入 map");
+        ignored = manager.ignore_roles();
+        require(ignored.size() == 1 && ignored[0].roleID == *id &&
+                    ignored[0].roleLabel == "registry/app:v1",
+                "忽略快照应跟随角色标签");
         filter.replace_policy(RoleFilterPolicy());
         filter.drain();
         require(view->values.empty());
         require(manager.lookup(second).has_value());
-        require(manager.supervised_roles().empty(), "策略清空应撤销监管");
+        require(manager.ignore_roles().empty(), "策略清空应撤销忽略");
+        supervised = manager.supervised_roles();
+        require(supervised.size() == 1 && supervised[0].roleID == *id,
+                "策略清空后角色回到采集快照");
         event.action = role::RoleAction::LEAVE;
         manager.on_role_event(event);
         barrier.wait(6);
         filter.drain();
         require(view->values.empty() && filter.stats().roles == 0);
         require(!manager.lookup(second));
-        require(manager.supervised_roles().empty(), "角色退出后不应残留监管");
+        require(
+            manager.ignore_roles().empty() && manager.supervised_roles().empty(),
+            "角色退出后不应残留名单");
         std::printf("PASS: RoleManager -> RoleFilter integration, %d checks\n",
                     checks);
         return 0;

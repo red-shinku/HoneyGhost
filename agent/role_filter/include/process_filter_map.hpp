@@ -19,13 +19,13 @@ class ProcessFilterMap {
    public:
     virtual ~ProcessFilterMap()                             = default;
     /**
-     * @brief 向所有后端表写入进程许可。
+     * @brief 向所有后端表写入进程忽略项。
      * @param[in] process 完整的 PID 与启动时间身份。
      * @return 成功时为空错误码；失败时可能已有部分表写入成功。
      */
-    virtual std::error_code allow(Process process) noexcept = 0;
+    virtual std::error_code ignore(Process process) noexcept = 0;
     /**
-     * @brief 从所有后端表撤销进程许可；不存在也视为成功。
+     * @brief 从所有后端表撤销进程忽略项；不存在也视为成功。
      * @param[in] process 要撤销的完整进程身份。
      * @return 成功时为空错误码；失败时可能已有部分表删除成功。
      */

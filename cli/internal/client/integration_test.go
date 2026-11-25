@@ -24,6 +24,11 @@ type fakeRoleServer struct {
 
 func (fakeRoleServer) GetRoles(_ context.Context, req *clisv.RM_GetRolesRequest) (
 	*clisv.RM_GetRolesResponse, error) {
+	if req.GetShowoption() == clisv.RM_ShowOption_RM_SHOW_IGNORED {
+		return &clisv.RM_GetRolesResponse{R: []*clisv.Role{
+			{RoleID: 9, RoleLabel: "cron.service"},
+		}}, nil
+	}
 	if req.GetShowoption() == clisv.RM_ShowOption_RM_SHOW_ALL {
 		return &clisv.RM_GetRolesResponse{R: []*clisv.Role{
 			{RoleID: 7, RoleLabel: "nginx:1.25"},
@@ -364,6 +369,14 @@ func TestIntegrationQueries(t *testing.T) {
 	}
 	if want := []model.Role{{ID: 3, Label: "ssh"}, {ID: 7, Label: "nginx:1.25"}}; !reflect.DeepEqual(all, want) {
 		t.Errorf("all = %+v, want %+v", all, want)
+	}
+
+	ignored, err := svcs.Roles.List(ctx, model.RoleScopeIgnored)
+	if err != nil {
+		t.Fatalf("List(ignored): %v", err)
+	}
+	if want := []model.Role{{ID: 9, Label: "cron.service"}}; !reflect.DeepEqual(ignored, want) {
+		t.Errorf("ignored = %+v, want %+v", ignored, want)
 	}
 
 	processes, err := svcs.Roles.Processes(ctx, 7)

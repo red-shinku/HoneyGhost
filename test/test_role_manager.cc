@@ -276,31 +276,64 @@ void run_roles()
     CHECK(all.size() == 1 && all[0].roleID == 2, "退出后不应含该角色");
 }
 
-void run_supervision()
+void run_ignore()
 {
     RecordingSink sink;
     RoleManager manager;
     manager.add_lifecycle_sink(&sink);
     Runner runner(manager);
 
-    CHECK(manager.supervised_roles().empty(), "未登记时应为空");
-
     manager.on_role_event(mk_join("a", 100, 1000));
     CHECK(sink.wait_calls(2), "加入应通知");
-    const uint32_t role = sink.calls()[0].roleID;
+    manager.on_role_event(mk_join("b", 200, 2000));
+    CHECK(sink.wait_calls(4), "第二个角色加入应通知");
+    const uint32_t role_a             = sink.calls()[0].roleID;
+    const uint32_t role_b             = sink.calls()[2].roleID;
 
-    manager.set_supervised(role + 100, true);
-    CHECK(manager.supervised_roles().empty(), "未知 roleID 应忽略");
-
-    manager.set_supervised(role, true);
     std::vector<hng::Role> supervised = manager.supervised_roles();
-    CHECK(supervised.size() == 1 && supervised[0].roleID == role &&
-              supervised[0].roleLabel == "a",
+    CHECK(supervised.size() == 2 && supervised[0].roleID == role_a &&
+              supervised[1].roleID == role_b,
+          "未登记忽略时全部角色都属采集快照");
+    CHECK(manager.ignore_roles().empty(), "未登记时忽略名单为空");
+
+    manager.set_ignored(role_a + 100, true);
+    CHECK(manager.ignore_roles().empty(), "未知 roleID 应忽略");
+    CHECK(manager.supervised_roles().size() == 2, "未知 roleID 不应改变采集快照");
+
+    manager.set_ignored(role_a, true);
+    std::vector<hng::Role> ignored = manager.ignore_roles();
+    CHECK(ignored.size() == 1 && ignored[0].roleID == role_a &&
+              ignored[0].roleLabel == "a",
           "应返回已登记角色");
+    supervised = manager.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_b,
+          "采集快照应排除已忽略角色");
+
+    manager.set_ignored(role_a, false);
+    CHECK(manager.ignore_roles().empty(), "移除后不应含该角色");
+    CHECK(manager.supervised_roles().size() == 2, "移除后采集快照应恢复全部角色");
+
+    manager.set_ignored(role_a, true);
+    RoleEvent changed = mk_other(RoleAction::MAIN_PROCESS_CHANGE, "a", 101, 1001);
+    changed.payload.identity.source              = RoleSource::CONTAINERD;
+    changed.payload.identity.attributes["image"] = "hng/nginx:v2";
+    manager.on_role_event(changed);
+    CHECK(wait_until([&] {
+              auto view = manager.role(role_a);
+              return view && view->roleLabel == "hng/nginx:v2";
+          }),
+          "锚点更换应重算标签");
+    ignored = manager.ignore_roles();
+    CHECK(ignored.size() == 1 && ignored[0].roleID == role_a &&
+              ignored[0].roleLabel == "hng/nginx:v2",
+          "忽略快照应读取当前角色记录");
 
     manager.on_role_event(mk_other(RoleAction::LEAVE, "a", 0, 0));
-    CHECK(sink.wait_calls(3), "退出应通知");
-    CHECK(manager.supervised_roles().empty(), "退出后应自动移除登记");
+    CHECK(sink.wait_calls(7), "退出应通知");
+    CHECK(manager.ignore_roles().empty(), "退出后应自动移除登记");
+    supervised = manager.supervised_roles();
+    CHECK(supervised.size() == 1 && supervised[0].roleID == role_b,
+          "退出后采集快照应只剩存活角色");
 }
 
 void run_main_process()
@@ -960,7 +993,7 @@ int main()
 {
     run_join();
     run_roles();
-    run_supervision();
+    run_ignore();
     run_main_process();
     run_leave();
     run_join_reread();

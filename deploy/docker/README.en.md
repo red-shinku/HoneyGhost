@@ -67,7 +67,7 @@ That override mounts `/var/run/docker.sock` read-only into the bridge container 
 The three files in `deploy/docker/config/` are mounted into the container at `/etc/honeyghost`:
 
 - `agent.conf`: collection switches, discovery source switches, bridge socket path, role filtering, and references to the CLI configuration;
-- `role_filter.conf`: allow/deny lists, deny ordinary events by default;
+- `role_filter.conf`: blacklist (ignored roles) and whitelist (exceptions); ordinary events are collected by default;
 - `cli_server.conf`: concurrent streams, queue capacity, drain timeout, CLI socket path.
 
 Relative paths are based on the directory containing `agent.conf`, so references inside the container can simply use filenames in the same directory.

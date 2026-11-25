@@ -72,8 +72,11 @@ type roleService struct {
 
 func (s roleService) List(ctx context.Context, scope model.RoleScope) ([]model.Role, error) {
 	option := clisv.RM_ShowOption_RM_SHOW_SUPERVISION
-	if scope == model.RoleScopeAll {
+	switch scope {
+	case model.RoleScopeAll:
 		option = clisv.RM_ShowOption_RM_SHOW_ALL
+	case model.RoleScopeIgnored:
+		option = clisv.RM_ShowOption_RM_SHOW_IGNORED
 	}
 	resp, err := s.c.roles.GetRoles(ctx, &clisv.RM_GetRolesRequest{Showoption: option})
 	if err != nil {

@@ -340,6 +340,8 @@ class RoleStub final : public RoleLookupService {
 
     std::vector<hng::Role> supervised_roles() const override { return {}; }
 
+    std::vector<hng::Role> ignore_roles() const override { return {}; }
+
     std::optional<hng::role::RoleIdentity> identity(std::uint32_t) const override
     {
         return std::nullopt;

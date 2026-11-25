@@ -21,12 +21,11 @@ to the `hghost` command-line client.
 
 ## Features
 
-- **Kernel-side collection** — eBPF probes for syscalls, file access and
-  outbound network connections. A shared event header carries parent-process
-  identity for attribution.
-- **Role-aware filtering** — a user-space role filter supplies the process
-  allow/deny list to the kernel, so only selected workloads generate events.
-  The default is deny: without a whitelist, ordinary events are not collected.
+- **Kernel-side collection** —Coverage `process`、`exec`、`credential`、`namespace`、`file`、`memory`、`network`、`kernel`、`signal` Nine types of kernel events.
+- **Role-aware filtering** — ordinary events are collected by default. A
+  user-space role filter supplies an ignore list to the kernel: roles matching
+  the blacklist are skipped, and the whitelist overrides a blacklist hit as an
+  exception. Process/exec lifecycle events are always collected.
 - **Semantic normalization** — raw kernel records are converted into a stable,
   typed event model before they reach consumers.
 - **Control plane** — a process tree with virtual roots for orphaned processes,
@@ -67,7 +66,7 @@ environment rules.
 | `agent/control_plane/` | process, context and role managers and their stores |
 | `agent/context_maintainer/` | context derivation rules |
 | `agent/role_discovery/` | systemd and containerd role discovery, plus the containerd bridge |
-| `agent/role_filter/` | allow/deny rules and the kernel process filter map |
+| `agent/role_filter/` | ignore rules and the kernel process filter map |
 | `agent/runtime_engine/` | event dispatch, runtime information and subscription fan-out |
 | `agent/cli_server/` | gRPC query and streaming services |
 | `agent/assembly/` | component graph, initialization barrier, threads and shutdown |
@@ -94,7 +93,107 @@ environment rules.
 The dev container in `.devcontainer/` provides this toolchain; see
 [`.devcontainer/README.md`](.devcontainer/README.md) for setup details.
 
-## Build
+
+## Deployment
+
+### Quick Start
+
+Get the deployment package from releases, which includes `docker-compose.yaml`, project configuration files, custom security policy configurations, and more.  
+After entering the folder and writing the configuration, run `docker compose up -d` to start.
+
+### Container Images
+
+Pull the release images:
+```sh
+docker pull fifseason/honeyghost-agent:latest  
+docker pull fifseason/honeyghost-containerd-bridge:latest
+```
+
+You can perform a local build in the project root directory (custom base images are allowed):
+```sh
+make image
+```
+
+## Using CLI tools to access Agent
+
+See [`cli/README.md`](cli/README.md) for the full command reference, output
+formats and exit codes.
+
+
+## Configuration
+
+Sample files live in `config/`:
+
+| File | Purpose |
+| --- | --- |
+| `agent.conf` | collection switches, discovery sources, paths to the role filter and CLI server configs, CLI on/off and socket override |
+| `role_filter.conf` | exact/regex blacklist of ignored role labels and whitelist of exceptions; **ordinary events are collected by default** |
+| `cli_server.conf` | concurrent stream limit, queue capacity, drain timeout and CLI socket path |
+
+`agent.conf`:
+
+```ini
+[collector]
+enabled = true
+
+[role_discovery]
+systemd = true
+containerd = true
+containerd_socket_path = /run/honeyghost/containerd-bridge.sock
+
+[role_filter]
+path = role_filter.conf
+
+[cli]
+# Must be false when the CLI server was not compiled in.
+enabled = true
+# Empty means: keep the socket path from the CLI server config.
+socket_path =
+config = cli_server.conf
+```
+
+`role_filter.conf`:
+
+```ini
+[blacklist]
+exact: cron.service
+regex: registry/example/honeypot:v1\.debug
+```
+
+- A role label comes from the discovery source: a systemd unit name or a
+  container image label.
+- `exact` matches the full role label; `regex` is a case-sensitive
+  ECMAScript full-string match.
+- Ordinary events are collected by default. Roles matching the blacklist are
+  ignored, and the whitelist only overrides a blacklist hit, as an exception.
+  Process/exec lifecycle events are always collected. With the sample rules,
+  `cron.service` and the `honeypot:v1.debug` image label are not collected;
+  everything else is.
+- Precedence is built-in defaults < configuration file < environment variables.
+  Every key can be overridden with `HNG_<SECTION>_<KEY>` in upper case (for
+  example `HNG_COLLECTOR_ENABLED=false`); `HNG_CONFIG` selects the main
+  configuration file.
+- Unknown sections and keys are rejected at startup.
+
+
+## Run Tips
+
+The agent creates the CLI socket at `/run/honeyghost/cli.sock` by default.
+Adjust `[cli] socket_path` or `[cli_server] socket_path` if needed; the socket
+file's permissions are the only access control. Because the agent runs as root
+in this example, the socket is root-owned; run `hghost` with sufficient
+privileges or adjust the socket permissions.
+
+The sample configuration enables both discovery sources. The systemd source
+works on a normal host; container roles additionally require the containerd
+bridge (`agent/role_discovery/containerd_bridge/`). If the bridge is not
+running, startup continues after the role-source timeout, but container roles
+are missing. Disable discovery sources the host does not provide: set
+`[role_discovery] containerd = false`, or `systemd = false` on a host without
+systemd.
+
+
+## Build system
 
 The `Makefile` at the repository root is the single build entry point.
 
@@ -131,150 +230,7 @@ cmake --build build-agent --parallel
 With that option, set `[cli] enabled = false` in `agent.conf`; otherwise
 `hng_agent` refuses to start.
 
-## Run
 
-```sh
-sudo mkdir -p /run/honeyghost
-sudo ./build-agent/hng_agent --config config/agent.conf
-```
-
-`hng_agent` accepts only `--config PATH` and `-h/--help`. If `--config` is
-omitted, it reads `$HNG_CONFIG`, then `/etc/honeyghost/agent.conf`. Paths
-inside the main configuration file (role filter and CLI server configs) are
-resolved relative to that file's directory.
-
-In another terminal:
-
-```sh
-bin/hghost status
-bin/hghost role list
-bin/hghost events -t file,exec
-```
-
-The agent creates the CLI socket at `/run/honeyghost/cli.sock` by default.
-Adjust `[cli] socket_path` or `[cli_server] socket_path` if needed; the socket
-file's permissions are the only access control. Because the agent runs as root
-in this example, the socket is root-owned; run `hghost` with sufficient
-privileges or adjust the socket permissions.
-
-The sample configuration enables both discovery sources. The systemd source
-works on a normal host; container roles additionally require the containerd
-bridge (`agent/role_discovery/containerd_bridge/`). If the bridge is not
-running, startup continues after the role-source timeout, but container roles
-are missing. Disable discovery sources the host does not provide: set
-`[role_discovery] containerd = false`, or `systemd = false` on a host without
-systemd.
-
-## Configuration
-
-Sample files live in `config/`:
-
-| File | Purpose |
-| --- | --- |
-| `agent.conf` | collection switches, discovery sources, paths to the role filter and CLI server configs, CLI on/off and socket override |
-| `role_filter.conf` | exact/regex whitelist and blacklist of role labels; blacklist wins; **ordinary events are denied by default** |
-| `cli_server.conf` | concurrent stream limit, queue capacity, drain timeout and CLI socket path |
-
-`agent.conf`:
-
-```ini
-[collector]
-enabled = true
-
-[role_discovery]
-systemd = true
-containerd = true
-containerd_socket_path = /run/honeyghost/containerd-bridge.sock
-
-[role_filter]
-path = role_filter.conf
-
-[cli]
-# Must be false when the CLI server was not compiled in.
-enabled = true
-# Empty means: keep the socket path from the CLI server config.
-socket_path =
-config = cli_server.conf
-```
-
-`role_filter.conf`:
-
-```ini
-[whitelist]
-exact: nginx.service
-regex: registry/example/honeypot:v1\..*
-
-[blacklist]
-exact: registry/example/honeypot:v1.debug
-```
-
-- A role label comes from the discovery source: a systemd unit name or a
-  container image label.
-- `exact` matches the full role label; `regex` is a case-sensitive
-  ECMAScript full-string match.
-- Blacklist entries override whitelist entries. With an empty whitelist, no
-  ordinary events are collected. Edit the file to match the workloads you want
-  to observe; with the sample rules, only `nginx.service` and labels matching
-  the container regex are collected.
-- Precedence is built-in defaults < configuration file < environment variables.
-  Every key can be overridden with `HNG_<SECTION>_<KEY>` in upper case (for
-  example `HNG_COLLECTOR_ENABLED=false`); `HNG_CONFIG` selects the main
-  configuration file.
-- Unknown sections and keys are rejected at startup.
-
-## CLI
-
-```
-hghost [global flags] <resource> <action> [arguments] [flags]
-hghost [global flags] <standalone command> [arguments] [flags]
-```
-
-| Global flag | Default | Meaning |
-| --- | --- | --- |
-| `--socket` | `$HGHOST_SOCKET`, otherwise `/run/honeyghost/cli.sock` | Unix socket path |
-| `--timeout` | `5s` | deadline for unary commands; `0` disables it |
-| `-o, --output` | `table` | `table` or `json` |
-| `--no-headers` | `false` | omit the table header |
-
-Examples:
-
-```sh
-hghost status
-hghost role list -a
-hghost role show nginx:1.25
-hghost role which 1234
-hghost context list -k excep,extra
-hghost process stats
-hghost events -i role=nginx:1.25 -i pid=1234
-hghost events -e 'type=syscall and subtype=exec'
-hghost events -e 'not role=systemd-journald'
-hghost events --batch 64
-hghost events --duration 30s -o json | jq 'select(.kind == "event")'
-hghost events -w capture.jsonl -o json
-```
-
-See [`cli/README.md`](cli/README.md) for the full command reference, output
-formats and exit codes.
-
-## Deployment
-
-A single-machine Docker Compose example is available at [`deploy/docker`](deploy/docker/README.md). It builds the agent image and the containerd translation process image, then mounts the host's `/run/honeyghost`, D-Bus socket, and tracefs into the agent container.
-
-Deployment packages are available in the releases, including `docker-compose.yaml`, project configuration files, custom security policy configurations, and more.
-
-### Obtaining Images
-
-```sh
-docker pull fifseason/honeyghost-agent:latest  
-docker pull fifseason/honeyghost-containerd-bridge:latest
-```
-
-### Local Build
-
-From the project root directory:
-```sh
-make image
-```
 
 ## Testing
 
@@ -290,23 +246,19 @@ and `verify_role_containerd`.
 
 ## Project status
 
-- Syscall and file events are wired end to end. A network probe exists in the
-  kernel, but network and IPC events are not semanticized yet, so they do not
-  appear in `hghost events` today.
-- The anomaly detector (`agent/detector/`) is not wired into the runtime yet;
-  only its `Score` structure is used by the context maintainer.
+- The definition and maintenance of Context are not yet complete.
+- The anomaly detector (`agent/detector/`) is not wired into the runtime yet.
 - The agent is Linux-only and currently x86_64-only; the eBPF probes are
   compiled with `-D__TARGET_ARCH_x86`.
 - The CLI server has no authentication or TLS. It listens on a local Unix
   socket, and socket file permissions are the access control.
-- The CLI event stream ends when the connection drops; it does not silently
-  resume.
 
 ## Documentation
 
-- [CLI reference](cli/README.md)
-- [Docker deployment](deploy/docker/README.md)
-- [Development container](.devcontainer/README.md)
+- [CLI reference](cli/README.en.md)
+- [Docker deployment](deploy/docker/README.en.md)
+- [Development container](.devcontainer/README.en.md)
+- [Benchmark](docs/bench.md)
 
 ## Credits and License
 

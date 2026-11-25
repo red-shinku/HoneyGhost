@@ -52,7 +52,7 @@ class RoleManager : public hng::role::RoleEventSink,
                     public RoleLookupService,
                     public RoleJoinService,
                     public ProcessLifecycleSink,
-                    public RoleSupervisionService,
+                    public RoleIgnoreService,
                     public RoleSeedService {
    public:
     /// @param probe IO 注入点，留空字段用真实实现
@@ -131,6 +131,9 @@ class RoleManager : public hng::role::RoleEventSink,
     std::vector<hng::Role> supervised_roles() const override;
 
     /// \ingroup Rolemanager_lookup_service
+    std::vector<hng::Role> ignore_roles() const override;
+
+    /// \ingroup Rolemanager_lookup_service
     std::optional<hng::role::RoleIdentity> identity(
         uint32_t roleID) const override;
 
@@ -141,8 +144,8 @@ class RoleManager : public hng::role::RoleEventSink,
      * @} endgroup Rolemanager_lookup_service
      */
 
-    /// @brief 登记或移除系统监管角色；roleID 不存在时忽略
-    void set_supervised(uint32_t roleID, bool supervised) override;
+    /// @brief 登记或移除被忽略的角色；roleID 不存在时忽略
+    void set_ignored(uint32_t roleID, bool ignored) override;
 
     /// @brief 异常态观测快照
     RoleManagerStats stats() const override;

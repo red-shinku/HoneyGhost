@@ -7,15 +7,16 @@ Records user- and deployment-visible changes. The format follows Keep a Changelo
 
 ### Added
 
-- Kernel events (now represented as type = syscall) subtype SIGNAL.
 - 47 tracepoint probes; improved event information.
 
 ### Changed
 
-- The original top-level types file, network, and ipc have been consolidated under the nine subtypes of syscall.
-- `hghost events -t/--type` now filters by subtype (`process`, `exec`,
-  `credential`, `namespace`, `file`, `memory`, `network`, `kernel`).
-  The subtype is the newly added `SUBTYPE` column after `TYPE` in the output table view.
+- All events are collected by default. Events for roles listed in the blacklist in `role_filter.conf` are not collected. The whitelist takes effect as an exception only when the blacklist is hit. Use `hghost role list -i/--ignored` to view ignored roles.
+- Events are identified by TYPE and SUBTYPE. Currently, TYPE has only one value: kernel events (now labeled `type=syscall`), which are divided into nine SUBTYPEs:
+  `process`, `exec`, `credential`, `namespace`,
+  `file`, `memory`, `network`, `kernel`, `signal`.
+  The former top-level type values `file`, `network`, and `ipc` have been consolidated under SUBTYPE.
+- `hghost events -t/--type` now filters by subtype.
 
 ## [v0.1.2] - 2026-11-16
 

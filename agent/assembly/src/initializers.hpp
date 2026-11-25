@@ -103,7 +103,7 @@ class RoleInitializer {
 };
 
 /**
- * @brief 采集名单的初始化器
+ * @brief 忽略名单的初始化器
  * @see RoleFilterComponent::seed_initial_roles
  */
 class RoleFilterInitializer {
