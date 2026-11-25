@@ -59,13 +59,13 @@ int g_fail = 0;
         }                                                                        \
     } while (0)
 
-/// 记录写入结果的 map 后端；可让最初若干次 allow 失败
+/// 记录写入结果的 map 后端；可让最初若干次 ignore 失败
 class FakeMap final : public hng::ProcessFilterMap {
    public:
-    std::error_code allow(hng::Process process) noexcept override
+    std::error_code ignore(hng::Process process) noexcept override
     {
-        if (allow_failures > 0) {
-            --allow_failures;
+        if (ignore_failures > 0) {
+            --ignore_failures;
             return std::make_error_code(std::errc::io_error);
         }
         values.insert(process);
@@ -79,7 +79,7 @@ class FakeMap final : public hng::ProcessFilterMap {
     }
 
     std::unordered_set<hng::Process> values;
-    int allow_failures = 0;  ///< 剩余失败次数
+    int ignore_failures = 0;  ///< 剩余失败次数
 };
 
 hng::Process proc(uint32_t pid, uint64_t start)
@@ -132,10 +132,10 @@ struct Harness {
                                        &context->update_service());
         auto map = std::make_unique<FakeMap>();
         map_view = map.get();
-        std::istringstream input("[whitelist]\nexact: nginx.service\n");
+        std::istringstream input("[blacklist]\nexact: nginx.service\n");
         hng::RoleFilterComponentOptions options;
-        options.lookup      = &role->lookup_service();
-        options.supervision = &role->supervision_service();
+        options.lookup = &role->lookup_service();
+        options.ignore = &role->ignore_service();
         options.policy =
             hng::RoleFilterPolicy(hng::parse_role_filter_config(input));
         options.map                     = std::move(map);
@@ -334,7 +334,7 @@ void run_map_error_path()
 {
     Harness harness;
     const hng::Process root{100, 1000};
-    harness.map_view->allow_failures = 1;
+    harness.map_view->ignore_failures = 1;
     deliver_join(harness, "nginx.service", root, {root});
 
     const hng::InitReport report = run_coordinator(harness, make_snapshot());

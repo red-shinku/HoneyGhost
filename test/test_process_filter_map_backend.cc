@@ -116,11 +116,11 @@ int main()
         const hng::Process process{123, 456};
         require(!backend->erase(process));
         fail_update_fd = copies[0];
-        require(backend->allow(process).value() == ENOSPC);
+        require(backend->ignore(process).value() == ENOSPC);
         require(!maps[copies[0]].count(process) && maps[copies[1]].count(process));
         fail_update_fd = -1;
-        require(!backend->allow(process));
-        require(!backend->allow(process));
+        require(!backend->ignore(process));
+        require(!backend->ignore(process));
         require(maps[copies[0]].count(process) && maps[copies[1]].count(process));
         fail_delete_fd = copies[0];
         require(backend->erase(process).value() == EIO);
@@ -128,7 +128,7 @@ int main()
         fail_delete_fd = -1;
         require(!backend->erase(process));
         require(!backend->erase(process));
-        require(backend->allow({0, 0}).value() == EINVAL);
+        require(backend->ignore({0, 0}).value() == EINVAL);
         backend.reset();
         require(fcntl(copies[0], F_GETFD) == -1 && errno == EBADF);
         require(fcntl(copies[1], F_GETFD) == -1 && errno == EBADF);

@@ -86,6 +86,7 @@ class Lookup final : public RoleLookupService {
         return result;
     }
     std::vector<Role> supervised_roles() const override { return {}; }
+    std::vector<Role> ignore_roles() const override { return {}; }
     std::optional<Process> main_process(uint32_t id) const override
     {
         std::lock_guard lock(mutex);
@@ -103,14 +104,14 @@ class Lookup final : public RoleLookupService {
         return it == processes.end() ? std::vector<Process>{} : it->second;
     }
 };
-class Supervision final : public ::RoleSupervisionService {
+class Ignore final : public ::RoleIgnoreService {
    public:
-    void set_supervised(uint32_t roleID, bool supervised) override
+    void set_ignored(uint32_t roleID, bool ignored) override
     {
         std::lock_guard lock(mutex);
-        states[roleID] = supervised;
+        states[roleID] = ignored;
     }
-    bool is_supervised(uint32_t roleID) const
+    bool is_ignored(uint32_t roleID) const
     {
         std::lock_guard lock(mutex);
         auto it = states.find(roleID);
@@ -126,14 +127,14 @@ class Map final : public ProcessFilterMap {
     mutable std::mutex mutex;
     std::condition_variable cv;
     std::unordered_set<Process> values;
-    int allow_calls = 0, erase_calls = 0, fail_allow = 0, fail_erase = 0;
+    int ignore_calls = 0, erase_calls = 0, fail_ignore = 0, fail_erase = 0;
     bool partial = false;
-    std::error_code allow(Process process) noexcept override
+    std::error_code ignore(Process process) noexcept override
     {
         std::lock_guard lock(mutex);
-        ++allow_calls;
-        if (fail_allow) {
-            --fail_allow;
+        ++ignore_calls;
+        if (fail_ignore) {
+            --fail_ignore;
             if (partial) values.insert(process);
             return std::make_error_code(std::errc::no_buffer_space);
         }
@@ -167,7 +168,7 @@ class Map final : public ProcessFilterMap {
 struct Fixture {
     Lookup lookup;
     Map* map;
-    Supervision supervision;
+    Ignore ignore;
     std::unique_ptr<RoleFilter> filter;
     Fixture()
     {
@@ -177,9 +178,9 @@ struct Fixture {
         options.refresh_interval = std::chrono::milliseconds(10);
         options.liveness         = [](Process) { return ProcessLiveness::ALIVE; };
         filter                   = std::make_unique<RoleFilter>(
-            lookup, policy("[whitelist]\nexact: nginx.service\n"),
+            lookup, policy("[blacklist]\nexact: ignored.service\n"),
             std::move(backend), options);
-        filter->set_supervision_service(&supervision);
+        filter->set_ignore_service(&ignore);
     }
     void joined(Role role, std::vector<Process> members)
     {
@@ -191,23 +192,23 @@ struct Fixture {
 
 void configuration()
 {
-    require(!RoleFilterPolicy().should_collect("nginx.service"), "默认拒绝");
+    require(RoleFilterPolicy().should_collect("nginx.service"),
+            "空策略采集全部普通事件");
     auto rules = policy(
-        "# 注释\r\n[whitelist]\r\nexact: nginx.service\r\nregex: "
+        "# 注释\r\n[blacklist]\r\nexact: nginx.service\r\nregex: "
         "registry/app:v1\\..*\n"
-        "exact: image#tag:v2\n[blacklist]\nexact: registry/app:v1.debug\n");
-    require(rules.should_collect("nginx.service"), "unit 精确匹配");
-    require(!rules.should_collect("NGINX.service"), "精确匹配区分大小写");
-    require(!rules.should_collect("prefix/nginx.service"),
-            "精确匹配不能匹配子串");
-    require(rules.should_collect("registry/app:v1.2"), "镜像引用正则匹配");
-    require(!rules.should_collect("prefix/registry/app:v1.2"),
-            "正则匹配整个标签");
-    require(!rules.should_collect("registry/app:v1.debug"), "黑名单优先");
-    require(rules.should_collect("image#tag:v2"), "保留冒号和井号");
-    require(!rules.should_collect(""), "空标签拒绝");
+        "exact: image#tag:v2\n[whitelist]\nexact: registry/app:v1.debug\n");
+    require(!rules.should_collect("nginx.service"), "unit 精确命中黑名单");
+    require(rules.should_collect("NGINX.service"), "精确匹配区分大小写");
+    require(rules.should_collect("prefix/nginx.service"), "精确匹配不能匹配子串");
+    require(!rules.should_collect("registry/app:v1.2"), "镜像引用正则匹配");
+    require(rules.should_collect("prefix/registry/app:v1.2"), "正则匹配整个标签");
+    require(rules.should_collect("registry/app:v1.debug"), "白名单例外放行");
+    require(!rules.should_collect("image#tag:v2"), "保留冒号和井号");
+    require(rules.should_collect(""), "空标签采集");
+    require(rules.should_collect("unlisted.service"), "未命中黑名单采集");
     require(!policy("[blacklist]\nregex: .*\n").should_collect("x"),
-            "只有黑名单仍默认拒绝");
+            "黑名单命中即忽略");
     for (const auto& input :
          {"exact: x\n", "[unknown]\n", "[whitelist]\n[whitelist]\n",
           "[blacklist]\n[blacklist]\n", "[whitelist]\nunknown: x\n",
@@ -231,8 +232,13 @@ void configuration()
     rejects([&] { load_role_filter_config("/nonexistent-hng-role-filter.conf"); },
             "无法打开");
     auto loaded = load_role_filter_config("config/role_filter.conf");
+    require(!RoleFilterPolicy(loaded).should_collect("cron.service"),
+            "文件入口加载黑名单");
+    require(!RoleFilterPolicy(loaded).should_collect(
+                "registry/example/honeypot:v1.debug"),
+            "文件入口加载正则黑名单");
     require(RoleFilterPolicy(loaded).should_collect("nginx.service"),
-            "文件入口加载样例");
+            "文件入口默认采集");
     std::istringstream broken("[whitelist]");
     broken.setstate(std::ios::badbit);
     rejects([&] { parse_role_filter_config(broken, "broken"); }, "读取失败");
@@ -243,72 +249,75 @@ void maintenance()
     const Process first{101, 200}, child{102, 201};
     Fixture fixture;
     fixture.joined({1, "nginx.service"}, {first, first, {0, 0}});
-    require(fixture.map->contains(first), "加入后允许进程");
-    require(fixture.map->allow_calls == 1, "重复成员去重");
-    require(fixture.supervision.is_supervised(1), "关注角色应登记监管");
+    require(!fixture.map->contains(first), "默认采集角色不入忽略名单");
+    require(fixture.map->ignore_calls == 0, "默认采集角色不写 map");
+    require(!fixture.ignore.is_ignored(1), "默认采集角色不登记忽略");
     fixture.filter->on_role_joined({1, "nginx.service"});
     fixture.filter->drain();
-    require(fixture.map->allow_calls == 1, "重复通知幂等");
-    fixture.joined({2, "ignored.service"}, {child});
-    require(fixture.filter->stats().roles == 2, "未关注的角色也保留记录");
-    require(!fixture.map->contains(child), "未关注角色不入 map");
-    require(!fixture.supervision.is_supervised(2), "未关注角色不登记监管");
-    fixture.lookup.set({1, "nginx.service"}, {});
+    require(fixture.map->ignore_calls == 0, "重复通知幂等");
+    fixture.joined({2, "ignored.service"}, {child, child, {0, 0}});
+    require(fixture.filter->stats().roles == 2, "全部角色都保留记录");
+    require(fixture.map->contains(child), "被忽略角色的成员进入忽略名单");
+    require(fixture.map->ignore_calls == 1, "重复成员去重");
+    require(fixture.ignore.is_ignored(2), "被忽略角色应登记忽略");
+    fixture.lookup.set({2, "ignored.service"}, {});
     fixture.filter->drain();
-    require(fixture.map->contains(first), "空枚举不能误判进程离开");
+    require(fixture.map->contains(child), "空枚举不能误判进程离开");
     require(fixture.filter->stats().empty_members > 0, "空枚举可观测");
-    fixture.lookup.set({1, "nginx.service"}, {child});
+    fixture.lookup.set({2, "ignored.service"}, {first});
     fixture.filter->drain();
-    require(fixture.map->contains(first) && fixture.map->contains(child),
+    require(fixture.map->contains(child) && fixture.map->contains(first),
             "部分枚举保留旧成员并补齐 fork");
     fixture.lookup.fail = true;
     fixture.filter->drain();
     fixture.lookup.fail = false;
-    require(fixture.map->contains(first), "枚举异常不杀死消费逻辑");
+    require(fixture.map->contains(child), "枚举异常不杀死消费逻辑");
     require(fixture.filter->stats().lookup_errors > 0, "查询异常可观测");
-    fixture.lookup.role_map[1].roleLabel = "ignored.service";
-    fixture.filter->on_role_main_process_changed({1, "ignored.service"});
+    fixture.lookup.role_map[2].roleLabel = "nginx.service";
+    fixture.filter->on_role_main_process_changed({2, "nginx.service"});
     fixture.filter->drain();
     require(!fixture.map->contains(first) && !fixture.map->contains(child),
             "标签变化撤销成员");
-    require(!fixture.supervision.is_supervised(1), "标签变化撤销监管");
-    fixture.lookup.set({1, "nginx.service"}, {first});
+    require(!fixture.ignore.is_ignored(2), "标签变化撤销忽略");
+    fixture.lookup.set({2, "ignored.service"}, {child});
     fixture.filter->request_refresh();
     fixture.filter->drain();
-    require(fixture.map->contains(first), "显式刷新使用权威标签");
-    require(fixture.supervision.is_supervised(1), "恢复关注后重新登记监管");
+    require(fixture.map->contains(child), "显式刷新使用权威标签");
+    require(fixture.ignore.is_ignored(2), "恢复忽略后重新登记");
     rejects(
         [&] {
             auto invalid = policy("[whitelist]\nregex: [\n");
             fixture.filter->replace_policy(invalid);
         },
         "非法正则");
-    require(fixture.map->contains(first), "配置构造失败不影响旧策略");
+    require(fixture.map->contains(child), "配置构造失败不影响旧策略");
     fixture.map->fail_erase = 1;
     fixture.filter->replace_policy(RoleFilterPolicy());
     fixture.filter->drain();
-    require(fixture.map->contains(first), "删除失败保留待重试项");
-    require(!fixture.supervision.is_supervised(1), "策略清空应撤销监管");
+    require(fixture.map->contains(child), "删除失败保留待重试项");
+    require(!fixture.ignore.is_ignored(2), "策略清空应撤销忽略");
     fixture.filter->drain();
-    require(!fixture.map->contains(first), "删除失败后重试");
-    fixture.filter->replace_policy(policy("[whitelist]\nexact: nginx.service\n"));
+    require(!fixture.map->contains(child), "删除失败后重试");
+    fixture.filter->replace_policy(
+        policy("[blacklist]\nexact: ignored.service\n"));
     fixture.filter->drain();
-    require(fixture.map->contains(first), "策略替换可重新允许");
-    require(fixture.supervision.is_supervised(1), "策略恢复应重新登记监管");
-    fixture.lookup.owners[first] = 2;
+    require(fixture.map->contains(child), "策略替换恢复忽略登记");
+    require(fixture.ignore.is_ignored(2), "策略恢复应重新登记忽略");
+    fixture.lookup.owners[child] = 1;
     fixture.filter->drain();
-    require(!fixture.map->contains(first), "权威归属变化撤销旧角色许可");
-    fixture.lookup.owners.erase(first);
+    require(!fixture.map->contains(child), "权威归属变化撤销旧角色忽略项");
+    fixture.lookup.owners.erase(child);
     fixture.filter->drain();
-    fixture.filter->on_role_left({1, "nginx.service"});
+    require(fixture.map->contains(child), "归属消失后按角色成员恢复");
+    fixture.filter->on_role_left({2, "ignored.service"});
     fixture.filter->drain();
-    require(!fixture.map->contains(first), "退出按缓存撤销许可");
-    require(!fixture.supervision.is_supervised(1), "角色退出应撤销监管");
-    require(fixture.lookup.role_map.count(1), "维护器不删除 RoleManager 的角色");
+    require(!fixture.map->contains(child), "退出按缓存撤销忽略项");
+    require(!fixture.ignore.is_ignored(2), "角色退出应撤销忽略");
+    require(fixture.lookup.role_map.count(2), "维护器不删除 RoleManager 的角色");
     Fixture partial;
-    partial.map->fail_allow = 1;
-    partial.map->partial    = true;
-    partial.joined({1, "nginx.service"}, {first});
+    partial.map->fail_ignore = 1;
+    partial.map->partial     = true;
+    partial.joined({1, "ignored.service"}, {first});
     require(partial.map->contains(first) &&
                 partial.filter->stats().applied_processes == 0,
             "部分写入错误保持不确定状态");
@@ -316,8 +325,8 @@ void maintenance()
     partial.filter->drain();
     require(!partial.map->contains(first), "策略变更不能遗漏部分成功的写入");
     Fixture retry;
-    retry.map->fail_allow = 1;
-    retry.joined({1, "nginx.service"}, {first});
+    retry.map->fail_ignore = 1;
+    retry.joined({1, "ignored.service"}, {first});
     retry.filter->drain();
     require(retry.map->contains(first) && retry.filter->stats().map_errors == 1,
             "写入错误重试");
@@ -326,7 +335,7 @@ void maintenance()
     retry.filter->drain();
     require(!retry.map->contains(first) && retry.filter->stats().roles == 0,
             "排队后角色已退出");
-    require(!retry.supervision.is_supervised(1), "角色从权威源消失应撤销监管");
+    require(!retry.ignore.is_ignored(1), "角色从权威源消失应撤销忽略");
     retry.filter->stop();
     retry.filter->request_refresh();
     require(retry.filter->stats().queue_rejected == 1, "停止后拒绝新任务");
@@ -368,18 +377,18 @@ void initial_roles()
         require(fixture.filter->state() == ComponentState::READY,
                 "seed 后状态应为 READY");
         require(fixture.filter->ready(), "seed 后应就绪");
-        require(fixture.map->contains(first), "seed 只写入策略命中的成员");
-        require(!fixture.map->contains(ignored), "seed 不写入未命中策略的角色");
+        require(!fixture.map->contains(first), "seed 不写入默认采集的角色");
+        require(fixture.map->contains(ignored), "seed 写入被忽略角色的成员");
         require(fixture.filter->stats().roles == 2, "seed 应记录当前角色全集");
-        const int allows = fixture.map->allow_calls;
+        const int calls = fixture.map->ignore_calls;
         fixture.filter->seed_initial_roles();
-        require(fixture.map->allow_calls == allows, "重复 seed 为空操作");
+        require(fixture.map->ignore_calls == calls, "重复 seed 为空操作");
         require(fixture.filter->state() == ComponentState::READY,
                 "重复 seed 不改变状态");
     }
     {
         Fixture fixture;
-        fixture.lookup.set({3, "nginx.service"}, {});
+        fixture.lookup.set({3, "ignored.service"}, {});
         fixture.lookup.anchors[3] = anchor;
         fixture.filter->seed_initial_roles();
         require(fixture.map->contains(anchor), "members() 为空时仍应写入锚点");
@@ -388,7 +397,7 @@ void initial_roles()
     {
         const Process dead{504, 1503};
         Lookup lookup;
-        lookup.set({4, "nginx.service"}, {first, dead});
+        lookup.set({4, "ignored.service"}, {first, dead});
         auto backend = std::make_unique<Map>();
         Map* map     = backend.get();
         RoleFilterOptions options;
@@ -396,7 +405,7 @@ void initial_roles()
             return process == dead ? ProcessLiveness::DEAD
                                    : ProcessLiveness::ALIVE;
         };
-        RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+        RoleFilter filter(lookup, policy("[blacklist]\nexact: ignored.service\n"),
                           std::move(backend), options);
         filter.seed_initial_roles();
         require(map->contains(first) && !map->contains(dead),
@@ -404,13 +413,13 @@ void initial_roles()
     }
     {
         Lookup lookup;
-        lookup.set({5, "nginx.service"}, {first});
-        auto backend    = std::make_unique<Map>();
-        Map* map        = backend.get();
-        map->fail_allow = 1;
+        lookup.set({5, "ignored.service"}, {first});
+        auto backend     = std::make_unique<Map>();
+        Map* map         = backend.get();
+        map->fail_ignore = 1;
         RoleFilterOptions options;
         options.liveness = [](Process) { return ProcessLiveness::ALIVE; };
-        RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+        RoleFilter filter(lookup, policy("[blacklist]\nexact: ignored.service\n"),
                           std::move(backend), options);
         filter.seed_initial_roles();
         require(filter.state() == ComponentState::READY,
@@ -430,8 +439,8 @@ void periodic()
 {
     Fixture fixture;
     const Process first{201, 1000}, child{202, 1001};
-    fixture.lookup.set({1, "nginx.service"}, {first});
-    fixture.filter->on_role_joined({1, "nginx.service"});
+    fixture.lookup.set({1, "ignored.service"}, {first});
+    fixture.filter->on_role_joined({1, "ignored.service"});
     fixture.filter->seed_initial_roles();
     struct Runner {
         RoleFilter& filter;
@@ -447,7 +456,7 @@ void periodic()
         }
     } runner(*fixture.filter);
     require(fixture.map->wait(first), "消费线程处理初始任务");
-    fixture.lookup.set({1, "nginx.service"}, {first, child});
+    fixture.lookup.set({1, "ignored.service"}, {first, child});
     require(fixture.map->wait(child), "无新角色通知也定时补齐成员");
 }
 
@@ -455,40 +464,40 @@ void member_notifications()
 {
     const Process first{301, 1300}, child{302, 1301}, orphan{303, 1302};
     Fixture fixture;
-    fixture.joined({1, "nginx.service"}, {first});
-    require(fixture.map->contains(first), "加入后允许成员");
-    require(fixture.map->allow_calls == 1, "加入只写一次");
+    fixture.joined({1, "ignored.service"}, {first});
+    require(fixture.map->contains(first), "加入后忽略成员");
+    require(fixture.map->ignore_calls == 1, "加入只写一次");
 
     // 权威枚举仍只返回旧成员：新增项只能来自通知载荷
-    fixture.filter->on_role_members_changed({1, "nginx.service"}, {child});
+    fixture.filter->on_role_members_changed({1, "ignored.service"}, {child});
     fixture.filter->drain();
-    require(fixture.map->contains(child), "成员通知应即时允许新增进程");
+    require(fixture.map->contains(child), "成员通知应即时忽略新增进程");
 
-    fixture.filter->on_role_members_changed({99, "nginx.service"}, {orphan});
+    fixture.filter->on_role_members_changed({99, "ignored.service"}, {orphan});
     fixture.filter->drain();
     require(!fixture.map->contains(orphan), "未跟踪角色的成员通知应忽略");
 
-    fixture.joined({2, "ignored.service"}, {});
-    fixture.filter->on_role_members_changed({2, "ignored.service"}, {orphan});
+    fixture.joined({2, "nginx.service"}, {});
+    fixture.filter->on_role_members_changed({2, "nginx.service"}, {orphan});
     fixture.filter->drain();
-    require(!fixture.map->contains(orphan), "未关注角色的成员通知应忽略");
+    require(!fixture.map->contains(orphan), "默认采集角色的成员通知应忽略");
 
-    fixture.filter->on_role_members_changed({1, "nginx.service"}, {{0, 0}});
+    fixture.filter->on_role_members_changed({1, "ignored.service"}, {{0, 0}});
     fixture.filter->drain();
-    require(fixture.map->allow_calls == 2, "空身份不应写入 map");
+    require(fixture.map->ignore_calls == 2, "空身份不应写入 map");
 }
 
 void member_prompt()
 {
     const Process first{401, 1400}, child{402, 1401};
     Lookup lookup;
-    lookup.set({1, "nginx.service"}, {first});
+    lookup.set({1, "ignored.service"}, {first});
     auto backend = std::make_unique<Map>();
     Map* map     = backend.get();
     RoleFilterOptions options;
     options.refresh_interval = std::chrono::hours(1);
     options.liveness         = [](Process) { return ProcessLiveness::ALIVE; };
-    RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+    RoleFilter filter(lookup, policy("[blacklist]\nexact: ignored.service\n"),
                       std::move(backend), options);
     filter.seed_initial_roles();
     struct Runner {
@@ -504,10 +513,10 @@ void member_prompt()
             thread.join();
         }
     } runner(filter);
-    filter.on_role_joined({1, "nginx.service"});
+    filter.on_role_joined({1, "ignored.service"});
     require(map->wait(first), "消费线程应处理加入");
     // 周期刷新远未到点：名单更新只能由成员通知触发
-    filter.on_role_members_changed({1, "nginx.service"}, {child});
+    filter.on_role_members_changed({1, "ignored.service"}, {child});
     require(map->wait(child), "成员通知应即时更新名单，不必等周期刷新");
 }
 
@@ -563,17 +572,17 @@ void liveness()
     ProcessLiveness state = ProcessLiveness::ALIVE;
     RoleFilterOptions options;
     options.liveness = [&](Process) { return state; };
-    RoleFilter filter(lookup, policy("[whitelist]\nexact: nginx.service\n"),
+    RoleFilter filter(lookup, policy("[blacklist]\nexact: ignored.service\n"),
                       std::move(map), options);
-    lookup.set({1, "nginx.service"}, {{123, 42}});
-    filter.on_role_joined({1, "nginx.service"});
+    lookup.set({1, "ignored.service"}, {{123, 42}});
+    filter.on_role_joined({1, "ignored.service"});
     filter.drain();
     state = ProcessLiveness::UNKNOWN;
     filter.drain();
-    require(view->contains({123, 42}), "未知状态保留许可");
+    require(view->contains({123, 42}), "未知状态保留忽略项");
     state = ProcessLiveness::DEAD;
     filter.drain();
-    require(!view->contains({123, 42}), "明确退出撤销许可");
+    require(!view->contains({123, 42}), "明确退出撤销忽略项");
 }
 }  // namespace
 int main()

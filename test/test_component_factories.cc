@@ -139,6 +139,8 @@ class FakeRoleLookup final : public RoleLookupService {
 
     std::vector<hng::Role> supervised_roles() const override { return {}; }
 
+    std::vector<hng::Role> ignore_roles() const override { return {}; }
+
     std::optional<hng::role::RoleIdentity> identity(uint32_t) const override
     {
         return std::nullopt;
@@ -152,7 +154,7 @@ class FakeRoleLookup final : public RoleLookupService {
 /// @brief 名单 map 的最小替身：全部写入成功
 class FakeMap final : public hng::ProcessFilterMap {
    public:
-    std::error_code allow(hng::Process) noexcept override { return {}; }
+    std::error_code ignore(hng::Process) noexcept override { return {}; }
 
     std::error_code erase(hng::Process) noexcept override { return {}; }
 };

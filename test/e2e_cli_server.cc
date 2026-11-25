@@ -149,6 +149,8 @@ class RoleStub final : public RoleLookupService {
         return {hng::Role{kRoleID, kRoleLabel}};
     }
 
+    std::vector<hng::Role> ignore_roles() const override { return {}; }
+
     RoleManagerStats stats() const override
     {
         RoleManagerStats s;
