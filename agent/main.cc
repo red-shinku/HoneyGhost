@@ -369,7 +369,7 @@ int main(int argc, char** argv)
         }
         HNG_LOG_INFO(
             "agent started: state {}, process inserted {}, context inserted "
-            "{}, role filter applied processes {}, role source timeout {}",
+            "{}, role filter ignored processes {}, role source timeout {}",
             hng::to_string(report.state), report.process.inserted,
             report.context.inserted, report.role_filter.applied_processes,
             report.role_source_timeout);

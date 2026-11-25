@@ -220,7 +220,7 @@ InitReport InitializationCoordinator::run(const InitializationIO& io)
         const RoleFilterStats& filter_report = filter_initializer.report();
         HNG_LOG_DEBUG("phase role filter seed: {} ms",
                       elapsed_ms(seed_start, std::chrono::steady_clock::now()));
-        HNG_LOG_DEBUG("role filter seed delta: processes {}",
+        HNG_LOG_DEBUG("role filter seed delta: ignored processes {}",
                       static_cast<int64_t>(filter_report.applied_processes) -
                           static_cast<int64_t>(applied_before));
     }

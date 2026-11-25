@@ -1,6 +1,6 @@
 /**
  * @file
- * @brief 黑名单优先的只读标签策略。
+ * @brief 默认采集、黑名单忽略、白名单例外的只读标签策略。
  * @author inless427
  */
 #ifndef HNG_ROLE_FILTER_POLICY_HPP_

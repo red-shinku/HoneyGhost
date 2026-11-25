@@ -22,7 +22,7 @@ class RoleIgnoreService;
 
 namespace hng {
 
-/** @brief 进程身份存活状态；UNKNOWN 不能作为撤销许可的依据。 */
+/** @brief 进程身份存活状态；UNKNOWN 不能作为撤销忽略项的依据。 */
 enum class ProcessLiveness { ALIVE, DEAD, UNKNOWN };
 
 /** @brief 刷新周期与可替换的存活检查。 */

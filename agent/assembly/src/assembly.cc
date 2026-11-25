@@ -376,7 +376,7 @@ InitReport Assembly::Impl::start_impl()
     running.store(true);
     HNG_LOG_INFO(
         "agent ready: state {}, collect {}, systemd {}, containerd {}, "
-        "process inserted {}, context inserted {}, role filter applied {}",
+        "process inserted {}, context inserted {}, role filter ignored {}",
         to_string(report.state), options.collect, systemd_source != nullptr,
         containerd_source != nullptr, report.process.inserted,
         report.context.inserted, report.role_filter.applied_processes);

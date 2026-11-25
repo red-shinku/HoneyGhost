@@ -1,6 +1,6 @@
 /**
  * @file
- * @brief 预编译规则集合与黑名单优先的标签匹配。
+ * @brief 预编译规则集合与默认采集、黑名单忽略、白名单例外的标签匹配。
  * @author inless427
  */
 #include "agent/role_filter/include/role_filter_policy.hpp"
