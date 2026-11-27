@@ -5,7 +5,7 @@
  *          指向临时伪造根目录，不需要 eBPF 权限。
  */
 
-#include "agent/assembly/src/kernel_preflight.hpp"
+#include "agent/bpf_loader/include/bpf_environment.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -19,13 +19,12 @@ namespace {
 
 int g_fail = 0;
 
-#define CHECK(cond, msg)                                                       \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            ++g_fail;                                                          \
-            std::fprintf(stderr, "[FAIL] %s:%d  %s\n", __FILE__, __LINE__,     \
-                         msg);                                                 \
-        }                                                                      \
+#define CHECK(cond, msg)                                                         \
+    do {                                                                         \
+        if (!(cond)) {                                                           \
+            ++g_fail;                                                            \
+            std::fprintf(stderr, "[FAIL] %s:%d  %s\n", __FILE__, __LINE__, msg); \
+        }                                                                        \
     } while (0)
 
 /// @brief 由 mkdtemp 独占创建的临时目录，析构时整体删除
@@ -35,7 +34,7 @@ struct TempRoot {
     TempRoot()
     {
         std::string pattern = (std::filesystem::temp_directory_path() /
-                              "hng_kernel_preflight_XXXXXX")
+                               "hng_kernel_preflight_XXXXXX")
                                   .string();
         if (::mkdtemp(pattern.data()) != nullptr) {
             path = pattern;
@@ -76,8 +75,8 @@ void test_parse_release()
     CHECK(parse_kernel_release("6.14.0", version) && version.major == 6 &&
               version.minor == 14,
           "应解析 6.14.0");
-    CHECK(parse_kernel_release("5.10.0-8-amd64", version) &&
-              version.major == 5 && version.minor == 10,
+    CHECK(parse_kernel_release("5.10.0-8-amd64", version) && version.major == 5 &&
+              version.minor == 10,
           "次版本号应按十进制解析");
     CHECK(parse_kernel_release("6.18.54.1-microsoft-standard-WSL2", version) &&
               version.major == 6 && version.minor == 18,
@@ -89,8 +88,7 @@ void test_parse_release()
     CHECK(!parse_kernel_release("5", version), "缺少次版本号应解析失败");
     CHECK(!parse_kernel_release("5.", version), "次版本号为空应解析失败");
     CHECK(!parse_kernel_release(".4", version), "缺少主版本号应解析失败");
-    CHECK(version.major == 9 && version.minor == 9,
-          "解析失败不得改写输出");
+    CHECK(version.major == 9 && version.minor == 9, "解析失败不得改写输出");
 }
 
 void test_version_supported()
@@ -119,10 +117,10 @@ void test_evaluate_support()
     write_file(root.path / "mounts", "");
 
     KernelPaths paths;
-    paths.btf             = (root.path / "btf").string();
-    paths.tracing         = (root.path / "tracing").string();
-    paths.tracing_debugfs = (root.path / "debug-tracing").string();
-    paths.mounts          = (root.path / "mounts").string();
+    paths.btf                     = (root.path / "btf").string();
+    paths.tracing                 = (root.path / "tracing").string();
+    paths.tracing_debugfs         = (root.path / "debug-tracing").string();
+    paths.mounts                  = (root.path / "mounts").string();
 
     const KernelSupport supported = evaluate_kernel_support("6.14.0", paths);
     CHECK(supported.ok(), "6.14 + BTF + tracefs 应通过");
@@ -130,8 +128,7 @@ void test_evaluate_support()
           "应记录解析出的版本");
     CHECK(supported.failures().empty(), "通过时失败项应为空");
 
-    const KernelSupport old =
-        evaluate_kernel_support("5.4.0-150-generic", paths);
+    const KernelSupport old = evaluate_kernel_support("5.4.0-150-generic", paths);
     CHECK(!old.ok() && !old.version_ok, "5.4 应被拒绝");
     const std::vector<std::string> old_reasons = old.failures();
     CHECK(old_reasons.size() == 1, "5.4 只应报告版本一项");
@@ -158,10 +155,10 @@ void test_evaluate_support()
     write_file(bare.path / "mounts", "");
 
     KernelPaths bare_paths;
-    bare_paths.btf             = (bare.path / "btf").string();
-    bare_paths.tracing         = (bare.path / "tracing").string();
-    bare_paths.tracing_debugfs = (bare.path / "debug-tracing").string();
-    bare_paths.mounts          = (bare.path / "mounts").string();
+    bare_paths.btf              = (bare.path / "btf").string();
+    bare_paths.tracing          = (bare.path / "tracing").string();
+    bare_paths.tracing_debugfs  = (bare.path / "debug-tracing").string();
+    bare_paths.mounts           = (bare.path / "mounts").string();
 
     const KernelSupport missing = evaluate_kernel_support("6.14.0", bare_paths);
     CHECK(!missing.ok() && !missing.btf_ok && missing.tracefs_ok,

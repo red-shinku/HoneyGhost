@@ -94,10 +94,32 @@ add_test(NAME test_assembly COMMAND test_assembly)
 # 路径指向临时伪造根目录，无 IO / 无特权
 add_executable(test_kernel_preflight
     test_kernel_preflight.cc
-    ${HNG_SOURCE_DIR}/agent/assembly/src/kernel_preflight.cc)
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/bpf_environment.cc)
 target_include_directories(test_kernel_preflight PRIVATE ${HNG_SOURCE_DIR})
 target_link_libraries(test_kernel_preflight PRIVATE hng_util)
 add_test(NAME test_kernel_preflight COMMAND test_kernel_preflight)
+
+# BPF map 基础件：仅 hng_bpf_map 与 bpf syscall 替身，无 libbpf / 无特权
+add_executable(test_bpf_map test_bpf_map.cc)
+target_link_libraries(test_bpf_map PRIVATE hng_bpf_map)
+target_link_options(test_bpf_map PRIVATE "LINKER:--wrap=syscall")
+add_test(NAME test_bpf_map COMMAND test_bpf_map)
+
+# BPF map 只读接口：syscall 与 libbpf 调用走替身，无 libbpf 权限要求
+if(TARGET hng_bpf_loader)
+    add_executable(test_bpf_map_reader test_bpf_map_reader.cc)
+    target_link_libraries(test_bpf_map_reader PRIVATE hng_bpf_loader)
+    target_link_options(test_bpf_map_reader PRIVATE
+        "LINKER:--wrap=syscall"
+        "LINKER:--wrap=bpf_map_lookup_elem"
+        "LINKER:--wrap=libbpf_num_possible_cpus")
+    add_test(NAME test_bpf_map_reader COMMAND test_bpf_map_reader)
+endif()
+
+# 公共头不得拉入 libbpf 或 linux/bpf.h；只编译头与静态断言，不链接实现
+add_executable(test_bpf_public_header test_bpf_public_header.cc)
+target_include_directories(test_bpf_public_header PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_bpf_public_header COMMAND test_bpf_public_header)
 
 # tracefs 根与 tracepoint 存在性：临时目录伪造 events 树与挂载表，无特权
 add_executable(test_tracefs test_tracefs.cc)
