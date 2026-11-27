@@ -1,12 +1,12 @@
 /**
- * @file kernel_preflight.hpp
+ * @file bpf_environment.hpp
  * @brief 探针加载前的目标内核能力检查
  * @details 装配层在启用采集时调用，检查内核版本、BTF 与 tracefs 是否满足
  *          eBPF 探针的加载要求；不满足时由调用方拒绝启动。
  */
 
-#ifndef HNG_ASSEMBLY_KERNEL_PREFLIGHT_HPP_
-#define HNG_ASSEMBLY_KERNEL_PREFLIGHT_HPP_
+#ifndef HNG_BPF_LOADER_INCLUDE_BPF_ENVIRONMENT_HPP_
+#define HNG_BPF_LOADER_INCLUDE_BPF_ENVIRONMENT_HPP_
 
 #include <string>
 #include <string_view>
@@ -47,13 +47,13 @@ bool kernel_version_supported(KernelVersion version) noexcept;
 /// @brief 能力检查读取的路径；测试可指向伪造的根目录
 struct KernelPaths {
     /// CO-RE 重定位读取的目标内核 BTF
-    std::string btf = "/sys/kernel/btf/vmlinux";
+    std::string btf             = "/sys/kernel/btf/vmlinux";
     /// tracefs 挂载点候选一
-    std::string tracing = "/sys/kernel/tracing";
+    std::string tracing         = "/sys/kernel/tracing";
     /// tracefs 挂载点候选二
     std::string tracing_debugfs = "/sys/kernel/debug/tracing";
     /// 挂载表；用于识别非标准挂载点的 tracefs
-    std::string mounts = "/proc/mounts";
+    std::string mounts          = "/proc/mounts";
 };
 
 /// @brief 目标内核能力检查结果
@@ -65,11 +65,11 @@ struct KernelSupport {
     /// release 是否解析成功
     bool release_parsed = false;
     /// 版本是否达到 kMinKernelMajor.kMinKernelMinor
-    bool version_ok = false;
+    bool version_ok     = false;
     /// BTF 文件是否可读
-    bool btf_ok = false;
+    bool btf_ok         = false;
     /// tracefs 是否已挂载（标准挂载点或挂载表中的 tracefs）
-    bool tracefs_ok = false;
+    bool tracefs_ok     = false;
     /// 本次检查使用的路径
     KernelPaths paths;
 
@@ -100,4 +100,4 @@ KernelSupport check_kernel_support(const KernelPaths& paths = KernelPaths{});
 
 }  // namespace hng::detail
 
-#endif  // HNG_ASSEMBLY_KERNEL_PREFLIGHT_HPP_
+#endif  // HNG_BPF_LOADER_INCLUDE_BPF_ENVIRONMENT_HPP_

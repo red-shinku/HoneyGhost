@@ -1,8 +1,8 @@
 /**
- * @file kernel_preflight.cc
+ * @file bpf_environment.cc
  * @brief 目标内核能力检查的实现
  */
-#include "agent/assembly/src/kernel_preflight.hpp"
+#include "agent/bpf_loader/include/bpf_environment.hpp"
 
 #include "agent/util/include/tracefs.hpp"
 

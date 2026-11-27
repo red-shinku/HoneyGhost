@@ -9,7 +9,6 @@ add_library(hng_assembly STATIC
     src/assembly.cc
     src/capability_drop.cc
     src/initialization_coordinator.cc
-    src/kernel_preflight.cc
     src/proc_snapshot.cc
 )
 target_include_directories(hng_assembly PUBLIC
@@ -30,6 +29,9 @@ target_link_libraries(hng_assembly PUBLIC
 if(TARGET hng_collector)
     target_link_libraries(hng_assembly PUBLIC hng_collector)
     target_compile_definitions(hng_assembly PRIVATE HNG_HAVE_COLLECTOR=1)
+    if(TARGET hng_bpf_loader)
+        target_link_libraries(hng_assembly PRIVATE hng_bpf_loader)
+    endif()
 endif()
 target_link_libraries(hng_assembly PRIVATE hng_log hng_util)
 target_compile_definitions(hng_assembly PRIVATE HNG_LOG_TAG="init")

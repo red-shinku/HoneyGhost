@@ -16,7 +16,7 @@
 #include "agent/assembly/src/apparmor_profile.hpp"
 #include "agent/assembly/src/capability_drop.hpp"
 #include "agent/assembly/src/component_threads.hpp"
-#include "agent/assembly/src/kernel_preflight.hpp"
+#include "agent/bpf_loader/include/bpf_environment.hpp"
 #include "agent/assembly/src/proc_snapshot.hpp"
 #include "agent/collector/include/collector_component.hpp"
 #include "agent/collector/include/collector_factory.hpp"
