@@ -1,11 +1,11 @@
 /**
  * @file probe_attach.hpp
- * @brief 采集器的可选探针挂载设施
- * @note 仅供 agent/collector/src 内部使用。
+ * @brief BPF 程序的可选探针挂载设施
+ * @note 仅供 agent/bpf_loader/src 内部使用。
  */
 
-#ifndef HNG_COLLECTOR_PROBE_ATTACH_HPP_
-#define HNG_COLLECTOR_PROBE_ATTACH_HPP_
+#ifndef HNG_BPF_LOADER_PROBE_ATTACH_HPP_
+#define HNG_BPF_LOADER_PROBE_ATTACH_HPP_
 
 #include <bpf/libbpf.h>
 
@@ -38,4 +38,4 @@ int attach_programs(bpf_object* obj, std::vector<bpf_link*>& links);
 
 }  // namespace hng::detail
 
-#endif  // HNG_COLLECTOR_PROBE_ATTACH_HPP_
+#endif  // HNG_BPF_LOADER_PROBE_ATTACH_HPP_
