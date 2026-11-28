@@ -70,27 +70,10 @@ class FakeLine final : public CollectorType {
         return true;
     }
 
-    bool attach() override
-    {
-        if (!prepared_ || attached_) {
-            return false;
-        }
-        attached_ = true;
-        return true;
-    }
-
-    bool init() override { return prepare() && attach(); }
-
-    void detach() override
-    {
-        attached_ = false;
-        detached_ = true;
-    }
-
     int consume(std::size_t budget) override
     {
         ++consume_calls_;
-        if (!attached_ && !detached_) {
+        if (!prepared_) {
             return 0;
         }
         std::uint64_t value = 0;
@@ -110,28 +93,20 @@ class FakeLine final : public CollectorType {
     }
 
     int epoll_fd() const noexcept override { return wake_fd_; }
-    int role_filter_map_fd() const noexcept override { return -1; }
     const char* name() const noexcept override { return "fake"; }
     hng::CollectorLineStats stats() const override
     {
         hng::CollectorLineStats snapshot;
-        snapshot.line     = name();
-        snapshot.consumed = taken_.load();
-        snapshot.attached = attached_;
+        snapshot.line             = name();
+        snapshot.consumed         = taken_.load();
+        snapshot.reserve_failures = 11;
+        snapshot.pending_lost     = 22;
+        snapshot.attached         = attached();
         return snapshot;
     }
-    int reserve_failures_fd() const noexcept override { return -1; }
-    int pending_lost_fd() const noexcept override
-    {
-        ++pending_lost_fd_calls_;
-        return -1;
-    }
-
-    int pending_lost_fd_calls() const { return pending_lost_fd_calls_; }
 
     int taken() const { return taken_.load(); }
     int consume_calls() const { return consume_calls_.load(); }
-    bool detached() const { return detached_; }
 
    private:
     void signal()
@@ -145,10 +120,7 @@ class FakeLine final : public CollectorType {
     std::atomic<int> pending_{0};
     std::atomic<int> taken_{0};
     std::atomic<int> consume_calls_{0};
-    mutable int pending_lost_fd_calls_ = 0;
-    bool prepared_                     = false;
-    bool attached_                     = false;
-    bool detached_                     = false;
+    bool prepared_ = false;
 };
 
 void run_epoll_and_stop()
@@ -165,10 +137,9 @@ void run_epoll_and_stop()
 
     REQUIRE(collector.state() == hng::ComponentState::CONSTRUCTED);
     REQUIRE(collector.prepare());
-    REQUIRE(collector.attach());
+    REQUIRE(collector.mark_ready());
     REQUIRE(collector.state() == hng::ComponentState::READY);
-    REQUIRE(!collector.attach());
-    REQUIRE(collector.role_filter_map_fds().empty());
+    REQUIRE(!collector.mark_ready());
 
     std::thread thread([&collector] { collector.run(); });
 
@@ -189,7 +160,6 @@ void run_epoll_and_stop()
     collector.stop();
     thread.join();
     REQUIRE(collector.state() == hng::ComponentState::STOPPED);
-    REQUIRE(first->detached() && second->detached());
     REQUIRE(first->taken() == 310);
     REQUIRE(second->taken() == 7);
 
@@ -198,11 +168,13 @@ void run_epoll_and_stop()
     REQUIRE(stats[0].line == "fake" && stats[1].line == "fake");
     REQUIRE(stats[0].consumed == 310);
     REQUIRE(stats[1].consumed == 7);
-    REQUIRE(stats[0].reserve_failures == 0);
-    // 暂存丢失计数由聚合层按 pending_lost_fd() 读取后填入
-    REQUIRE(stats[0].pending_lost == 0);
-    REQUIRE(first->pending_lost_fd_calls() == 1);
-    REQUIRE(second->pending_lost_fd_calls() == 1);
+    // 聚合层不再经 fd 覆写统计，保留各线自己给出的快照。
+    REQUIRE(stats[0].reserve_failures == 11);
+    REQUIRE(stats[0].pending_lost == 22);
+    REQUIRE(stats[1].reserve_failures == 11);
+    REQUIRE(stats[1].pending_lost == 22);
+    // run() 退出时只标记未挂载，不摘探针。
+    REQUIRE(!stats[0].attached && !stats[1].attached);
 }
 
 void stop_before_run()
@@ -212,7 +184,8 @@ void stop_before_run()
     std::vector<std::unique_ptr<CollectorType>> lines;
     lines.push_back(std::move(owner));
     Collector collector(std::move(lines));
-    REQUIRE(collector.init());
+    REQUIRE(collector.prepare());
+    REQUIRE(collector.mark_ready());
     collector.stop();
     REQUIRE(collector.state() == hng::ComponentState::STOPPED);
     collector.run();  // 已停止：不进入消费

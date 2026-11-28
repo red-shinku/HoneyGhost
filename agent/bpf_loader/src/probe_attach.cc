@@ -1,8 +1,8 @@
 /**
  * @file probe_attach.cc
- * @brief 采集器的可选探针挂载设施实现
+ * @brief BPF 程序的可选探针挂载设施实现
  */
-#include "agent/collector/src/probe_attach.hpp"
+#include "agent/bpf_loader/src/probe_attach.hpp"
 
 #include "agent/util/include/log.hpp"
 #include "agent/util/include/tracefs.hpp"

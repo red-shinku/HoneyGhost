@@ -1,18 +1,64 @@
 /**
- * @file collector_skeleton_stub.hpp
- * @brief 采集器专用骨架替身；验证资源归属与回调，不参与生产构建。
+ * @file bpf_loader_stub.hpp
+ * @brief BPF 加载器测试替身；验证加载、资源归属与回调，不参与生产构建。
  */
-#ifndef HNG_TEST_COLLECTOR_SKELETON_STUB_HPP_
-#define HNG_TEST_COLLECTOR_SKELETON_STUB_HPP_
+#ifndef HNG_TEST_BPF_LOADER_STUB_HPP_
+#define HNG_TEST_BPF_LOADER_STUB_HPP_
+
+#include <linux/bpf.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
+
+extern "C" int bpf_map_lookup_elem(int fd, const void* key, void* value);
+extern "C" int libbpf_num_possible_cpus(void);
+
+/// @brief 测试骨架暴露给 syscall 替身的 map ABI 信息
+struct hng_test_map_spec {
+    std::uint32_t type        = 0;
+    std::uint32_t key_size    = 0;
+    std::uint32_t value_size  = 0;
+    std::uint32_t max_entries = 0;
+};
+
+inline std::map<int, hng_test_map_spec> hng_test_map_specs;
+
+inline void hng_test_register_map(int fd, hng_test_map_spec spec)
+{
+    if (fd >= 0) hng_test_map_specs[fd] = spec;
+}
+
+inline void hng_test_unregister_map(int fd) { hng_test_map_specs.erase(fd); }
+
+inline const hng_test_map_spec* hng_test_find_map_spec(int fd)
+{
+    const auto found = hng_test_map_specs.find(fd);
+    return found == hng_test_map_specs.end() ? nullptr : &found->second;
+}
+
+inline hng_test_map_spec hng_test_ringbuf_map_spec()
+{
+    return hng_test_map_spec{BPF_MAP_TYPE_RINGBUF, 0, 0, 512 * 1024};
+}
+
+inline hng_test_map_spec hng_test_counter_map_spec()
+{
+    return hng_test_map_spec{BPF_MAP_TYPE_PERCPU_ARRAY, sizeof(std::uint32_t),
+                             sizeof(std::uint64_t), 1};
+}
+
+inline hng_test_map_spec hng_test_role_filter_map_spec()
+{
+    return hng_test_map_spec{BPF_MAP_TYPE_HASH, 16, sizeof(std::uint32_t), 65536};
+}
 
 struct bpf_map {
     int fd;
@@ -26,21 +72,26 @@ struct ring_buffer {
     void* context;
 };
 
-inline bool hng_test_open_failure        = false;
-inline bool hng_test_load_failure        = false;
-inline bool hng_test_attach_failure      = false;
-inline bool hng_test_ring_failure        = false;
-inline bool hng_test_bad_cleanup_order   = false;
-inline int hng_test_live_skeletons       = 0;
-inline int hng_test_live_rings           = 0;
-inline int hng_test_live_links           = 0;
-inline int hng_test_next_fd              = 100;
-inline int hng_test_last_filter_fd       = -1;
-inline int hng_test_last_event_fd        = -1;
-inline int hng_test_last_pending_lost_fd = -1;
+inline bool hng_test_open_failure            = false;
+inline bool hng_test_load_failure            = false;
+inline bool hng_test_attach_failure          = false;
+inline bool hng_test_ring_failure            = false;
+inline bool hng_test_bad_cleanup_order       = false;
+inline int hng_test_live_skeletons           = 0;
+inline int hng_test_live_rings               = 0;
+inline int hng_test_live_links               = 0;
+inline int hng_test_next_fd                  = 100;
+inline int hng_test_last_filter_fd           = -1;
+inline int hng_test_last_event_fd            = -1;
+inline int hng_test_last_reserve_failures_fd = -1;
+inline int hng_test_last_pending_lost_fd     = -1;
 inline std::optional<int> hng_test_event_fd_override;
 inline std::optional<int> hng_test_filter_fd_override;
 inline std::optional<int> hng_test_pending_lost_fd_override;
+inline std::optional<hng_test_map_spec> hng_test_event_spec_override;
+inline std::optional<hng_test_map_spec> hng_test_filter_spec_override;
+inline std::optional<hng_test_map_spec> hng_test_reserve_spec_override;
+inline std::optional<hng_test_map_spec> hng_test_pending_spec_override;
 inline int hng_test_open_calls             = 0;
 inline int hng_test_load_calls             = 0;
 inline int hng_test_attach_calls           = 0;
@@ -381,9 +432,22 @@ inline std::vector<bpf_program> hng_test_make_programs(std::string_view skeleton
             : maps{&ring##_storage, &filter_storage, &failures_storage,           \
                    &pending_lost_storage}                                         \
         {                                                                         \
-            hng_test_last_event_fd        = ring##_storage.fd;                    \
-            hng_test_last_filter_fd       = filter_storage.fd;                    \
-            hng_test_last_pending_lost_fd = pending_lost_storage.fd;              \
+            hng_test_last_event_fd            = ring##_storage.fd;                \
+            hng_test_last_filter_fd           = filter_storage.fd;                \
+            hng_test_last_reserve_failures_fd = failures_storage.fd;              \
+            hng_test_last_pending_lost_fd     = pending_lost_storage.fd;          \
+            hng_test_register_map(ring##_storage.fd,                              \
+                                  hng_test_event_spec_override.value_or(          \
+                                      hng_test_ringbuf_map_spec()));              \
+            hng_test_register_map(filter_storage.fd,                              \
+                                  hng_test_filter_spec_override.value_or(         \
+                                      hng_test_role_filter_map_spec()));          \
+            hng_test_register_map(failures_storage.fd,                            \
+                                  hng_test_reserve_spec_override.value_or(        \
+                                      hng_test_counter_map_spec()));              \
+            hng_test_register_map(pending_lost_storage.fd,                        \
+                                  hng_test_pending_spec_override.value_or(        \
+                                      hng_test_counter_map_spec()));              \
             obj                  = new bpf_object{hng_test_make_programs(#name)}; \
             hng_test_last_object = obj;                                           \
         }                                                                         \
@@ -420,6 +484,10 @@ inline std::vector<bpf_program> hng_test_make_programs(std::string_view skeleton
                 hng_test_bad_cleanup_order = true;                                \
         }                                                                         \
         if (hng_test_last_object == p->obj) hng_test_last_object = nullptr;       \
+        hng_test_unregister_map(p->maps.ring->fd);                                \
+        hng_test_unregister_map(p->maps.hng_role_filter->fd);                     \
+        hng_test_unregister_map(p->maps.reserve_failures->fd);                    \
+        hng_test_unregister_map(p->maps.pending_lost->fd);                        \
         delete p->obj;                                                            \
         --hng_test_live_skeletons;                                                \
         delete p;                                                                 \

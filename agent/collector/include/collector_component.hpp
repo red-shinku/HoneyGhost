@@ -7,11 +7,13 @@
 #ifndef HNG_COLLECTOR_COMPONENT_HPP_
 #define HNG_COLLECTOR_COMPONENT_HPP_
 
-#include <memory>
-#include <vector>
-
+#include "agent/bpf_loader/include/syscall_probe_maps.hpp"
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
+
+#include <memory>
+#include <optional>
+#include <vector>
 
 struct syscall_event;
 
@@ -22,18 +24,21 @@ class EventChannelWriter;
 
 /**
  * @brief 采集组件的构造选项。
- * @details 原始事件通道由装配层创建并持有；空指针表示该线未接线。
+ * @details 原始事件通道与 syscall map 视图均由装配层提供；空写端或空
+ *          map 表示该线未接线。
  */
 struct CollectorOptions {
     /// 系统调用原始事件通道写端
     hng::EventChannelWriter<::syscall_event>* syscall_sink = nullptr;
+    /// 系统调用 map 视图；与 syscall_sink 同时有值才构造系统调用线
+    std::optional<hng::SyscallProbeMaps> syscall_maps;
 };
 
 /**
  * @brief 原始事件采集组件。
- * @details 封装事件线的 prepare / attach 与单线程采集聚合；组件不持线程。
- * @note 生命周期为 CONSTRUCTED → READY → RUNNING → STOPPED。prepare() 成功
- *       后 role_filter_map_fds() 才可能返回有效 fd。
+ * @details 封装事件线的 prepare 与单线程采集聚合；组件不持线程，也不管理
+ *          BPF 程序生命周期。
+ * @note 生命周期为 CONSTRUCTED → READY → RUNNING → STOPPED。
  * @see hng::Component, CollectorOptions, CollectorFactory
  */
 class CollectorComponent final : public hng::Component {
@@ -45,20 +50,15 @@ class CollectorComponent final : public hng::Component {
     CollectorComponent(CollectorComponent&&)                 = delete;
     CollectorComponent& operator=(CollectorComponent&&)      = delete;
 
-    /// @brief 加载骨架、创建 ringbuf 并校验过滤 map fd，不挂载探针
+    /// @brief 创建各线 reader 并准备采集聚合
     /// @return 成功为 true；失败为 false
-    /// @note 只可在 CONSTRUCTED 调用；失败时已准备的线保留资源，由析构回收
+    /// @note 只可在 CONSTRUCTED 调用；map 视图由装配层提供
     bool prepare();
 
-    /// @brief 在 prepare() 成功后挂载探针
-    /// @return 成功为 true；未准备、已挂载或挂载失败为 false
-    /// @note 成功后状态为 READY；挂载失败保留已准备资源
-    bool attach();
-
-    /// @brief 汇总各线的角色过滤 map fd
-    /// @return 有效 fd 列表；未 prepare() 或对应线无 map 时为空
-    /// @note 调用方不得关闭 fd
-    std::vector<int> role_filter_map_fds() const;
+    /// @brief 标记探针已挂载并转入 READY
+    /// @return 成功为 true；状态不是 CONSTRUCTED 时为 false
+    /// @note 由装配层在 BPF 程序挂载成功后调用
+    bool mark_ready();
 
     /// @brief 各线累计计数快照；可从任意线程调用
     std::vector<hng::CollectorLineStats> stats() const;
