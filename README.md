@@ -6,7 +6,7 @@
 ![eBPF](https://img.shields.io/badge/-eBPF-00AEEF?logo=ebpf&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-**English** | [简体中文](README.cn.md)
+**English** | [简体中文](README.zh-cn.md)
 
 HoneyGhost is an eBPF-based runtime monitoring agent for Linux. It collects
 system-call and file events from the kernel, maintains a live view of processes,
@@ -61,6 +61,7 @@ environment rules.
 | Path | Responsibility |
 | --- | --- |
 | `kernel/` | eBPF probes and shared kernel headers |
+| `agent/bpf_loader/` | BPF program loader |
 | `agent/collector/` | ring-buffer consumption and raw event queues |
 | `agent/semantic/` | normalization into typed semantic events |
 | `agent/control_plane/` | process, context and role managers and their stores |

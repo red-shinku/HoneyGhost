@@ -50,6 +50,7 @@ kernel probes ──► Collector ──► Semantic ──► RuntimeEngine ─
 | 路径 | 职责 |
 | --- | --- |
 | `kernel/` | eBPF 探针与共享内核头 |
+| `agent/bpf_loader/` | BPF 程序加载器 |
 | `agent/collector/` | ring buffer 消费与原始事件队列 |
 | `agent/semantic/` | 归一化为带类型的语义事件 |
 | `agent/control_plane/` | 进程、上下文与角色管理器及其存储层 |
