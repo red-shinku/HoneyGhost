@@ -17,6 +17,9 @@
 #include "agent/assembly/src/capability_drop.hpp"
 #include "agent/assembly/src/component_threads.hpp"
 #include "agent/bpf_loader/include/bpf_environment.hpp"
+#include "agent/bpf_loader/include/bpf_loader_factory.hpp"
+#include "agent/bpf_loader/include/bpf_program_group.hpp"
+#include "agent/bpf_loader/include/syscall_probe_loader.hpp"
 #include "agent/assembly/src/proc_snapshot.hpp"
 #include "agent/collector/include/collector_component.hpp"
 #include "agent/collector/include/collector_factory.hpp"
@@ -116,6 +119,10 @@ struct Assembly::Impl final : public PipelineStatsService {
     /// @brief 控制面三个组件的聚合句柄
     std::unique_ptr<hng::ControlPlane> control_plane;
 #ifdef HNG_HAVE_COLLECTOR
+    /// @brief 系统调用 BPF 程序加载器；collect 为 false 时为空
+    std::unique_ptr<hng::SyscallProbeLoader> syscall_loader;
+    /// @brief 非拥有登记 BPF 程序加载器，统一驱动生命周期
+    hng::BpfProgramGroup bpf_programs;
     /// @brief 采集组件；collect 为 false 时为空
     std::unique_ptr<hng::CollectorComponent> collector;
 #endif
@@ -166,8 +173,17 @@ void Assembly::Impl::build_pipeline()
 {
 #ifdef HNG_HAVE_COLLECTOR
     if (options.collect) {
-        collector = CollectorFactory::create({&raw_syscall_ch.writer()});
-        semantic  = SemanticFactory::create(
+        syscall_loader = BpfLoaderFactory::create_syscall_probe();
+        bpf_programs.add(*syscall_loader);
+        if (!bpf_programs.prepare_all()) {
+            throw std::runtime_error("fail to prepare BPF programs");
+        }
+        collector = CollectorFactory::create(
+            {&raw_syscall_ch.writer(), syscall_loader->maps()});
+        if (!collector->prepare()) {
+            throw std::runtime_error("fail to prepare collector");
+        }
+        semantic = SemanticFactory::create(
             {&raw_syscall_ch.reader(), &semantic_syscall_ch.writer()});
     }
 #endif
@@ -187,6 +203,17 @@ hng::PipelineStats Assembly::Impl::snapshot() const
     if (collector != nullptr) {
         stats.collector = collector->stats();
     }
+#ifdef HNG_HAVE_COLLECTOR
+    if (syscall_loader != nullptr) {
+        const hng::BpfProgramStats program = syscall_loader->stats();
+        for (hng::CollectorLineStats& line : stats.collector) {
+            if (line.line == "syscall") {
+                line.skipped_probes = program.skipped_probes;
+                line.attach_failed  = program.attach_failed;
+            }
+        }
+    }
+#endif
     if (semantic != nullptr) {
         stats.semantic = semantic->stats();
     }
@@ -206,18 +233,15 @@ hng::PipelineStats Assembly::Impl::snapshot() const
 #ifdef HNG_HAVE_COLLECTOR
 void Assembly::Impl::build_filter()
 {
-    // S1 名单 map 由采集器 prepare() 创建，成功后才有可用 fd
-    if (collector != nullptr && !collector->prepare()) {
-        throw std::runtime_error("fail to prepare collector");
-    }
-
+    // S1 名单 map 已在 build_pipeline() 的准备阶段校验并可取 fd
     // S2 用过滤 map fd 构造名单组件，并注册为 RM 的生命周期出口
     if (collector != nullptr) {
         RoleFilterComponentOptions ropt;
-        ropt.lookup = &control_plane->role().lookup_service();
-        ropt.ignore = &control_plane->role().ignore_service();
-        ropt.policy = RoleFilterPolicy(options.role_filter_config);
-        ropt.map = make_bpf_process_filter_map(collector->role_filter_map_fds());
+        ropt.lookup         = &control_plane->role().lookup_service();
+        ropt.ignore         = &control_plane->role().ignore_service();
+        ropt.policy         = RoleFilterPolicy(options.role_filter_config);
+        const int filter_fd = syscall_loader->maps().role_filter_map().fd();
+        ropt.map            = make_bpf_process_filter_map({filter_fd});
         ropt.filter_options = options.role_filter_options;
         role_filter         = RoleFilterFactory::create(std::move(ropt));
         control_plane->role().add_lifecycle_sink(&role_filter->lifecycle_sink());
@@ -265,7 +289,9 @@ InitReport Assembly::Impl::initialize()
     io.read_snapshot = [&reader] { return reader.read(); };
 #ifdef HNG_HAVE_COLLECTOR
     if (collector != nullptr) {
-        io.attach_probe = [this] { return collector->attach(); };
+        io.attach_probe = [this] {
+            return bpf_programs.attach_all() && collector->mark_ready();
+        };
     }
 #endif
     return coordinator.run(io);
@@ -297,6 +323,8 @@ void Assembly::Impl::stop_stages()
 {
     // 先停生产者再停消费者；可选组件未构造时跳过
 #ifdef HNG_HAVE_COLLECTOR
+    // 先停生产者，让 collector 停机时只排空已有记录；无 collector 也要卸载
+    bpf_programs.detach_all();
     if (collector != nullptr) {
         threads.stop_and_join(*collector);  // T1
     }
@@ -334,7 +362,9 @@ void Assembly::Impl::release_components()
     role_filter.reset();
     semantic.reset();
 #ifdef HNG_HAVE_COLLECTOR
+    // collector 先释放 reader/fd 副本，再销毁 loader；group 只登记非拥有指针
     collector.reset();
+    syscall_loader.reset();
 #endif
     control_plane.reset();
 }

@@ -19,16 +19,16 @@ namespace {
 
 /**
  * @brief 按选项构造标准事件线。
- * @param options 各线借用的通道写端；空项对应的线不构造
+ * @param options 各线借用的通道写端与 map 视图；空项对应的线不构造
  * @return 构造出的事件线；全部为空时为空
  */
 std::vector<std::unique_ptr<::CollectorType>> build_lines(
     const CollectorOptions& options)
 {
     std::vector<std::unique_ptr<::CollectorType>> lines;
-    if (options.syscall_sink) {
-        lines.push_back(
-            std::make_unique<::SyscallEventCollector>(*options.syscall_sink));
+    if (options.syscall_sink && options.syscall_maps) {
+        lines.push_back(std::make_unique<::SyscallEventCollector>(
+            *options.syscall_sink, *options.syscall_maps));
     }
     return lines;
 }
@@ -60,12 +60,7 @@ CollectorComponent::~CollectorComponent() = default;
 
 bool CollectorComponent::prepare() { return impl_->aggregate.prepare(); }
 
-bool CollectorComponent::attach() { return impl_->aggregate.attach(); }
-
-std::vector<int> CollectorComponent::role_filter_map_fds() const
-{
-    return impl_->aggregate.role_filter_map_fds();
-}
+bool CollectorComponent::mark_ready() { return impl_->aggregate.mark_ready(); }
 
 std::vector<hng::CollectorLineStats> CollectorComponent::stats() const
 {

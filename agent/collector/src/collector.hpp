@@ -5,6 +5,7 @@
 #ifndef COLLECTOR_HPP
 #define COLLECTOR_HPP
 
+#include "agent/bpf_loader/include/syscall_probe_maps.hpp"
 #include "agent/util/include/component.hpp"
 #include "agent/util/include/event_channel.hpp"
 #include "agent/util/include/pipeline_stats.hpp"
@@ -13,16 +14,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <vector>
 
-// 生成骨架、libbpf 资源与释放方式均为实现细节，定义只存在于 src/。
+// BPF 资源与释放方式均为实现细节，定义只存在于 src/。
 namespace hng::detail {
 struct SyscallCollectorState;
-
-/// @brief 读取单键 per-CPU u64 计数并求和；fd 无效或读取失败返回 0
-std::uint64_t ReadPercpuCounter(int fd) noexcept;
 
 /**
  * @brief 该 subtype 的 ringbuf 记录精确长度：事件头 + 定长载荷。
@@ -110,82 +107,43 @@ static_assert(offsetof(syscall_event, signal_event) ==
 
 /**
  * @brief 单条事件线的采集接口。
- * @note 不持线程。prepare、attach、detach、consume 与析构须由同一调用方
- *       串行；单个实例仅允许一个消费线程。回调绑定对象地址，故禁止复制或移动。
+ * @note 不持线程。prepare、consume 与析构须由同一调用方串行；单个实例仅
+ *       允许一个消费线程。回调绑定对象地址，故禁止复制或移动。
  */
 class CollectorType {
    public:
-    CollectorType()                                  = default;
-    virtual ~CollectorType()                         = default;
+    CollectorType()                                = default;
+    virtual ~CollectorType()                       = default;
 
-    CollectorType(const CollectorType&)              = delete;
-    CollectorType& operator=(const CollectorType&)   = delete;
-    CollectorType(CollectorType&&)                   = delete;
-    CollectorType& operator=(CollectorType&&)        = delete;
+    CollectorType(const CollectorType&)            = delete;
+    CollectorType& operator=(const CollectorType&) = delete;
+    CollectorType(CollectorType&&)                 = delete;
+    CollectorType& operator=(CollectorType&&)      = delete;
 
     /**
-     * @brief 加载骨架、创建 ringbuf 并校验过滤 map fd，不挂载探针。
-     * @return 成功为 true；已准备或加载、map 校验、ringbuf 创建失败为 false
-     * @note 加载前会关闭 tracepoint 不存在的程序的 autoload，计数见
-     *       stats().skipped_probes。成功后 role_filter_map_fd() 即可返回
-     *       有效 fd，此时尚无事件产生；须再调用 attach()。失败时不保留
-     *       任何已准备资源。
+     * @brief 用构造时注入的 map 视图创建 reader。
+     * @return 成功为 true；已准备或资源创建失败为 false
+     * @note 不管理 BPF 程序生命周期；失败时不保留采集线已获取的资源。
      */
-    virtual bool prepare()                           = 0;
-    /**
-     * @brief 在 prepare() 成功后逐个挂载探针。
-     * @return 有任一探针挂载成功，或没有需要挂载的探针时为 true；
-     *         未准备、已挂载或全部尝试均失败为 false
-     * @note 单个探针失败只累加 stats().attach_failed，不影响其余探针；
-     *       返回 false 时保留已准备资源，可重试 attach()。
-     *       挂载成功后可被 consume() 消费。
-     */
-    virtual bool attach()                            = 0;
-    /**
-     * @brief 加载、创建 ringbuf 并挂载探针，等价于 prepare() 后 attach()。
-     * @return 成功为 true；attach() 失败时回收已准备资源并返回 false
-     * @note 重复初始化返回 false；已 prepare() 而未 attach() 时返回 false，
-     *       且不改变已准备状态。
-     */
-    virtual bool init()                              = 0;
-    /**
-     * @brief 摘除探针；此后不再产生新事件。
-     * @note 已准备但未挂载时为空操作。ringbuf 仍可继续 consume() 排空。
-     */
-    virtual void detach()                            = 0;
+    virtual bool prepare()                         = 0;
     /**
      * @brief 把 ringbuf 中就绪的记录搬到输出通道。
      * @param budget 本次最多消费的记录数；实现可忽略该上限
      * @return 搬到输出通道的记录数；负值为 ringbuf 错误
-     * @note 未 prepare() 或从未 attach() 成功时返回 0，不访问 ringbuf；
-     *       detach() 后仍可继续消费剩余记录。通道满时记录被丢弃，计数在通道内。
+     * @note 未 prepare() 时返回 0，不访问 ringbuf；通道满时记录被丢弃，
+     *       计数在通道内。
      */
-    virtual int consume(std::size_t budget)          = 0;
+    virtual int consume(std::size_t budget)        = 0;
     /**
      * @brief 借用 ringbuf 的 epoll fd；prepare() 前或失败后返回 -1。
      * @note 调用方不得关闭 fd；fd 的生命周期由采集线持有。
      */
-    virtual int epoll_fd() const noexcept            = 0;
-    /**
-     * @brief 借用角色过滤 map fd；prepare() 前或失败后返回 -1。
-     * @note 调用方不得关闭 fd；须复制 fd 或保持采集器存活。
-     *       fd 副本只延长 map 生命周期，不延长探针挂载的生命周期。
-     */
-    virtual int role_filter_map_fd() const noexcept  = 0;
-
+    virtual int epoll_fd() const noexcept          = 0;
     /// @brief 线名，用于统计标签；返回静态字符串
-    virtual const char* name() const noexcept        = 0;
+    virtual const char* name() const noexcept      = 0;
 
     /// @brief 本线的累计计数快照；可从任意线程调用
-    /// @note reserve_failures 由聚合层按本函数给出的 fd 读取后填入
-    virtual hng::CollectorLineStats stats() const    = 0;
-
-    /// @brief 内核预留失败计数 map 的 fd；未准备时返回 -1
-    virtual int reserve_failures_fd() const noexcept = 0;
-
-    /// @brief 内核暂存条目丢失计数 map 的 fd；未准备时返回 -1
-    /// @note 供聚合层读取后填入 stats().pending_lost
-    virtual int pending_lost_fd() const noexcept     = 0;
+    virtual hng::CollectorLineStats stats() const  = 0;
 
     /// @brief 标记本线已退回超时轮询
     void mark_polling() noexcept
@@ -209,30 +167,6 @@ class CollectorType {
     bool attached() const noexcept
     {
         return attached_.load(std::memory_order_relaxed);
-    }
-
-    /// @brief 累计 prepare() 因 tracepoint 缺失关闭 autoload 的探针数
-    void mark_skipped_probes(std::uint64_t count = 1) noexcept
-    {
-        skipped_probes_.fetch_add(count, std::memory_order_relaxed);
-    }
-
-    /// @brief 已跳过 autoload 的探针数
-    std::uint64_t skipped_probes() const noexcept
-    {
-        return skipped_probes_.load(std::memory_order_relaxed);
-    }
-
-    /// @brief 累计 attach() 挂载失败的探针数
-    void mark_attach_failed(std::uint64_t count = 1) noexcept
-    {
-        attach_failed_.fetch_add(count, std::memory_order_relaxed);
-    }
-
-    /// @brief 挂载失败的探针数
-    std::uint64_t attach_failed() const noexcept
-    {
-        return attach_failed_.load(std::memory_order_relaxed);
     }
 
     /// @brief 累计从 ringbuf 搬出的记录数
@@ -274,8 +208,6 @@ class CollectorType {
    protected:
     std::atomic<bool> polling_{false};
     std::atomic<bool> attached_{false};
-    std::atomic<std::uint64_t> skipped_probes_{0};
-    std::atomic<std::uint64_t> attach_failed_{0};
     std::atomic<std::uint64_t> consumed_{0};
     std::atomic<std::uint64_t> consume_errors_{0};
     std::atomic<std::uint64_t> malformed_{0};
@@ -311,30 +243,18 @@ class Collector final : public hng::Component {
      */
     bool prepare();
     /**
-     * @brief 逐线 attach()；成功后状态为 READY。
-     * @return 全部成功为 true；任一失败时摘除已挂载的线并返回 false
-     * @note 只可在 CONSTRUCTED 且 prepare() 成功后调用。
+     * @brief 标记探针已挂载并转入 READY。
+     * @return 成功为 true；状态不是 CONSTRUCTED 时为 false
+     * @note 成功后逐线记录挂载状态，供统计读取。
      */
-    bool attach();
-    /**
-     * @brief prepare() 后 attach()。
-     * @return 全部成功为 true；否则 false
-     */
-    bool init();
-    /**
-     * @brief 汇总各线角色过滤 map fd。
-     * @return 有效 fd 列表；未 prepare() 或对应线无 map 时为空
-     * @note 调用方不得关闭 fd。
-     */
-    std::vector<int> role_filter_map_fds() const;
-
+    bool mark_ready();
     /// @brief 各线累计计数快照；可从任意线程调用
     std::vector<hng::CollectorLineStats> stats() const;
 
     /**
      * @brief 聚合线程入口：epoll 等待各线 ringbuf，逐线 consume。
      * @pre state() 为 READY；否则立即返回且不改变状态
-     * @note 退出前逐线摘探针并排空 ringbuf；不创建线程。
+     * @note 退出前逐线记未挂载并排空 ringbuf；不创建线程，不摘探针。
      */
     void run() override;
     /**
@@ -359,31 +279,26 @@ class Collector final : public hng::Component {
 class SyscallEventCollector : public CollectorType {
    public:
     /**
-     * @brief 绑定输出通道
+     * @brief 绑定输出通道与系统调用 map 视图
      * @param sink 输出通道写端
-     * @param tracefs_root tracefs 根；为空时 prepare() 自动解析
+     * @param maps 由装配层提供的 map 视图快照
+     * @note 不管理 BPF 程序生命周期；视图只在对应 loader 存活期间有效。
      */
     explicit SyscallEventCollector(hng::EventChannelWriter<syscall_event>& sink,
-                                   std::filesystem::path tracefs_root = {});
+                                   hng::SyscallProbeMaps maps);
     ~SyscallEventCollector() override;
 
     bool prepare() override;
-    bool attach() override;
-    bool init() override;
-    void detach() override;
     int consume(std::size_t budget) override;
     int epoll_fd() const noexcept override;
-    int role_filter_map_fd() const noexcept override;
     const char* name() const noexcept override;
     hng::CollectorLineStats stats() const override;
-    int reserve_failures_fd() const noexcept override;
-    int pending_lost_fd() const noexcept override;
 
    private:
     hng::EventChannelWriter<syscall_event>& syscall_sink;
-    std::filesystem::path tracefs_root_;
+    hng::SyscallProbeMaps maps_;
     std::unique_ptr<hng::detail::SyscallCollectorState> state_;
-    static int handle_rb_event(void* ctx, void* data,
+    static int handle_rb_event(void* ctx, const void* data,
                                std::size_t data_sz) noexcept;
 };
 

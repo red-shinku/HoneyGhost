@@ -271,35 +271,26 @@ void verify_line(const std::filesystem::path& tracefs_root)
     reset_stub();
     hng::EventChannel<syscall_event> channel(4);
     auto loader = hng::BpfLoaderFactory::create_syscall_probe(tracefs_root);
-    SyscallEventCollector collector(channel.writer(), *loader);
+    REQUIRE(loader->prepare());
+    SyscallEventCollector collector(channel.writer(), loader->maps());
 
-    REQUIRE(loader->state() == hng::BpfProgramState::UNPREPARED);
+    REQUIRE(loader->state() == hng::BpfProgramState::PREPARED);
     REQUIRE(collector.stats().consumed == 0);
     REQUIRE(collector.epoll_fd() == -1);
     REQUIRE(collector.consume(1) == 0);
     REQUIRE(hng_test_consume_calls == 0);
-    REQUIRE(!collector.attach());
-
-    hng_test_open_failure = true;
-    REQUIRE(!collector.prepare());
-    hng_test_open_failure = false;
-    REQUIRE(loader->state() == hng::BpfProgramState::UNPREPARED);
-    REQUIRE(hng_test_live_skeletons == 0 && hng_test_live_rings == 0);
 
     REQUIRE(collector.prepare());
-    REQUIRE(loader->state() == hng::BpfProgramState::PREPARED);
     REQUIRE(hng_test_live_skeletons == 1 && hng_test_live_rings == 1);
-    REQUIRE(collector.epoll_fd() == -1);
-    REQUIRE(collector.consume(1) == 0);
-    REQUIRE(hng_test_consume_calls == 0);
+    REQUIRE(collector.epoll_fd() >= 0);
     REQUIRE(!collector.prepare());
 
     const int programs = static_cast<int>(hng_test_last_object->programs.size());
-    REQUIRE(collector.attach());
+    REQUIRE(loader->attach());
     REQUIRE(loader->state() == hng::BpfProgramState::ATTACHED);
     REQUIRE(hng_test_live_links == programs);
-    REQUIRE(collector.epoll_fd() >= 0);
-    REQUIRE(!collector.attach());
+    collector.mark_attached(true);
+    REQUIRE(!loader->attach());
 
     hng::CollectorLineStats stats = collector.stats();
     REQUIRE(stats.line == "syscall");
@@ -364,15 +355,16 @@ void verify_line(const std::filesystem::path& tracefs_root)
     REQUIRE(collector.consume(1) == -EIO);
     REQUIRE(collector.stats().consume_errors == 1);
 
-    collector.detach();
+    loader->detach();
     REQUIRE(hng_test_live_links == 0);
+    collector.mark_attached(false);
     REQUIRE(!collector.stats().attached);
     REQUIRE(collector.epoll_fd() >= 0);
     reset_consume();
     hng_test_consume_successes = 1;
     REQUIRE(collector.consume(1) == 1);
     REQUIRE(hng_test_consume_calls == 1);
-    collector.detach();
+    loader->detach();
     REQUIRE(hng_test_live_links == 0);
 }
 
@@ -382,8 +374,9 @@ void verify_record_framing(const std::filesystem::path& tracefs_root)
     reset_consume();
     hng::EventChannel<syscall_event> channel(16);
     auto loader = hng::BpfLoaderFactory::create_syscall_probe(tracefs_root);
-    SyscallEventCollector collector(channel.writer(), *loader);
-    REQUIRE(collector.init());
+    REQUIRE(loader->prepare());
+    SyscallEventCollector collector(channel.writer(), loader->maps());
+    REQUIRE(collector.prepare());
     auto* ring = hng_test_last_ring;
 
     struct Case {
@@ -475,16 +468,17 @@ void verify_skipped_stats()
     {
         hng::EventChannel<syscall_event> channel(4);
         auto loader = hng::BpfLoaderFactory::create_syscall_probe(tracefs.root);
-        SyscallEventCollector collector(channel.writer(), *loader);
+        REQUIRE(loader->prepare());
+        SyscallEventCollector collector(channel.writer(), loader->maps());
         REQUIRE(collector.prepare());
-        REQUIRE(collector.stats().skipped_probes == 1);
+        REQUIRE(loader->stats().skipped_probes == 1);
         const int programs   = static_cast<int>(sections.size());
         bpf_program* skipped = find_program(missing);
         REQUIRE(skipped != nullptr && !skipped->autoload);
-        REQUIRE(collector.attach());
+        REQUIRE(loader->attach());
         REQUIRE(hng_test_live_links == programs - 1);
         REQUIRE(!skipped->attached);
-        collector.detach();
+        loader->detach();
     }
     REQUIRE(hng_test_live_skeletons == 0);
     REQUIRE(hng_test_live_rings == 0);
@@ -503,13 +497,14 @@ void verify_attach_failure_stats()
     {
         hng::EventChannel<syscall_event> channel(4);
         auto loader = hng::BpfLoaderFactory::create_syscall_probe(tracefs.root);
-        SyscallEventCollector collector(channel.writer(), *loader);
+        REQUIRE(loader->prepare());
+        SyscallEventCollector collector(channel.writer(), loader->maps());
         REQUIRE(collector.prepare());
         hng_test_attach_failure_sections = {sections[1]};
-        REQUIRE(collector.attach());
-        REQUIRE(collector.stats().attach_failed == 1);
+        REQUIRE(loader->attach());
+        REQUIRE(loader->stats().attach_failed == 1);
         REQUIRE(hng_test_live_links == programs - 1);
-        collector.detach();
+        loader->detach();
     }
     REQUIRE(hng_test_live_skeletons == 0);
     REQUIRE(hng_test_live_rings == 0);
@@ -521,7 +516,8 @@ void verify_prepare_failure_cleanup(const std::filesystem::path& tracefs_root)
     reset_stub();
     hng::EventChannel<syscall_event> channel(4);
     auto loader = hng::BpfLoaderFactory::create_syscall_probe(tracefs_root);
-    SyscallEventCollector collector(channel.writer(), *loader);
+    REQUIRE(loader->prepare());
+    SyscallEventCollector collector(channel.writer(), loader->maps());
 
     hng_test_ring_failure = true;
     REQUIRE(!collector.prepare());

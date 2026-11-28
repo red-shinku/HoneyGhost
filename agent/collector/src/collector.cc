@@ -5,9 +5,6 @@
 #include "agent/collector/src/collector.hpp"
 #include "agent/util/include/log.hpp"
 
-#include <bpf/bpf.h>
-#include <bpf/libbpf.h>
-
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -42,31 +39,6 @@ const char* state_name(hng::ComponentState state) noexcept
 }
 
 }  // namespace
-
-namespace hng::detail {
-
-std::uint64_t ReadPercpuCounter(int fd) noexcept
-{
-    if (fd < 0) {
-        return 0;
-    }
-    const int cpus = ::libbpf_num_possible_cpus();
-    if (cpus <= 0) {
-        return 0;
-    }
-    std::vector<std::uint64_t> values(static_cast<std::size_t>(cpus), 0);
-    const std::uint32_t key = 0;
-    if (::bpf_map_lookup_elem(fd, &key, values.data()) != 0) {
-        return 0;
-    }
-    std::uint64_t total = 0;
-    for (const std::uint64_t value : values) {
-        total += value;
-    }
-    return total;
-}
-
-}  // namespace hng::detail
 
 Collector::Collector(std::vector<std::unique_ptr<CollectorType>> lines)
 {
@@ -118,63 +90,20 @@ bool Collector::prepare()
     return true;
 }
 
-bool Collector::attach()
+bool Collector::mark_ready()
 {
-    const hng::ComponentState state = lifecycle_.load(std::memory_order_acquire);
-    if (state != hng::ComponentState::CONSTRUCTED) {
-        HNG_LOG_WARN("collector attach ignored: state is {}", state_name(state));
-        return false;
-    }
-    std::size_t attached = 0;
-    for (std::size_t i = 0; i < lines_.size(); ++i) {
-        HNG_LOG_DEBUG("collector attaching line {}", i);
-        if (!lines_[i]->attach()) {
-            HNG_LOG_ERROR(
-                "collector attach failed at line {}; detaching {} lines", i,
-                attached);
-            for (auto& line : lines_) {
-                line->detach();
-            }
-            return false;
-        }
-        ++attached;
-        HNG_LOG_DEBUG("collector line {} attached", i);
-    }
     hng::ComponentState expected = hng::ComponentState::CONSTRUCTED;
     if (!lifecycle_.compare_exchange_strong(expected,
                                             hng::ComponentState::READY)) {
-        HNG_LOG_WARN(
-            "collector attach aborted: state changed to {}; detaching {} lines",
-            state_name(expected), attached);
-        for (auto& line : lines_) {
-            line->detach();
-        }
+        HNG_LOG_WARN("collector mark_ready ignored: state is {}",
+                     state_name(expected));
         return false;
     }
-    HNG_LOG_INFO("collector ready: {} event line(s) attached", attached);
+    for (auto& line : lines_) {
+        line->mark_attached(true);
+    }
+    HNG_LOG_INFO("collector ready: {} event line(s) attached", lines_.size());
     return true;
-}
-
-bool Collector::init()
-{
-    HNG_LOG_DEBUG("collector init requested");
-    if (!prepare()) {
-        return false;
-    }
-    return attach();
-}
-
-std::vector<int> Collector::role_filter_map_fds() const
-{
-    std::vector<int> fds;
-    fds.reserve(lines_.size());
-    for (const auto& line : lines_) {
-        const int fd = line->role_filter_map_fd();
-        if (fd >= 0) {
-            fds.push_back(fd);
-        }
-    }
-    return fds;
 }
 
 std::vector<hng::CollectorLineStats> Collector::stats() const
@@ -182,12 +111,7 @@ std::vector<hng::CollectorLineStats> Collector::stats() const
     std::vector<hng::CollectorLineStats> snapshot;
     snapshot.reserve(lines_.size());
     for (const auto& line : lines_) {
-        hng::CollectorLineStats stats = line->stats();
-        stats.reserve_failures =
-            hng::detail::ReadPercpuCounter(line->reserve_failures_fd());
-        stats.pending_lost =
-            hng::detail::ReadPercpuCounter(line->pending_lost_fd());
-        snapshot.push_back(std::move(stats));
+        snapshot.push_back(line->stats());
     }
     return snapshot;
 }
@@ -206,13 +130,12 @@ void Collector::run()
     const int epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) {
         const int error = errno;
-        HNG_LOG_ERROR(
-            "collector epoll_create1 failed: {}; detaching and stopping",
-            std::strerror(error));
+        HNG_LOG_ERROR("collector epoll_create1 failed: {}; draining and stopping",
+                      std::strerror(error));
         for (auto& line : lines_) {
-            line->detach();
             while (line->consume(kBudgetPerLine) > 0) {
             }
+            line->mark_attached(false);
         }
         lifecycle_.store(hng::ComponentState::STOPPED, std::memory_order_release);
         return;
@@ -307,18 +230,16 @@ void Collector::run()
             const std::uint32_t event_mask = events[i].events;
             if ((event_mask & (EPOLLERR | EPOLLHUP)) != 0) {
                 HNG_LOG_WARN(
-                    "collector line epoll error (events 0x{:x}); detaching",
+                    "collector line epoll error (events 0x{:x}); removing fd",
                     event_mask);
-                line->second->detach();
                 ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                 by_fd.erase(line);
                 continue;
             }
             const int consumed = line->second->consume(kBudgetPerLine);
             if (consumed < 0) {
-                HNG_LOG_ERROR("collector line consume failed: {}; detaching",
+                HNG_LOG_ERROR("collector line consume failed: {}; removing fd",
                               std::strerror(-consumed));
-                line->second->detach();
                 ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                 by_fd.erase(line);
             }
@@ -327,11 +248,10 @@ void Collector::run()
 
     ::close(epoll_fd);
 
-    // 先摘探针，避免排空期间再产生新事件；随后逐线排空 ringbuf。
+    // 探针由装配层卸载；这里只把线标记为未挂载并排空 ringbuf。
     std::size_t drained = 0;
     for (std::size_t i = 0; i < lines_.size(); ++i) {
-        lines_[i]->detach();
-        HNG_LOG_DEBUG("collector line {} detached", i);
+        lines_[i]->mark_attached(false);
     }
     for (std::size_t i = 0; i < lines_.size(); ++i) {
         int consumed = 0;

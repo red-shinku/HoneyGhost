@@ -411,28 +411,75 @@ if(TARGET hng_cli_server)
         hng_cli_server userver::grpc)
 endif()
 
-# 采集器角色过滤接口：仅本测试目标使用骨架替身，不依赖真实 eBPF 加载。
-set(HNG_COLLECTOR_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
-file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/kernel)
-file(MAKE_DIRECTORY ${HNG_COLLECTOR_MOCK_DIR}/bpf)
+# BPF 加载器与采集线测试：骨架替身 + --wrap 系统调用，不依赖真实 eBPF。
+set(HNG_BPF_LOADER_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
+file(MAKE_DIRECTORY ${HNG_BPF_LOADER_MOCK_DIR}/kernel)
+file(MAKE_DIRECTORY ${HNG_BPF_LOADER_MOCK_DIR}/bpf)
 foreach(probe syscalls)
     configure_file(fixtures/collector_skeleton_stub.hpp
-        ${HNG_COLLECTOR_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
+        ${HNG_BPF_LOADER_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
 configure_file(fixtures/collector_skeleton_stub.hpp
-    ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf.h COPYONLY)
+    ${HNG_BPF_LOADER_MOCK_DIR}/bpf/libbpf.h COPYONLY)
+configure_file(fixtures/collector_skeleton_stub.hpp
+    ${HNG_BPF_LOADER_MOCK_DIR}/bpf/bpf.h COPYONLY)
 configure_file(fixtures/libbpf_version_stub.h
-    ${HNG_COLLECTOR_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
-add_executable(test_collector_filter_map
-    test_collector_filter_map.cc
-    ${HNG_SOURCE_DIR}/agent/collector/src/probe_attach.cc
+    ${HNG_BPF_LOADER_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)
+
+# 加载器生命周期：open/load、map ABI、跳过 tracepoint、attach/detach。
+add_executable(test_bpf_loader
+    test_bpf_loader.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/probe_attach.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/syscall_probe_loader.cc)
+target_include_directories(test_bpf_loader PRIVATE
+    ${HNG_BPF_LOADER_MOCK_DIR} ${HNG_SOURCE_DIR})
+target_link_libraries(test_bpf_loader PRIVATE
+    hng_bpf_map hng_util hng_log)
+target_compile_definitions(test_bpf_loader
+    PRIVATE HNG_LOG_TAG="bpf_loader")
+target_link_options(test_bpf_loader PRIVATE "LINKER:--wrap=syscall")
+add_test(NAME test_bpf_loader COMMAND test_bpf_loader)
+
+# 加载器聚合：假 loader 验证顺序、fail-fast、回滚与统计，不链接 libbpf。
+add_executable(test_bpf_program_group
+    test_bpf_program_group.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/bpf_program_group.cc)
+target_include_directories(test_bpf_program_group PRIVATE ${HNG_SOURCE_DIR})
+add_test(NAME test_bpf_program_group COMMAND test_bpf_program_group)
+
+# ringbuf reader：handler 注入、预算、epoll fd 与 fd 释放。
+add_executable(test_bpf_ringbuf_reader
+    test_bpf_ringbuf_reader.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/ringbuf_reader.cc)
+target_include_directories(test_bpf_ringbuf_reader PRIVATE
+    ${HNG_BPF_LOADER_MOCK_DIR} ${HNG_SOURCE_DIR})
+target_link_libraries(test_bpf_ringbuf_reader PRIVATE hng_bpf_map)
+target_link_options(test_bpf_ringbuf_reader PRIVATE
+    "LINKER:--wrap=syscall"
+    "LINKER:--wrap=fcntl")
+add_test(NAME test_bpf_ringbuf_reader COMMAND test_bpf_ringbuf_reader)
+
+# 采集线：真实 loader + reader（替身骨架）验证解析、malformed、通道与统计。
+add_executable(test_collector_syscall_line
+    test_collector_syscall_line.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/bpf_map_reader.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/probe_attach.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/ringbuf_reader.cc
+    ${HNG_SOURCE_DIR}/agent/bpf_loader/src/syscall_probe_loader.cc
     ${HNG_SOURCE_DIR}/agent/collector/src/syscall_event_collector.cc)
-target_include_directories(test_collector_filter_map PRIVATE
-    ${HNG_COLLECTOR_MOCK_DIR} ${HNG_SOURCE_DIR})
-target_link_libraries(test_collector_filter_map PRIVATE hng_util hng_log)
-target_compile_definitions(test_collector_filter_map
+target_include_directories(test_collector_syscall_line PRIVATE
+    ${HNG_BPF_LOADER_MOCK_DIR} ${HNG_SOURCE_DIR})
+target_link_libraries(test_collector_syscall_line PRIVATE
+    hng_bpf_map hng_util hng_log)
+target_compile_definitions(test_collector_syscall_line
     PRIVATE HNG_LOG_TAG="collector")
-add_test(NAME test_collector_filter_map COMMAND test_collector_filter_map)
+target_link_options(test_collector_syscall_line PRIVATE
+    "LINKER:--wrap=syscall"
+    "LINKER:--wrap=fcntl"
+    "LINKER:--wrap=bpf_map_lookup_elem"
+    "LINKER:--wrap=libbpf_num_possible_cpus")
+add_test(NAME test_collector_syscall_line
+    COMMAND test_collector_syscall_line)
 
 # 采集聚合：假线 + eventfd 验证 epoll 唤醒、预算与停机排空，不依赖 libbpf。
 add_executable(test_collector_aggregate
@@ -440,7 +487,7 @@ add_executable(test_collector_aggregate
     ${HNG_SOURCE_DIR}/agent/collector/src/collector.cc)
 target_include_directories(test_collector_aggregate PRIVATE ${HNG_SOURCE_DIR})
 target_link_libraries(test_collector_aggregate PRIVATE
-    Threads::Threads hng_log ${LIBBPF_LIB})
+    Threads::Threads hng_log)
 target_compile_definitions(test_collector_aggregate
     PRIVATE HNG_LOG_TAG="collector")
 add_test(NAME test_collector_aggregate COMMAND test_collector_aggregate)
