@@ -413,16 +413,16 @@ if(TARGET hng_cli_server)
 endif()
 
 # BPF 加载器与采集线测试：骨架替身 + --wrap 系统调用，不依赖真实 eBPF。
-set(HNG_BPF_LOADER_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/collector-mocks)
+set(HNG_BPF_LOADER_MOCK_DIR ${CMAKE_CURRENT_BINARY_DIR}/bpf-loader-mocks)
 file(MAKE_DIRECTORY ${HNG_BPF_LOADER_MOCK_DIR}/kernel)
 file(MAKE_DIRECTORY ${HNG_BPF_LOADER_MOCK_DIR}/bpf)
 foreach(probe syscalls)
-    configure_file(fixtures/collector_skeleton_stub.hpp
+    configure_file(fixtures/bpf_loader_stub.hpp
         ${HNG_BPF_LOADER_MOCK_DIR}/kernel/${probe}.skel.h COPYONLY)
 endforeach()
-configure_file(fixtures/collector_skeleton_stub.hpp
+configure_file(fixtures/bpf_loader_stub.hpp
     ${HNG_BPF_LOADER_MOCK_DIR}/bpf/libbpf.h COPYONLY)
-configure_file(fixtures/collector_skeleton_stub.hpp
+configure_file(fixtures/bpf_loader_stub.hpp
     ${HNG_BPF_LOADER_MOCK_DIR}/bpf/bpf.h COPYONLY)
 configure_file(fixtures/libbpf_version_stub.h
     ${HNG_BPF_LOADER_MOCK_DIR}/bpf/libbpf_version.h COPYONLY)

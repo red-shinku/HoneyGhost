@@ -6,7 +6,7 @@
  */
 #include "agent/bpf_loader/include/bpf_loader_factory.hpp"
 #include "agent/collector/src/collector.hpp"
-#include "test/fixtures/collector_skeleton_stub.hpp"
+#include "test/fixtures/bpf_loader_stub.hpp"
 
 #include <fcntl.h>
 #include <linux/bpf.h>

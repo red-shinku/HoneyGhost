@@ -17,7 +17,7 @@
 #include <memory>
 #include <vector>
 
-// BPF 资源与释放方式均为实现细节，定义只存在于 src/。
+// ringbuf 与统计 map Reader 的资源归属及释放方式均为实现细节，定义只存在于 src/。
 namespace hng::detail {
 struct SyscallCollectorState;
 

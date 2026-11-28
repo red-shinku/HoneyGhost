@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-out=build-agent/collector-filter-map
+out=build-agent/bpf-loader
 compiler="${CXX:-g++}"
 flags=(-std=c++17 -O2 -Wall -Wextra -Werror)
 sanitizers="${HNG_COLLECTOR_SANITIZERS:-0}"
@@ -21,9 +21,9 @@ read -r -a links <<< "$(pkg-config --libs fmt spdlog)"
 mkdir -p "$out/mocks/kernel" "$out/mocks/bpf"
 # 此次编译刻意不提供替身头路径，防止公共头重新依赖生成骨架。
 "$compiler" "${flags[@]}" -I. -fsyntax-only test/test_bpf_public_header.cc
-cp test/fixtures/collector_skeleton_stub.hpp "$out/mocks/kernel/syscalls.skel.h"
-cp test/fixtures/collector_skeleton_stub.hpp "$out/mocks/bpf/libbpf.h"
-cp test/fixtures/collector_skeleton_stub.hpp "$out/mocks/bpf/bpf.h"
+cp test/fixtures/bpf_loader_stub.hpp "$out/mocks/kernel/syscalls.skel.h"
+cp test/fixtures/bpf_loader_stub.hpp "$out/mocks/bpf/libbpf.h"
+cp test/fixtures/bpf_loader_stub.hpp "$out/mocks/bpf/bpf.h"
 cp test/fixtures/libbpf_version_stub.h "$out/mocks/bpf/libbpf_version.h"
 
 common=(

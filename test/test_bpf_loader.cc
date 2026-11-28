@@ -8,7 +8,7 @@
 #include "agent/bpf_loader/include/bpf_loader_factory.hpp"
 #include "agent/bpf_loader/include/syscall_probe_loader.hpp"
 #include "agent/bpf_loader/include/syscall_probe_maps.hpp"
-#include "test/fixtures/collector_skeleton_stub.hpp"
+#include "test/fixtures/bpf_loader_stub.hpp"
 
 #include <linux/bpf.h>
 #include <sys/syscall.h>

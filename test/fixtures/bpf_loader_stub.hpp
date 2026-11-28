@@ -1,9 +1,9 @@
 /**
- * @file collector_skeleton_stub.hpp
- * @brief 采集器专用骨架替身；验证资源归属与回调，不参与生产构建。
+ * @file bpf_loader_stub.hpp
+ * @brief BPF 加载器测试替身；验证加载、资源归属与回调，不参与生产构建。
  */
-#ifndef HNG_TEST_COLLECTOR_SKELETON_STUB_HPP_
-#define HNG_TEST_COLLECTOR_SKELETON_STUB_HPP_
+#ifndef HNG_TEST_BPF_LOADER_STUB_HPP_
+#define HNG_TEST_BPF_LOADER_STUB_HPP_
 
 #include <linux/bpf.h>
 

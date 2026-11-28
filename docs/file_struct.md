@@ -14,7 +14,7 @@
   │   └── cli/              # 待建
   ├── agent/                # 节点代理：一个 DaemonSet Pod / 一份 systemd unit = 一次部署
   │   ├── main.cc
-  │   ├── config/ control_plane/ collector/ detector/ semantic/ context_maintainer/ event_data/ util/
+  │   ├── config/ control_plane/ collector/ bpf_loader/ detector/ semantic/ context_maintainer/ event_data/ util/
   │   │   ├── include/      # 对外头：别的模块可以 include
   │   │   └── src/          # 私有头与源文件；子模块再嵌一层（如 context_maintainer/src/rule/）
   │   └── role_discovery/   # 与 control_plane 同级；内含 Go module containerd_bridge/
@@ -28,3 +28,5 @@
       ├── baremetal/        # 待建：systemd unit, install.sh
       └── docker/           # 待建
 ```
+
+`agent/bpf_loader/` 负责 BPF 程序加载、map Reader/Writer 与 ringbuf Reader。

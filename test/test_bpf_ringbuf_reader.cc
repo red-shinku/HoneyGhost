@@ -4,7 +4,7 @@
  * @note libbpf ringbuf 与 map info syscall 均走替身，无特权。
  */
 #include "agent/bpf_loader/include/bpf_ringbuf_reader.hpp"
-#include "test/fixtures/collector_skeleton_stub.hpp"
+#include "test/fixtures/bpf_loader_stub.hpp"
 
 #include <fcntl.h>
 #include <linux/bpf.h>
