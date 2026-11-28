@@ -233,15 +233,15 @@ hng::PipelineStats Assembly::Impl::snapshot() const
 #ifdef HNG_HAVE_COLLECTOR
 void Assembly::Impl::build_filter()
 {
-    // S1 名单 map 已在 build_pipeline() 的准备阶段校验并可取 fd
-    // S2 用过滤 map fd 构造名单组件，并注册为 RM 的生命周期出口
+    // S1 名单 map 已在 build_pipeline() 的准备阶段校验并可取 map 视图
+    // S2 用过滤 map 视图构造名单组件，并注册为 RM 的生命周期出口
     if (collector != nullptr) {
         RoleFilterComponentOptions ropt;
-        ropt.lookup         = &control_plane->role().lookup_service();
-        ropt.ignore         = &control_plane->role().ignore_service();
-        ropt.policy         = RoleFilterPolicy(options.role_filter_config);
-        const int filter_fd = syscall_loader->maps().role_filter_map().fd();
-        ropt.map            = make_bpf_process_filter_map({filter_fd});
+        ropt.lookup = &control_plane->role().lookup_service();
+        ropt.ignore = &control_plane->role().ignore_service();
+        ropt.policy = RoleFilterPolicy(options.role_filter_config);
+        ropt.map    = make_bpf_process_filter_map(
+            {syscall_loader->maps().role_filter_map()});
         ropt.filter_options = options.role_filter_options;
         role_filter         = RoleFilterFactory::create(std::move(ropt));
         control_plane->role().add_lifecycle_sink(&role_filter->lifecycle_sink());
@@ -437,10 +437,10 @@ Assembly::~Assembly() { stop(); }
 InitReport Assembly::start()
 {
     if (impl_->start_attempted.exchange(true)) {
-        throw std::logic_error("Assembly::start 只能调用一次");
+        throw std::logic_error("Assembly::start can only call once");
     }
     if (impl_->stop_called.load()) {
-        throw std::logic_error("Assembly 已停止，不能 start");
+        throw std::logic_error("Assembly already stopped, cannot start again");
     }
     try {
         return impl_->start_impl();

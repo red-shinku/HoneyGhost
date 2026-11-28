@@ -304,7 +304,8 @@ add_executable(test_process_filter_map_backend
     ${HNG_SOURCE_DIR}/agent/role_filter/src/process_filter_map.cc)
 target_include_directories(test_process_filter_map_backend PRIVATE
     ${HNG_SOURCE_DIR})
-target_link_libraries(test_process_filter_map_backend PRIVATE Threads::Threads)
+target_link_libraries(test_process_filter_map_backend PRIVATE
+    Threads::Threads hng_bpf_map)
 target_link_options(test_process_filter_map_backend PRIVATE
     "LINKER:--wrap=syscall")
 add_test(NAME test_process_filter_map_backend
